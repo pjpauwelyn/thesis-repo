@@ -6,6 +6,18 @@ Runs the four manual-analysis questions through the fully refined pipeline
 
 Columns: question_id, question, answer
 
+Per-question AQL context is read from JSON files in the same directory:
+    evaluation/manual_analysis/q1.json
+    evaluation/manual_analysis/q2.json
+    evaluation/manual_analysis/q3.json
+    evaluation/manual_analysis/q4.json
+
+Each JSON file must be a list of document objects that contain at least:
+    title, abstract, uri
+
+This mirrors the format produced by parse_aql_results() from the DLR CSV,
+so the refinement agent receives identical input in both cases.
+
 Usage:
     python3 evaluation/manual_analysis/run_four_questions.py
     python3 evaluation/manual_analysis/run_four_questions.py --model mistral-large-latest
@@ -14,12 +26,14 @@ Usage:
 
 import argparse
 import csv
+import json
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 # ---------------------------------------------------------------------------
-# The four questions for manual error analysis
+# configuration
 # ---------------------------------------------------------------------------
 
 QUESTIONS = [
@@ -32,11 +46,63 @@ QUESTIONS = [
     ),
 ]
 
-OUTPUT_PATH = Path("evaluation/manual_analysis/four_q_results.csv")
-PIPELINE_TYPE = "1_pass_with_ontology_refined"
+# Directory that holds both this script and the q1..q4 JSON files
+MANUAL_ANALYSIS_DIR = Path("evaluation/manual_analysis")
+OUTPUT_PATH         = MANUAL_ANALYSIS_DIR / "four_q_results.csv"
+PIPELINE_TYPE       = "1_pass_with_ontology_refined"
 
 # ---------------------------------------------------------------------------
-# helpers
+# JSON → compact AQL string (same output format as parse_aql_results())
+# ---------------------------------------------------------------------------
+
+def load_json_as_aql_results(qid: int) -> Optional[str]:
+    """Load evaluation/manual_analysis/q{qid}.json and return a compact JSON
+    string containing only title / abstract / uri per document.
+
+    This produces exactly the same string format that parse_aql_results()
+    produces from the DLR CSV, so the refinement agent sees identical input.
+
+    Returns None (with a warning) if the file is missing or malformed.
+    """
+    json_path = MANUAL_ANALYSIS_DIR / f"q{qid}.json"
+
+    if not json_path.exists():
+        print(f"    ⚠  {json_path} not found — running without AQL context")
+        return None
+
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as exc:
+        print(f"    ⚠  {json_path} is not valid JSON ({exc}) — running without AQL context")
+        return None
+
+    if not isinstance(data, list):
+        print(f"    ⚠  {json_path} top-level is not a list — running without AQL context")
+        return None
+
+    # Extract only the three fields the pipeline needs (same as parse_aql_results)
+    clean_docs = [
+        {
+            "title":    doc.get("title", ""),
+            "abstract": doc.get("abstract", ""),
+            "uri":      doc.get("uri", ""),
+        }
+        for doc in data
+        if isinstance(doc, dict)
+    ]
+
+    if not clean_docs:
+        print(f"    ⚠  {json_path} produced no valid documents — running without AQL context")
+        return None
+
+    compact = json.dumps(clean_docs, separators=(",", ":"), ensure_ascii=False)
+    print(f"    ✓  Loaded {len(clean_docs)} docs from {json_path.name}")
+    return compact
+
+
+# ---------------------------------------------------------------------------
+# CSV output + validation
 # ---------------------------------------------------------------------------
 
 def _write_csv(rows: list, path: Path) -> None:
@@ -45,7 +111,7 @@ def _write_csv(rows: list, path: Path) -> None:
         writer = csv.DictWriter(f, fieldnames=["question_id", "question", "answer"])
         writer.writeheader()
         writer.writerows(rows)
-    print(f"\n Results written → {path}  ({len(rows)} rows)")
+    print(f"\n✓  Results written → {path}  ({len(rows)} rows)")
 
 
 def _validate(path: Path) -> None:
@@ -90,18 +156,19 @@ def main() -> None:
         print("Use --overwrite to re-run.")
         sys.exit(0)
 
-    # lazy imports so the module is parseable without the full env
+    # lazy imports — keeps the module parseable without the full env
     from core.utils.helpers import get_llm_model, DEFAULT_MODEL
     from core.agents.ontology_agent import OntologyConstructionAgent
     from core.agents.refinement_agent_1pass_refined import RefinementAgent1PassRefined
     from core.agents.generation_agent import GenerationAgent
 
     model_name = args.model or DEFAULT_MODEL
-    print(f"Model : {model_name}")
-    print(f"Pipeline: {PIPELINE_TYPE}")
-    print(f"Output : {OUTPUT_PATH}\n")
+    print(f"Model    : {model_name}")
+    print(f"Pipeline : {PIPELINE_TYPE}")
+    print(f"Output   : {OUTPUT_PATH}")
+    print(f"JSON dir : {MANUAL_ANALYSIS_DIR}\n")
 
-    llm = get_llm_model(model=model_name, temperature=0.2)
+    llm     = get_llm_model(model=model_name, temperature=0.2)
     llm_ref = get_llm_model(model=model_name, temperature=0.1)
 
     ontology_agent   = OntologyConstructionAgent(llm_ref, prompt_dir="prompts/ontology")
@@ -114,29 +181,30 @@ def main() -> None:
         t0 = time.time()
 
         try:
-            # 1. build ontology
+            # --- load per-question AQL context from JSON file ---
+            aql_results_str = load_json_as_aql_results(qid)
+
+            # --- 1. build ontology ---
             print("    → building ontology...", end=" ", flush=True)
             ontology = ontology_agent.process(question, include_relationships=False)
             if ontology and not ontology.should_use_ontology:
                 ontology = None
-            print(f"{'done' if ontology else 'skipped'}")
+            print("done" if ontology else "skipped")
 
-            # 2. refine context
-            # no pre-fetched AQL results for custom questions – the refinement
-            # agent uses the ontology + question to construct the best context it can.
+            # --- 2. refine context (with AQL docs as input) ---
             print("    → refining context...", end=" ", flush=True)
             refined = refinement_agent.process_context(
                 question=question,
                 structured_context="",
                 ontology=ontology,
                 include_ontology=True,
-                aql_results_str=None,
+                aql_results_str=aql_results_str,  # compact JSON from q{qid}.json
                 context_filter="full",
             )
             final_context = refined.enriched_context or ""
             print("done")
 
-            # 3. generate answer
+            # --- 3. generate answer ---
             print("    → generating answer...", end=" ", flush=True)
             answer_obj = generation_agent.generate(
                 question=question,
