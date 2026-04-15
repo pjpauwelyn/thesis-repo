@@ -1,8 +1,0 @@
-Pipeline,Overall Score,Factuality,Relevance,Groundedness,Helpfulness,Depth,Question Count
-1_pass_with_ontology,4.771,4.771,4.986,4.457,4.786,4.857,70
-1_pass_without_ontology,4.774,4.786,5.0,4.414,4.843,4.829,70
-zero_shot,4.671,4.9,4.971,3.986,4.814,4.686,70
-dlr_2step,4.911,4.957,5.0,4.729,4.971,4.9,70
-scores-only,4.891,4.857,4.886,4.571,4.843,4.729,70
-slim-ontology,4.837,4.829,4.929,4.4,4.914,4.843,70
-refined-context,4.989,5.0,5.0,4.986,5.0,4.957,70

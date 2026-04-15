@@ -1,9 +1,0 @@
-question_id,question,structured_context,aql_results
-901,"What satellite missions are commonly used for monitoring global sea surface temperature, and what spatial resolution do they typically achieve?","## RELATED DOCUMENTS
----
-# Title: Sentinel-3 Sea Surface Temperature Monitoring
-# Content: The Sentinel-3 mission carries the SLSTR instrument which measures sea surface temperature at 1 km resolution. MODIS on Aqua and Terra also provides SST data at similar resolutions. These missions enable global ocean monitoring for climate research and weather forecasting applications.
----
-# Title: VIIRS SST Products from Suomi NPP
-# Content: The VIIRS instrument on Suomi NPP satellite provides sea surface temperature products at 750 m resolution. The data is used in operational oceanography and has demonstrated accuracy comparable to in-situ measurements from drifting buoys.
-","[{""title"":""Sentinel-3 SST"",""abstract"":""Sentinel-3 SLSTR provides 1km SST data for climate monitoring."",""uri"":""https://openalex.org/W0000000001""},{""title"":""VIIRS SST Products"",""abstract"":""VIIRS on Suomi NPP delivers 750m resolution SST."",""uri"":""https://openalex.org/W0000000002""}]"
