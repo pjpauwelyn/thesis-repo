@@ -1,0 +1,4 @@
+question_id,question,structured_context,aql_results
+71,"What is the impact of climate change on biodiversity?","Some context here","[{"title": "Climate Impact Study", "content": "..."}]"
+72,"How does deforestation affect local ecosystems?","Some context here","[{"title": "Deforestation Study", "content": "..."}]"
+73,"What are the main causes of ocean acidification?","Some context here","[{"title": "Ocean Study", "content": "..."}]"

@@ -1,0 +1,79 @@
+🔍 Auto-evaluation enabled with gpt-4.1-mini
+2026-03-23 19:55:28,498 - INFO - 🔍 Auto-evaluation enabled with gpt-4.1-mini
+Using mistral-small-latest for all tasks
+2026-03-23 19:55:28,499 - INFO - Using mistral-small-latest for all tasks
+Orchestrator initialized: 1-Pass with Ontology Refined (simplified DLR-inspired approach)
+2026-03-23 19:55:28,525 - INFO - Orchestrator initialized: 1-Pass with Ontology Refined (simplified DLR-inspired approach)
+2026-03-23 19:55:33,808 - OntologyConstructionAgent - INFO - Extracted 5 attribute-value pairs
+2026-03-23 19:55:33,808 - INFO - Extracted 5 attribute-value pairs
+2026-03-23 19:55:33,809 - OntologyConstructionAgent - INFO - Skipping logical relationships (optional feature disabled)
+2026-03-23 19:55:33,809 - INFO - Skipping logical relationships (optional feature disabled)
+2026-03-23 19:55:33,809 - DEBUG - Ontology: 5 attributes, 0 relationships
+2026-03-23 19:55:33,809 - RefinementAgent1PassRefined - INFO - 🔄 Using AQL-only approach - LLM extracts both findings and references
+2026-03-23 19:55:33,809 - INFO - 🔄 Using AQL-only approach - LLM extracts both findings and references
+2026-03-23 19:55:33,811 - RefinementAgent1PassRefined - INFO - 📚 AQL results contain 16 documents for reference extraction
+2026-03-23 19:55:33,811 - INFO - 📚 AQL results contain 16 documents for reference extraction
+2026-03-23 19:55:38,561 - RefinementAgent1PassRefined - INFO - 📊 Refinement prompt statistics:
+2026-03-23 19:55:38,561 - INFO - 📊 Refinement prompt statistics:
+2026-03-23 19:55:38,562 - RefinementAgent1PassRefined - INFO -    - Prompt length: 15127 characters
+2026-03-23 19:55:38,562 - INFO -    - Prompt length: 15127 characters
+2026-03-23 19:55:38,562 - RefinementAgent1PassRefined - INFO -    - Estimated tokens: ~3781 tokens
+2026-03-23 19:55:38,562 - INFO -    - Estimated tokens: ~3781 tokens
+2026-03-23 19:55:38,562 - RefinementAgent1PassRefined - INFO - 📝 Raw refinement prompt logged to 'raw_prompts_debug.log'
+2026-03-23 19:55:38,562 - INFO - 📝 Raw refinement prompt logged to 'raw_prompts_debug.log'
+2026-03-23 19:55:38,562 - RefinementAgent1PassRefined - INFO - 📝 Sending refinement prompt to LLM (model: mistral-small-latest)
+2026-03-23 19:55:38,562 - INFO - 📝 Sending refinement prompt to LLM (model: mistral-small-latest)
+2026-03-23 19:55:48,326 - DEBUG - Question 0 completed in 19.21s
+2026-03-23 19:55:48,328 - DEBUG - Analysis logging failed: local variable 'final_text_context' referenced before assignment
+Traceback (most recent call last):
+  File "core/main.py", line 1125, in <module>
+    main()
+  File "core/main.py", line 1112, in main
+    results, output_dir, stats = orchestrator.run(
+  File "core/main.py", line 460, in run
+    result = self._process_question(idx, row, verbose=verbose, original_question_id=original_question_id)
+  File "core/main.py", line 576, in _process_question
+    refined = self.refinement_agent_1pass_refined.process_context(
+  File "/Users/pjpauwelyn/THESIS_2025/THESIS-REP/core/agents/refinement_agent_1pass_refined.py", line 57, in process_context
+    refined_text_context = self._get_refined_context_from_llm(prompt)
+  File "/Users/pjpauwelyn/THESIS_2025/THESIS-REP/core/agents/refinement_agent_1pass_refined.py", line 249, in _get_refined_context_from_llm
+    response = self.llm.invoke(prompt)
+  File "/Users/pjpauwelyn/THESIS_2025/THESIS-REP/core/utils/helpers.py", line 35, in invoke
+    response = self.client.chat.complete(
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/mistralai/chat.py", line 214, in complete
+    http_res = self.do_request(
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/mistralai/basesdk.py", line 273, in do_request
+    http_res = do()
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/mistralai/basesdk.py", line 234, in do
+    http_res = client.send(req, stream=stream)
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/site-packages/httpcore/_backends/sync.py", line 128, in read
+    return self._sock.recv(max_bytes)
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/ssl.py", line 1226, in recv
+    return self.read(buflen)
+  File "/Users/pjpauwelyn/.pyenv/versions/3.8.17/lib/python3.8/ssl.py", line 1101, in read
+    return self._sslobj.read(len)
+KeyboardInterrupt

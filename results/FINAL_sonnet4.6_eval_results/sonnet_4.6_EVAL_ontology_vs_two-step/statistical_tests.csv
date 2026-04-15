@@ -1,0 +1,10 @@
+criterion,DLR_mean,Ontology_mean,diff,W,p_value,effect_r,sig
+scientific_accuracy,6.66,7.83,1.17,46.0,0.000000,0.963,***
+relevance,6.61,7.96,1.34,70.0,0.000000,0.944,***
+completeness,6.57,7.46,0.89,102.0,0.000000,0.918,***
+directness,4.59,7.93,3.34,0.0,0.000000,1.0,***
+quantitative_precision,4.07,5.93,1.86,52.0,0.000000,0.959,***
+response_structure,5.9,7.67,1.77,22.0,0.000000,0.982,***
+scope_awareness,4.54,7.63,3.09,0.0,0.000000,1.0,***
+helpfulness,5.13,7.41,2.29,4.0,0.000000,0.997,***
+overall_new,5.51,7.48,1.97,4.0,0.000000,0.997,***

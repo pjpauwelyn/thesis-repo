@@ -1,0 +1,41 @@
+2026-03-25 18:37:16,677 - core.main - INFO - Using mistral-small-latest for all tasks
+2026-03-25 18:37:16,678 - core.main - INFO - Orchestrator initialized: 1-Pass with Ontology Refined (simplified DLR-inspired approach)
+2026-03-25 18:37:16,681 - core.main - DEBUG - Ontology: 2 attributes, 0 relationships
+2026-03-25 18:37:17,596 - core.main - DEBUG - Question 0 completed in 0.92s
+2026-03-25 18:37:17,598 - core.main - DEBUG - 📊 Analysis logged for question 901
+2026-03-25 18:37:17,598 - core.main - DEBUG - Ontology: 2 attributes, 0 relationships
+2026-03-25 18:37:17,822 - core.main - DEBUG - Question 1 completed in 0.22s
+2026-03-25 18:37:17,825 - core.main - DEBUG - 📊 Analysis logged for question 902
+2026-03-25 18:37:17,825 - core.main - DEBUG - Processing question 901, pipeline 1_pass_with_ontology_refined, experiment_type 'refined_context'
+2026-03-25 18:37:17,825 - core.main - DEBUG - Found existing row: False
+2026-03-25 18:37:17,825 - core.main - DEBUG - Removing old rows for question 901, pipeline 1_pass_with_ontology_refined
+2026-03-25 18:37:17,825 - core.main - DEBUG - Removed 0 old rows
+2026-03-25 18:37:17,825 - core.main - DEBUG - Appending new row
+2026-03-25 18:37:17,825 - core.main - DEBUG - Processing question 902, pipeline 1_pass_with_ontology_refined, experiment_type 'refined_context'
+2026-03-25 18:37:17,825 - core.main - DEBUG - Found existing row: False
+2026-03-25 18:37:17,825 - core.main - DEBUG - Removing old rows for question 902, pipeline 1_pass_with_ontology_refined
+2026-03-25 18:37:17,825 - core.main - DEBUG - Removed 0 old rows
+2026-03-25 18:37:17,825 - core.main - DEBUG - Appending new row
+2026-03-25 18:37:17,826 - core.main - DEBUG - Updated CSV: /Users/pjpauwelyn/THESIS_2025/THESIS-REP/clean_repo/test_output/test_pipeline_results.csv
+2026-03-25 18:37:17,826 - core.main - INFO - Using mistral-small-latest for all tasks
+2026-03-25 18:37:17,827 - core.main - INFO - Orchestrator initialized: 1-Pass with Ontology (simplified DLR-inspired approach)
+2026-03-25 18:37:17,828 - core.main - DEBUG - Ontology: 2 attributes, 0 relationships
+2026-03-25 18:37:17,828 - core.main - DEBUG - Question 0 completed in 0.00s
+2026-03-25 18:37:17,829 - core.main - DEBUG - 📊 Analysis logged for question 901
+2026-03-25 18:37:17,829 - core.main - DEBUG - Processing question 901, pipeline 1_pass_with_ontology, experiment_type 'default'
+2026-03-25 18:37:17,829 - core.main - DEBUG - Found existing row: False
+2026-03-25 18:37:17,829 - core.main - DEBUG - Removing old rows for question 901, pipeline 1_pass_with_ontology
+2026-03-25 18:37:17,829 - core.main - DEBUG - Removed 0 old rows
+2026-03-25 18:37:17,829 - core.main - DEBUG - Appending new row
+2026-03-25 18:37:17,830 - core.main - DEBUG - Updated CSV: /Users/pjpauwelyn/THESIS_2025/THESIS-REP/clean_repo/test_output/test_pipeline_results.csv
+2026-03-25 18:37:17,830 - core.main - INFO - Using mistral-small-latest for all tasks
+2026-03-25 18:37:17,831 - core.main - INFO - Orchestrator initialized: 1-Pass with Ontology Refined (simplified DLR-inspired approach)
+2026-03-25 18:37:17,832 - core.main - DEBUG - Ontology: 2 attributes, 0 relationships
+2026-03-25 18:37:17,832 - core.main - DEBUG - Question 0 completed in 0.00s
+2026-03-25 18:37:17,833 - core.main - DEBUG - 📊 Analysis logged for question 903
+2026-03-25 18:37:17,834 - core.main - DEBUG - Processing question 903, pipeline 1_pass_with_ontology_refined, experiment_type 'refined_context'
+2026-03-25 18:37:17,834 - core.main - DEBUG - Found existing row: False
+2026-03-25 18:37:17,834 - core.main - DEBUG - Removing old rows for question 903, pipeline 1_pass_with_ontology_refined
+2026-03-25 18:37:17,834 - core.main - DEBUG - Removed 0 old rows
+2026-03-25 18:37:17,834 - core.main - DEBUG - Appending new row
+2026-03-25 18:37:17,834 - core.main - DEBUG - Updated CSV: /Users/pjpauwelyn/THESIS_2025/THESIS-REP/clean_repo/test_output/test_pipeline_results.csv

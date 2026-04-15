@@ -1,0 +1,143 @@
+TASK: Extract semantic attributes from Earth Observation questions
+
+Extract 3-5 attribute-value pairs capturing key concepts essential for answering the question.
+Focus on semantic completeness - cover all major scientific dimensions mentioned.
+
+MANDATORY CATEGORIES (cover ≥3 of 5):
+1. BIOPHYSICAL_VARIABLE: What's measured? (glacier_retreat, sea_ice_extent, albedo, carbon_flux)
+2. SENSOR/METHOD: How measured? (Sentinel-2, MODIS, SAR, time_series_analysis)
+3. SPATIAL_QUALIFIER: Where? (global, polar_regions, 1km_resolution)
+4. TEMPORAL_QUALIFIER: When? (decadal_trends, 1990-present, seasonal_cycle)
+5. APPLICATION_DOMAIN: Why? (climate_assessment, ecosystem_monitoring)
+
+CENTRALITY SCALE (continuous 0.0-1.0):
+- 1.0: CRITICAL (answer impossible without this)
+- 0.7-0.9: IMPORTANT (significantly constrains/enables)
+- 0.4-0.6: CONTEXTUAL (enriches but not essential)
+- 0.1-0.3: PERIPHERAL (minimal value)
+
+QUESTION
+{question}
+
+SEMANTIC COMPLETENESS GUIDANCE (CRITICAL)
+
+Focus on COMPLETE semantic coverage, NOT arbitrary pair counts.
+Extract ALL distinct concepts needed to fully answer the question.
+
+SEMANTIC COVERAGE REQUIREMENTS:
+1. Every major biophysical variable mentioned MUST be captured
+2. All measurement/observation methods implied MUST be included
+3. Geographic and temporal constraints MUST be represented
+4. Application context and scientific purpose MUST be clear
+
+COMPLEXITY TIERS (pair counts are GUIDELINES, not targets):
+
+Simple questions (typically 3 pairs):
+  Example: "What is albedo?"
+  - Core concept (1.0): albedo
+  - Measurement approach (0.7): satellite_observation
+  - Application (0.3): climate_modeling
+
+Standard questions (typically 4 pairs):
+  Example: "How do glaciers influence climate?"
+  - Core mechanisms (1.0): glacier_retreat
+  - Observational methods (0.7): satellite_altimetry
+  - Temporal dynamics (0.7): long_term_trends
+  - Application (0.3): climate_change_assessment
+
+Complex questions (typically 5 pairs):
+  Example: "How do variations in glacier retreat and albedo influence carbon flux?"
+  - Multiple core variables (1.0): glacier_retreat, albedo
+  - Interaction mechanisms (0.7): ice_albedo_feedback
+  - Measurement approaches (0.7): multi_sensor_integration
+  - Temporal dimensions (0.7): decadal_trends
+  - Application (0.3): climate_projections
+
+SEMANTIC VALIDATION CHECKLIST:
+✓ Does every major scientific concept in the question have a corresponding attribute?
+✓ Are all implied measurement/observation methods captured?
+✓ Are geographic and temporal constraints properly represented?
+✓ Is the scientific purpose/application context included?
+✓ Can a domain expert answer the question using ONLY these pairs?
+
+DO NOT:
+- Add pairs that don't correspond to actual question concepts
+- Omit concepts just to hit a specific pair count
+- Create redundant pairs (same concept with slightly different wording)
+- Include peripheral concepts that don't affect the answer
+
+CENTRALITY GUIDANCE (CONTINUOUS SCALE)
+
+Use this continuous scale for semantic importance:
+
+- 1.0 → CRITICAL: The answer is impossible without addressing this concept
+- 0.7-0.9 → IMPORTANT: Significantly constrains or enables the core mechanism
+- 0.4-0.6 → CONTEXTUAL: Enriches understanding but not essential for basic answer
+- 0.1-0.3 → PERIPHERAL: Minimal value
+
+Centrality distribution MUST reflect actual semantic importance, NOT artificial balance.
+
+KEY PRINCIPLES:
+- Multiple pairs CAN have 1.0 if they're genuinely critical (common in complex EO questions)
+- Avoid forcing lower scores just to create artificial distribution
+- Use the full 3-point range when question complexity warrants it
+- For simple questions, 1.0/0.7/0.3 may suffice
+
+INSTRUCTIONS
+
+1. Read the QUESTION very carefully, identifying all distinct concepts and mechanisms.
+
+2. Assess question complexity:
+   - Simple (definition-focused): 3 pairs
+   - Standard (causal/comparative): 4 pairs
+   - Complex (multi-mechanism): 5 pairs
+
+3. Extract pairs according to complexity. Do NOT pad or truncate.
+
+4. MANDATORY CHECK: Ensure you cover ≥3 of the 5 categories above.
+   - If you're missing a major category, revisit the question and add it (even if implicit).
+   - Example: If no TEMPORAL_QUALIFIER appears but the question is about long-term trends, infer "long_term".
+
+5. DIVERSITY CHECK: Don't over-concentrate in one attribute category.
+   - Good: 2 biophysical_variables, 1 sensor_type, 1 temporal, 1 application (5 pairs across 5 types).
+   - Acceptable: 3 biophysical_variables, 1 sensor_type, 1 temporal (5 pairs, 3 types covered).
+   - Bad: 5 biophysical_variables, 0 sensors, 0 temporal (over-concentrated, under-specified).
+
+6. CENTRALITY: Use the full continuous range when it reflects the question.
+   - Assign centrality based on the question structure, not on forcing a distribution.
+   - Simple Q: Expect 1–2 @ 1.0, 1–2 @ 0.7-0.9, 0–1 @ 0.4-0.6.
+   - Complex Q: Expect 2–3 @ 1.0, 2–3 @ 0.7-0.9, 0–1 @ 0.4-0.6.
+   - Clustering at 0.7-0.9 is honest if the question has multiple important drivers.
+
+7. DESCRIPTION QUALITY: Each description must be 1–2 sentences, specific to the question context.
+   - Good: "Column-integrated aerosol optical depth, a key atmospheric variable used to quantify particulate pollution and radiative forcing in the region of interest."
+   - Bad: "AOD is important."
+
+8. VALUE SPECIFICITY: Avoid vague or generic values.
+   - Good: glacier_velocity, surface_albedo_change, CH4_flux, PM2_5_concentration, NDVI_anomaly, ENSO_index.
+   - Bad: change, data, context, conditions.
+
+9. OUTPUT VALIDATION:
+   Before returning JSON, verify:
+   □ I have extracted 3–5 pairs based on question complexity (not forced to a fixed count).
+   □ I cover ≥3 of the 5 mandatory categories.
+   □ Centrality reflects question structure (honest, not forced).
+   □ No redundant or overlapping pairs.
+   □ All values are concrete and domain-appropriate for the EO question.
+   □ All descriptions explain the specific role in answering the question.
+   □ If this is a simple question, pair count should be ≤3. If complex, ≥4.
+
+RETURN ONLY THIS JSON STRUCTURE (valid JSON, no markdown):
+
+{{
+  "pairs": [
+    {{
+      "attribute": "attribute_name",
+      "value": "specific_value",
+      "description": "what this means in the context of the question",
+      "value_type": "categorical",
+      "constraints": ["optional unit or property, can be empty if none"],
+      "centrality": 1.0
+    }}
+  ]
+}}

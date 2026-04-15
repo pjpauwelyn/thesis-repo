@@ -1,0 +1,17 @@
+2026-03-25 15:16:56,522 - INFO - Results → /Users/pjpauwelyn/THESIS_2025/THESIS-REP/clean_repo/results_to_be_processed/dlr_evaluation_results.csv
+2026-03-25 15:16:56,524 - WARNING - No results to validate
+2026-03-25 15:16:59,468 - INFO - Results → /Users/pjpauwelyn/THESIS_2025/THESIS-REP/clean_repo/results_to_be_processed/dlr_evaluation_results.csv
+2026-03-25 15:17:00,091 - INFO - Starting batch evaluation of 1 questions
+2026-03-25 15:17:00,091 - INFO - Batch 1: questions 1-1
+2026-03-25 15:17:07,096 - INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-25 15:17:07,109 - INFO - 🎯 Perfect score achieved: 5.0/5.0 - All criteria scored maximum points
+2026-03-25 15:17:07,109 - INFO - 100.0% done (1/1)
+2026-03-25 15:17:07,110 - INFO - Evaluated 1 questions
+2026-03-25 15:17:15,015 - INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-25 15:17:15,028 - INFO - 🎯 Perfect score achieved: 5.0/5.0 - All criteria scored maximum points
+2026-03-25 15:17:15,030 - INFO - refined_context: evaluated 1, skipped 0
+2026-03-25 15:17:15,030 - INFO - refined_context: 1 evaluated
+2026-03-25 15:19:29,240 - INFO - HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 200 OK"
+2026-03-25 15:19:29,253 - WARNING - Score validation anomaly: Unusually uniform scores (std_dev: 0.45), may indicate lack of discrimination
+2026-03-25 15:19:29,254 - INFO - refined_context: evaluated 1, skipped 0
+2026-03-25 15:19:29,254 - INFO - refined_context: 1 evaluated

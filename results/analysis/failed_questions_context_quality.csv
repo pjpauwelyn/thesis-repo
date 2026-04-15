@@ -1,0 +1,142 @@
+question_id,question,context,status,source
+2,How do the accuracy and resolution of LIDAR-based measurements compare to radar-based measurements for detecting and mapping surface features?,"Here is the refined context based on your inputs. Replace the placeholders `{query}`, `{ontology}`, and `{aql_results}` with the actual values before generating the output.
+
+---
+
+[ONTOLOGY SUMMARY]
+Critical attributes found:
+- {attribute_name}: {value} (with units, region, time, method if relevant)
+- ...
+
+Supporting attributes found:
+- {attribute_name}: {value}
+- ...
+
+[TOPICS AND INFORMATION]
+# {Topic name 1}
+Findings: {1–2 key findings for this topic (quantitative and/or qualitative)}.
+Evidence: {Short citation from AQL (e.g., “Author et al., 2020” or “Report Title, 2019”)}.
+Scope: Geographic: {region or “global”} | Temporal: {years}.
+Confidence: {0–1} ({1 short reason, e.g., “direct measurements”, “model-based”}).
+Limitations: {1–2 specific caveats (e.g., “data ends 2018; limited stations in eastern region”)}.
+Use: {Short instruction for the answer model (e.g., “Use as main trend estimate; mention limited coverage in high altitudes”)}.
+
+# {Topic name 2}
+Findings: {1–2 key findings for this topic (quantitative and/or qualitative)}.
+Evidence: {Short citation from AQL (e.g., “Author et al., 2020” or “Report Title, 2019”)}.
+Scope: Geographic: {region or “global”} | Temporal: {years}.
+Confidence: {0–1} ({1 short reason, e.g., “direct measurements”, “model-based”}).
+Limitations: {1–2 specific caveats (e.g., “data ends 2018; limited stations in eastern region”)}.
+Use: {Short instruction for the answer model (e.g., “Use as main trend estimate; mention limited coverage in high altitudes”)}.
+
+[VALIDATED REFERENCES]
+List only documents with enough metadata (at least title + year; author/source when available). Keep this list short (ideally ≤5 items).
+
+1. [{Citation string}] (relevance: {0–1})
+   Scope: Geographic: {region or “global”} | Temporal: {years}
+   Key contribution: {1 sentence}.
+   Limitations: {1 sentence}.
+   Use: {1 sentence (“primary trend reference”, “mechanism only”, etc.)}.
+
+2. [{Citation string}] (relevance: {0–1})
+   ...
+
+[EVIDENCE ONLY – INCOMPLETE REFERENCES]
+For documents in AQL_RESULTS that are useful but missing year/author/source:
+
+1. {short description or title}
+   Missing: {year/author/source}
+   Use only for qualitative context; do NOT cite numerically.
+
+[CAVEATS & GAPS]
+Ontology coverage:
+- Addressed: {list key ontology attributes well covered}.
+- Missing or weak: {attributes not covered or poorly supported}.
+
+Data coverage:
+- Geographic: Covered: {regions} | Gaps: {regions}.
+- Temporal: Covered: {periods} | Gaps: {periods}.
+
+Key limitations:
+- {1–3 bullets with the most important limitations for answering the question}.
+
+Generation guidance:
+- Emphasise: {2–3 concepts or metrics that are best supported and most relevant to the question}.
+- Caveat: {1–2 concepts that must always be qualified when mentioned}.
+- Frame answer as: {1 sentence high-level framing suggestion for the final answer model}.
+
+---",failed_placeholders,copy
+13,What is ocean circulation and how does it influence the movement of water in the marine environment?,"Here is the refined context based on your inputs. Replace the placeholders `{query}`, `{ontology}`, and `{aql_results}` with the actual content before generating the final output.
+
+---
+
+[ONTOLOGY SUMMARY]
+Critical attributes found:
+- {attribute_name}: {value} ({units}, {region}, {time}, {method})
+- ...
+
+Supporting attributes found:
+- {attribute_name}: {value}
+- ...
+
+[TOPICS AND INFORMATION]
+# {Topic name 1}
+Findings: {1–2 key findings}.
+Evidence: {Short citation}.
+Scope: Geographic: {region or ""global""} | Temporal: {years}.
+Confidence: {0–1} ({reason}).
+Limitations: {1–2 caveats}.
+Use: {Instruction for answer model}.
+
+# {Topic name 2}
+Findings: {1–2 key findings}.
+Evidence: {Short citation}.
+Scope: Geographic: {region or ""global""} | Temporal: {years}.
+Confidence: {0–1} ({reason}).
+Limitations: {1–2 caveats}.
+Use: {Instruction for answer model}.
+
+# {Topic name 3}
+Findings: {1–2 key findings}.
+Evidence: {Short citation}.
+Scope: Geographic: {region or ""global""} | Temporal: {years}.
+Confidence: {0–1} ({reason}).
+Limitations: {1–2 caveats}.
+Use: {Instruction for answer model}.
+
+[VALIDATED REFERENCES]
+1. [{Citation string}] (relevance: {0–1})
+   Scope: Geographic: {region or ""global""} | Temporal: {years}
+   Key contribution: {1 sentence}.
+   Limitations: {1 sentence}.
+   Use: {1 sentence}.
+
+2. [{Citation string}] (relevance: {0–1})
+   Scope: Geographic: {region or ""global""} | Temporal: {years}
+   Key contribution: {1 sentence}.
+   Limitations: {1 sentence}.
+   Use: {1 sentence}.
+
+[EVIDENCE ONLY – INCOMPLETE REFERENCES]
+1. {short description or title}
+   Missing: {year/author/source}
+   Use only for qualitative context; do NOT cite numerically.
+
+[CAVEATS & GAPS]
+Ontology coverage:
+- Addressed: {list key ontology attributes well covered}.
+- Missing or weak: {attributes not covered or poorly supported}.
+
+Data coverage:
+- Geographic: Covered: {regions} | Gaps: {regions}.
+- Temporal: Covered: {periods} | Gaps: {periods}.
+
+Key limitations:
+- {1–3 bullets with the most important limitations}.
+
+Generation guidance:
+- Emphasise: {2–3 concepts or metrics best supported and most relevant}.
+- Caveat: {1–2 concepts that must always be qualified}.
+- Frame answer as: {1 sentence high-level framing suggestion}.
+
+---",failed_placeholders,copy

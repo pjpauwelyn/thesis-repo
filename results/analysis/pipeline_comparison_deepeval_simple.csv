@@ -1,0 +1,5 @@
+pipeline,Rank,Answers,Hallucination (Inv),Relevancy,Contextual Relevancy,Overall Quality
+dlr_2step,1.0,70,1.0,0.941,0.731,0.891
+zero_shot,2.0,70,0.829,0.969,0.727,0.841
+1_pass_with_ontology,3.0,70,0.586,0.964,0.705,0.752
+1_pass_without_ontology,4.0,70,0.529,0.963,0.649,0.714

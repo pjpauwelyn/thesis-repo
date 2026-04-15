@@ -1,0 +1,32 @@
+================================================================================
+DETAILED PIPELINE ANALYSIS
+================================================================================
+
+1. ORIGINAL STRUCTURED CONTEXT
+----------------------------------------
+Length: 349 characters
+Preview: ## RELATED DOCUMENTS
+---
+# Title: SAR-Based Flood Detection Methods
+# Content: Synthetic aperture radar is widely used for flood mapping due to its ability to penetrate clouds. Sentinel-1 C-band SAR d...
+
+2. ONTOLOGY SUMMARY
+----------------------------------------
+2 attributes, 0 relationships
+
+3. REFINED CONTEXT (Generation Agent Input)
+----------------------------------------
+Length: 346 characters
+Estimated tokens: ~86
+
+Full context:
+## Refined Context
+
+The Sentinel-3 mission carries the SLSTR instrument which measures sea surface temperature at 1 km resolution. MODIS on Aqua and Terra provides complementary SST data. VIIRS on Suomi NPP achieves 750 m resolution. These missions together enable global ocean monitoring for climate research and operational weather forecasting.
+
+4. CONTEXT STRUCTURE ANALYSIS
+----------------------------------------
+❌ Ontology summary section missing
+❌ Topics and information section missing
+❌ Documents section missing
+❌ Caveats and gaps section missing

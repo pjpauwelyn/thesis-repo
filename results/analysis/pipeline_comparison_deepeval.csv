@@ -1,0 +1,5 @@
+pipeline,rank,answers_count,hallucination_inverted_mean,hallucination_inverted_std,relevancy_mean,relevancy_std,contextual_relevancy_mean,contextual_relevancy_std,overall_quality_no_faithfulness_mean,overall_quality_no_faithfulness_std
+dlr_2step,1.0,70,1.0,0.0,0.941,0.09,0.731,0.323,0.891,0.118
+zero_shot,2.0,70,0.829,0.38,0.969,0.079,0.727,0.322,0.841,0.184
+1_pass_with_ontology,3.0,70,0.586,0.496,0.964,0.104,0.705,0.358,0.752,0.216
+1_pass_without_ontology,4.0,70,0.529,0.503,0.963,0.072,0.649,0.394,0.714,0.235

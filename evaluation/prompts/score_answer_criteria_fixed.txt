@@ -1,0 +1,49 @@
+### INSTRUCTIONS
+
+You are tasked with evaluating an **answer** to a given **question**.  
+Follow these steps carefully: 
+
+1. **Understand the task**: Read the question, context, and answer in full.  
+2. **Feedback**: Write a constructive feedback statement focusing **only** on the criteria described below. Do **not** provide general opinions outside the criteria.  
+3. **Score**: For each criterion, assign an integer score between **1** (lowest) and **5** (highest), strictly following the provided rubrics. 
+
+> **Note**: If a context is provided, it originates from scientific publications and is considered accurate.
+
+---
+
+### CRITERIA
+{criteria}
+
+---
+
+### QUESTION-ANSWER FOR ASSESSMENT
+
+**Question**  
+{question}  
+
+**Context (if provided)**  
+{context}  
+
+**Answer**  
+{answer}
+
+---
+
+### OUTPUT FORMAT
+**CRITICAL REQUIREMENT**: You MUST provide BOTH sections below. The Scores section is MANDATORY.
+
+1. **Feedback**: Summarize the answer quality based on the criteria.  
+2. **Scores (1–5 per criterion)**: Provide scores in EXACT format:
+   - **Factuality**: X
+   - **Relevance**: X
+   - **Groundedness**: X
+   - **Helpfulness**: X
+   - **Depth**: X
+
+**RULES**:
+- X must be integer 1-5
+- Include ALL 5 criteria
+- Use exact format shown
+- NEVER omit Scores section
+
+### Assess The Answer

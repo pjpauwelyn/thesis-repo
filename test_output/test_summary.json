@@ -1,0 +1,539 @@
+{
+  "meta": {
+    "timestamp": "2026-03-25T18:37:18.189927",
+    "total_elapsed_seconds": 2.51,
+    "framework_version": "1.0.0"
+  },
+  "summary": {
+    "total_test_cases": 11,
+    "passed": 11,
+    "failed": 0,
+    "pass_rate": 100.0
+  },
+  "checks": {
+    "total": 58,
+    "passed": 58,
+    "errors": 0,
+    "warnings": 0
+  },
+  "metrics": {
+    "avg_processing_time_seconds": 0.29,
+    "avg_documents_in_context": 1.0,
+    "total_token_estimate": 28975
+  },
+  "pipeline_scenarios": {
+    "refined_pipeline": {
+      "passed": 2,
+      "failed": 0,
+      "questions": [
+        {
+          "question_id": "901",
+          "passed": true,
+          "answer_preview": "## Refined Context\n\nThe Sentinel-3 mission carries the SLSTR instrument which measures sea surface temperature at 1 km r",
+          "processing_time": 0.92,
+          "context_length": 346,
+          "doc_count": 1,
+          "mock_llm_calls": 8,
+          "token_estimate": 10792,
+          "checks": [
+            {
+              "name": "status_field",
+              "passed": true,
+              "message": "status='success'"
+            },
+            {
+              "name": "answer_not_empty",
+              "passed": true,
+              "message": "answer is non-empty"
+            },
+            {
+              "name": "answer_length",
+              "passed": true,
+              "message": "answer length 346 chars"
+            },
+            {
+              "name": "no_failure_markers (answer)",
+              "passed": true,
+              "message": "no failure markers detected in answer"
+            },
+            {
+              "name": "context_docs",
+              "passed": true,
+              "message": "1 document(s) in context"
+            },
+            {
+              "name": "processing_time",
+              "passed": true,
+              "message": "processing time 0.92s"
+            }
+          ],
+          "error": null
+        },
+        {
+          "question_id": "902",
+          "passed": true,
+          "answer_preview": "## Refined Context\n\nThe Sentinel-3 mission carries the SLSTR instrument which measures sea surface temperature at 1 km r",
+          "processing_time": 0.22,
+          "context_length": 346,
+          "doc_count": 1,
+          "mock_llm_calls": 8,
+          "token_estimate": 10792,
+          "checks": [
+            {
+              "name": "status_field",
+              "passed": true,
+              "message": "status='success'"
+            },
+            {
+              "name": "answer_not_empty",
+              "passed": true,
+              "message": "answer is non-empty"
+            },
+            {
+              "name": "answer_length",
+              "passed": true,
+              "message": "answer length 346 chars"
+            },
+            {
+              "name": "no_failure_markers (answer)",
+              "passed": true,
+              "message": "no failure markers detected in answer"
+            },
+            {
+              "name": "context_docs",
+              "passed": true,
+              "message": "1 document(s) in context"
+            },
+            {
+              "name": "processing_time",
+              "passed": true,
+              "message": "processing time 0.22s"
+            }
+          ],
+          "error": null
+        }
+      ]
+    },
+    "ontology_pipeline": {
+      "passed": 1,
+      "failed": 0,
+      "questions": [
+        {
+          "question_id": "901",
+          "passed": true,
+          "answer_preview": "## Refined Context\n\nThe Sentinel-3 mission carries the SLSTR instrument which measures sea surface temperature at 1 km r",
+          "processing_time": 0.0,
+          "context_length": 22,
+          "doc_count": 1,
+          "mock_llm_calls": 3,
+          "token_estimate": 3739,
+          "checks": [
+            {
+              "name": "status_field",
+              "passed": true,
+              "message": "status='success'"
+            },
+            {
+              "name": "answer_not_empty",
+              "passed": true,
+              "message": "answer is non-empty"
+            },
+            {
+              "name": "answer_length",
+              "passed": true,
+              "message": "answer length 346 chars"
+            },
+            {
+              "name": "no_failure_markers (answer)",
+              "passed": true,
+              "message": "no failure markers detected in answer"
+            },
+            {
+              "name": "context_docs",
+              "passed": true,
+              "message": "1 document(s) in context"
+            },
+            {
+              "name": "processing_time",
+              "passed": true,
+              "message": "processing time 0.00s"
+            }
+          ],
+          "error": null
+        }
+      ]
+    },
+    "empty_context": {
+      "passed": 1,
+      "failed": 0,
+      "questions": [
+        {
+          "question_id": "903",
+          "passed": true,
+          "answer_preview": "## Refined Context\n\nThe Sentinel-3 mission carries the SLSTR instrument which measures sea surface temperature at 1 km r",
+          "processing_time": 0.0,
+          "context_length": 22,
+          "doc_count": 1,
+          "mock_llm_calls": 3,
+          "token_estimate": 3652,
+          "checks": [
+            {
+              "name": "status_field",
+              "passed": true,
+              "message": "status='success'"
+            },
+            {
+              "name": "answer_not_empty",
+              "passed": true,
+              "message": "answer is non-empty"
+            },
+            {
+              "name": "answer_length",
+              "passed": true,
+              "message": "answer length 346 chars"
+            },
+            {
+              "name": "no_failure_markers (answer)",
+              "passed": true,
+              "message": "no failure markers detected in answer"
+            },
+            {
+              "name": "context_docs",
+              "passed": true,
+              "message": "1 document(s) in context"
+            },
+            {
+              "name": "processing_time",
+              "passed": true,
+              "message": "processing time 0.00s"
+            }
+          ],
+          "error": null
+        }
+      ]
+    },
+    "csv_output": {
+      "passed": 1,
+      "failed": 0,
+      "questions": [
+        {
+          "question_id": "n/a",
+          "passed": true,
+          "answer_preview": "",
+          "processing_time": 0.0,
+          "context_length": 0,
+          "doc_count": 0,
+          "mock_llm_calls": 0,
+          "token_estimate": 0,
+          "checks": [
+            {
+              "name": "file_exists (pipeline csv)",
+              "passed": true,
+              "message": "pipeline csv exists at /Users/pjpauwelyn/THESIS_2025/THESIS-REP/clean_repo/test_output/test_pipeline_results.csv"
+            },
+            {
+              "name": "csv_non_empty (pipeline csv)",
+              "passed": true,
+              "message": "pipeline csv has 4 data row(s)"
+            },
+            {
+              "name": "csv_column_question_id",
+              "passed": true,
+              "message": "column 'question_id' present"
+            },
+            {
+              "name": "csv_column_question",
+              "passed": true,
+              "message": "column 'question' present"
+            },
+            {
+              "name": "csv_column_answer",
+              "passed": true,
+              "message": "column 'answer' present"
+            },
+            {
+              "name": "csv_column_pipeline",
+              "passed": true,
+              "message": "column 'pipeline' present"
+            }
+          ],
+          "error": null
+        }
+      ]
+    }
+  },
+  "evaluation_scenarios": {
+    "normal_evaluation": {
+      "passed": 2,
+      "failed": 0,
+      "evaluations": [
+        {
+          "question_id": "901",
+          "passed": true,
+          "overall_score": 3.6,
+          "criteria_scores": {
+            "factuality": 4,
+            "relevance": 4,
+            "groundedness": 3,
+            "helpfulness": 4,
+            "depth": 3
+          },
+          "feedback_preview": "Good answer with accurate mission details.",
+          "has_anomaly": false,
+          "checks": [
+            {
+              "name": "eval_required_criteria",
+              "passed": true,
+              "message": "all required criteria present"
+            },
+            {
+              "name": "eval_score_range",
+              "passed": true,
+              "message": "all scores in valid range"
+            },
+            {
+              "name": "eval_overall_score",
+              "passed": true,
+              "message": "overall score 3.60"
+            },
+            {
+              "name": "eval_feedback_present",
+              "passed": true,
+              "message": "feedback present"
+            }
+          ],
+          "error": null
+        },
+        {
+          "question_id": "902",
+          "passed": true,
+          "overall_score": 3.6,
+          "criteria_scores": {
+            "factuality": 4,
+            "relevance": 4,
+            "groundedness": 3,
+            "helpfulness": 4,
+            "depth": 3
+          },
+          "feedback_preview": "Good answer with accurate mission details.",
+          "has_anomaly": false,
+          "checks": [
+            {
+              "name": "eval_required_criteria",
+              "passed": true,
+              "message": "all required criteria present"
+            },
+            {
+              "name": "eval_score_range",
+              "passed": true,
+              "message": "all scores in valid range"
+            },
+            {
+              "name": "eval_overall_score",
+              "passed": true,
+              "message": "overall score 3.60"
+            },
+            {
+              "name": "eval_feedback_present",
+              "passed": true,
+              "message": "feedback present"
+            }
+          ],
+          "error": null
+        }
+      ]
+    },
+    "perfect_scores": {
+      "passed": 1,
+      "failed": 0,
+      "evaluations": [
+        {
+          "question_id": "901",
+          "passed": true,
+          "overall_score": 5.0,
+          "criteria_scores": {
+            "factuality": 5,
+            "relevance": 5,
+            "groundedness": 5,
+            "helpfulness": 5,
+            "depth": 5
+          },
+          "feedback_preview": "Perfect score achieved across all criteria.",
+          "has_anomaly": false,
+          "checks": [
+            {
+              "name": "eval_required_criteria",
+              "passed": true,
+              "message": "all required criteria present"
+            },
+            {
+              "name": "eval_score_range",
+              "passed": true,
+              "message": "all scores in valid range"
+            },
+            {
+              "name": "eval_overall_score",
+              "passed": true,
+              "message": "overall score 5.00"
+            },
+            {
+              "name": "eval_feedback_present",
+              "passed": true,
+              "message": "feedback present"
+            },
+            {
+              "name": "perfect_overall",
+              "passed": true,
+              "message": "overall=5.00, expected 5.0"
+            }
+          ],
+          "error": null
+        }
+      ]
+    },
+    "failure_placeholders": {
+      "passed": 1,
+      "failed": 0,
+      "evaluations": [
+        {
+          "question_id": "901",
+          "passed": true,
+          "overall_score": -1,
+          "criteria_scores": {
+            "factuality": -1,
+            "relevance": -1,
+            "groundedness": -1,
+            "helpfulness": -1,
+            "depth": -1
+          },
+          "feedback_preview": "Evaluation failed - Failed after 2 attempts - API connection error (mock). PENDING EVALUATION (-1).",
+          "has_anomaly": false,
+          "checks": [
+            {
+              "name": "placeholder_overall",
+              "passed": true,
+              "message": "overall=-1, expected -1"
+            },
+            {
+              "name": "placeholder_factuality",
+              "passed": true,
+              "message": "factuality=-1, expected -1"
+            },
+            {
+              "name": "placeholder_relevance",
+              "passed": true,
+              "message": "relevance=-1, expected -1"
+            },
+            {
+              "name": "placeholder_groundedness",
+              "passed": true,
+              "message": "groundedness=-1, expected -1"
+            },
+            {
+              "name": "placeholder_helpfulness",
+              "passed": true,
+              "message": "helpfulness=-1, expected -1"
+            },
+            {
+              "name": "placeholder_depth",
+              "passed": true,
+              "message": "depth=-1, expected -1"
+            }
+          ],
+          "error": null
+        }
+      ]
+    },
+    "anomaly_detection_uniform": {
+      "passed": 1,
+      "failed": 0,
+      "evaluations": [
+        {
+          "question_id": "901",
+          "passed": true,
+          "overall_score": 3.0,
+          "criteria_scores": {
+            "factuality": 3,
+            "relevance": 3,
+            "groundedness": 3,
+            "helpfulness": 3,
+            "depth": 3
+          },
+          "feedback_preview": "All scores are identical. [ANOMALY: Unusually uniform scores (std_dev: 0.00), may indicate lack of discrimination]",
+          "has_anomaly": true,
+          "checks": [
+            {
+              "name": "eval_required_criteria",
+              "passed": true,
+              "message": "all required criteria present"
+            },
+            {
+              "name": "eval_score_range",
+              "passed": true,
+              "message": "all scores in valid range"
+            },
+            {
+              "name": "eval_overall_score",
+              "passed": true,
+              "message": "overall score 3.00"
+            },
+            {
+              "name": "eval_feedback_present",
+              "passed": true,
+              "message": "feedback present"
+            },
+            {
+              "name": "anomaly_flagged",
+              "passed": true,
+              "message": "anomaly detected as expected"
+            }
+          ],
+          "error": null
+        }
+      ]
+    },
+    "empty_answer": {
+      "passed": 1,
+      "failed": 0,
+      "evaluations": [
+        {
+          "question_id": "901",
+          "passed": true,
+          "overall_score": 1.0,
+          "criteria_scores": {
+            "factuality": 1,
+            "relevance": 1,
+            "groundedness": 1,
+            "helpfulness": 1,
+            "depth": 1
+          },
+          "feedback_preview": "The answer is empty. [ANOMALY: Unusually uniform scores (std_dev: 0.00), may indicate lack of discrimination]",
+          "has_anomaly": true,
+          "checks": [
+            {
+              "name": "eval_required_criteria",
+              "passed": true,
+              "message": "all required criteria present"
+            },
+            {
+              "name": "eval_score_range",
+              "passed": true,
+              "message": "all scores in valid range"
+            },
+            {
+              "name": "eval_overall_score",
+              "passed": true,
+              "message": "overall score 1.00"
+            },
+            {
+              "name": "eval_feedback_present",
+              "passed": true,
+              "message": "feedback present"
+            }
+          ],
+          "error": null
+        }
+      ]
+    }
+  }
+}

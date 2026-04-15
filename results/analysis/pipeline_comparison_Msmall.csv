@@ -1,0 +1,9 @@
+# Pipeline Performance Comparison
+# Comprehensive analysis of all 4 pipelines evaluated on the same questions
+# Generated: 2025-02-09
+
+Pipeline,Overall Score,Factuality,Relevance,Groundedness,Helpfulness,Depth,Question Count
+"1_pass_with_ontology",4.903,4.90,4.90,4.80,4.90,4.90,70
+"1_pass_without_ontology",4.917,4.92,4.92,4.80,4.92,4.92,70
+"zero_shot",4.914,4.91,4.91,4.80,4.91,4.91,70
+"dlr_2step",4.934,4.93,4.93,5.00,4.90,4.90,70

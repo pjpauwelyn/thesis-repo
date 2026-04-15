@@ -1,0 +1,67 @@
+[
+  {
+    "criteria": "Factuality",
+    "desc": "Are the scientific claims in the answer correct and verifiable, avoiding hallucinations?",
+    "attr_description": "A score from 1 (low) to 5 (high) if the answer is scientifically correct and faithful to known knowledge.",
+    "scores": {
+      "1": "Mostly incorrect or fabricated scientific information.",
+      "2": "Multiple factual errors; unreliable overall.",
+      "3": "Mostly correct but contains minor factual inaccuracies.",
+      "4": "Correct overall with small imprecisions.",
+      "5": "Fully correct, scientifically sound, and verifiable."
+    },
+    "citation": "Honovich et al. (2022) - True or False? Faithful Summarization with Attribution"
+  },
+  {
+    "criteria": "Relevance",
+    "desc": "Does the answer stay within the scientific domain and address the question?",
+    "attr_description": "A score from 1 (low) to 5 (high) if the answer is relevant to the question and domain.",
+    "scores": {
+      "1": "Irrelevant or off-topic.",
+      "2": "Partially relevant; answer drifts away from domain focus.",
+      "3": "Addresses the topic but includes irrelevant details or omits important parts.",
+      "4": "Relevant with only minor tangential content.",
+      "5": "Fully relevant and addresses all aspects of the question."
+    },
+    "citation": "Santos et al. (2024) - Measuring Coverage and Completeness in Open-Domain QA"
+  },
+  {
+    "criteria": "Groundedness",
+    "desc": "Are claims supported by provided context or your known sources, avoiding unsupported assertions?",
+    "attr_description": "A score from 1 (low) to 5 (high) if the answer uses provided context or reliable sources appropriately.",
+    "scores": {
+      "1": "Entirely unsupported; ignores context.",
+      "2": "Minimal use of provided evidence.",
+      "3": "Uses context but contains unsupported claims.",
+      "4": "Mostly grounded; few unsupported statements.",
+      "5": "Fully grounded; all key claims traceable to sources."
+    },
+    "citation": "Liu et al. (2024) - Evaluation of Retrieval-Augmented Generation Systems"
+  },
+  {
+    "criteria": "Helpfulness",
+    "desc": "Is the answer actionable and useful for scientific purposes (e.g., dataset identification, methodological guidance)?",
+    "attr_description": "A score from 1 (low) to 5 (high) if the answer is actionable and useful for scientific tasks.",
+    "scores": {
+      "1": "Not useful or misleading.",
+      "2": "Slightly useful; lacks actionable insights.",
+      "3": "Useful but limited in scope or detail.",
+      "4": "Useful and mostly actionable.",
+      "5": "Highly useful, actionable, and tailored to scientific needs."
+    },
+    "citation": "Zheng et al. (2023) - Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena"
+  },
+  {
+    "criteria": "Depth",
+    "desc": "Does the answer provide sufficient detail and coverage for scientific understanding?",
+    "attr_description": "A score from 1 (low) to 5 (high) if the answer provides sufficient detail and covers all relevant aspects.",
+    "scores": {
+      "1": "Very shallow, superficial.",
+      "2": "Minimal detail, missing key aspects.",
+      "3": "Moderate depth but lacks some important information.",
+      "4": "Detailed and covers most aspects.",
+      "5": "Comprehensive and highly detailed."
+    },
+    "citation": "Maynez et al. (2020) - On Faithfulness and Factuality in Abstractive Summarization"
+  }
+]

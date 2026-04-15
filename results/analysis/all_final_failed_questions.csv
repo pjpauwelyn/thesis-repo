@@ -1,0 +1,87 @@
+question_id,question,context
+1,How can variations in sensor characteristics influence the accuracy and resolution of data acquired through radar and LIDAR technologies in remote sensing applications?,
+2,How do the accuracy and resolution of LIDAR-based measurements compare to radar-based measurements for detecting and mapping surface features?,
+3,What is LIDAR and how does it measure the properties of distant targets?,
+4,How does the wavelength of light influence the accuracy of distance measurements in LIDAR systems?,
+5,What is the relationship between LIDAR sensor characteristics and the accuracy of range measurements in dense forest environments?,
+6,How do variations in groundwater chemistry influence the quality of surface water systems during seasonal hydrological cycles?,
+7,How do the chemical characteristics of groundwater compare to those of surface water in regions influenced by glacial melt?,
+8,What is the role of groundwater in the terrestrial hydrosphere?,
+9,How does groundwater contamination influence the chemical characteristics of nearby surface water systems?,
+10,What is the relationship between groundwater chemical composition and the melting rate of nearby glaciers or ice sheets?,
+11,How do variations in ocean circulation patterns influence the spatial distribution of key chemical constituents in seawater over time?,
+13,What is ocean circulation and how does it influence the movement of water in the marine environment?,"Here is the refined context based on your inputs. Replace the placeholders `{query}`, `{ontology}`, and `{aql_results}` with the actual content before generating the final output.
+
+---
+
+[ONTOLOGY SUMMARY]
+Critical attributes found:
+- {attribute_name}: {value} ({units}, {region}, {time}, {method})
+- ...
+
+Supporting attributes found:
+- {attribute_name}: {value}
+- ...
+
+[TOPICS AND INFORMATION]
+# {Topic name 1}
+Findings: {1–2 key findings}.
+Evidence: {Short citation}.
+Scope: Geographic: {region or ""global""} | Temporal: {years}.
+Confidence: {0–1} ({reason}).
+Limitations: {1–2 caveats}.
+Use: {Instruction for answer model}.
+
+# {Topic name 2}
+Findings: {1–2 key findings}.
+Evidence: {Short citation}.
+Scope: Geographic: {region or ""global""} | Temporal: {years}.
+Confidence: {0–1} ({reason}).
+Limitations: {1–2 caveats}.
+Use: {Instruction for answer model}.
+
+# {Topic name 3}
+Findings: {1–2 key findings}.
+Evidence: {Short citation}.
+Scope: Geographic: {region or ""global""} | Temporal: {years}.
+Confidence: {0–1} ({reason}).
+Limitations: {1–2 caveats}.
+Use: {Instruction for answer model}.
+
+[VALIDATED REFERENCES]
+1. [{Citation string}] (relevance: {0–1})
+   Scope: Geographic: {region or ""global""} | Temporal: {years}
+   Key contribution: {1 sentence}.
+   Limitations: {1 sentence}.
+   Use: {1 sentence}.
+
+2. [{Citation string}] (relevance: {0–1})
+   Scope: Geographic: {region or ""global""} | Temporal: {years}
+   Key contribution: {1 sentence}.
+   Limitations: {1 sentence}.
+   Use: {1 sentence}.
+
+[EVIDENCE ONLY – INCOMPLETE REFERENCES]
+1. {short description or title}
+   Missing: {year/author/source}
+   Use only for qualitative context; do NOT cite numerically.
+
+[CAVEATS & GAPS]
+Ontology coverage:
+- Addressed: {list key ontology attributes well covered}.
+- Missing or weak: {attributes not covered or poorly supported}.
+
+Data coverage:
+- Geographic: Covered: {regions} | Gaps: {regions}.
+- Temporal: Covered: {periods} | Gaps: {periods}.
+
+Key limitations:
+- {1–3 bullets with the most important limitations}.
+
+Generation guidance:
+- Emphasise: {2–3 concepts or metrics best supported and most relevant}.
+- Caveat: {1–2 concepts that must always be qualified}.
+- Frame answer as: {1 sentence high-level framing suggestion}.
+
+---"
+14,How does ocean circulation influence the distribution of chemical constituents in seawater?,
