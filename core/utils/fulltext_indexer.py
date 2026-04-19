@@ -53,9 +53,31 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CACHE_DIR = Path(os.getenv("FULLTEXT_CACHE_DIR", "cache/fulltext"))
 DEFAULT_MAILTO = os.getenv("FULLTEXT_MAILTO", "pjpauwelyn@gmail.com")
-USER_AGENT = f"thesis-rag-fulltext/1.0 (mailto:{DEFAULT_MAILTO})"
+
+# browser-like UA: many publishers (Wiley, OUP, IOP, Nature) 403 non-browser
+# requests. polite pool for OpenAlex/Unpaywall uses mailto param instead.
+BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+API_UA = f"thesis-rag-fulltext/1.0 (mailto:{DEFAULT_MAILTO})"
 
 OPENALEX_WORKS = "https://api.openalex.org/works/"
+UNPAYWALL_BASE = "https://api.unpaywall.org/v2/"
+
+# publisher-specific hints: fetch the landing page with these to make them
+# serve the PDF redirect more reliably
+_PDF_ACCEPT = "application/pdf,text/html;q=0.9,*/*;q=0.1"
+
+_CITATION_PDF_META_RE = re.compile(
+    r'<meta\s+[^>]*name="citation_pdf_url"[^>]*content="([^"]+)"',
+    re.IGNORECASE,
+)
+_CITATION_PDF_FULLTEXT_RE = re.compile(
+    r'<meta\s+[^>]*name="citation_pdf_fulltext_url"[^>]*content="([^"]+)"',
+    re.IGNORECASE,
+)
 
 # section priorities (multiplicative boost on chunk score)
 _SECTION_BOOSTS: Dict[str, float] = {
@@ -172,8 +194,16 @@ class FullTextIndexer:
         for d in (self.meta_dir, self.pdf_dir, self.text_dir):
             d.mkdir(parents=True, exist_ok=True)
 
+        # session used for API calls (OpenAlex, Unpaywall) — polite UA
+        self.api_session = requests.Session()
+        self.api_session.headers.update({"User-Agent": API_UA})
+        # session used for PDF/HTML fetches — browser UA to avoid 403s
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": USER_AGENT})
+        self.session.headers.update({
+            "User-Agent": BROWSER_UA,
+            "Accept": _PDF_ACCEPT,
+            "Accept-Language": "en-US,en;q=0.9",
+        })
 
     # ------------------------------------------------------------------
     # metadata
@@ -191,7 +221,7 @@ class FullTextIndexer:
         url = f"{OPENALEX_WORKS}{work_id}?mailto={self.mailto}"
         for attempt in range(3):
             try:
-                resp = self.session.get(url, timeout=self.request_timeout)
+                resp = self.api_session.get(url, timeout=self.request_timeout)
                 if resp.status_code == 404:
                     return None
                 resp.raise_for_status()
@@ -205,6 +235,7 @@ class FullTextIndexer:
                     "open_access": data.get("open_access") or {},
                     "best_oa_location": data.get("best_oa_location") or {},
                     "primary_location": data.get("primary_location") or {},
+                    "locations": data.get("locations") or [],
                     "has_fulltext": data.get("has_fulltext", False),
                 }
                 cache_path.write_text(json.dumps(trimmed), encoding="utf-8")
@@ -217,47 +248,108 @@ class FullTextIndexer:
         return None
 
     @staticmethod
-    def _best_pdf_url(meta: Dict[str, Any]) -> Optional[str]:
-        candidates = []
-        oa = meta.get("open_access") or {}
-        if oa.get("oa_url"):
-            candidates.append(oa["oa_url"])
+    def _candidate_pdf_urls(meta: Dict[str, Any]) -> List[str]:
+        """return an ordered list of candidate URLs (PDFs first, then landing
+        pages). tries every location OpenAlex exposes, not just the first."""
+        candidates: List[str] = []
+        # best_oa / primary first
         for key in ("best_oa_location", "primary_location"):
             loc = meta.get(key) or {}
             if loc.get("pdf_url"):
                 candidates.append(loc["pdf_url"])
-            if loc.get("landing_page_url") and "pdf" in (loc.get("landing_page_url") or "").lower():
+            if loc.get("landing_page_url"):
                 candidates.append(loc["landing_page_url"])
-        # prefer pdf_url entries first
-        pdfs = [c for c in candidates if c.lower().endswith(".pdf")]
-        return pdfs[0] if pdfs else (candidates[0] if candidates else None)
+        # then every other location (preprints, institutional repos)
+        for loc in (meta.get("locations") or []):
+            if not isinstance(loc, dict):
+                continue
+            if loc.get("pdf_url"):
+                candidates.append(loc["pdf_url"])
+            if loc.get("landing_page_url"):
+                candidates.append(loc["landing_page_url"])
+        # the top-level oa_url (often matches best_oa)
+        oa = meta.get("open_access") or {}
+        if oa.get("oa_url"):
+            candidates.append(oa["oa_url"])
+
+        # de-dup keeping order, PDFs prioritised
+        seen = set()
+        pdfs = [c for c in candidates if c.lower().endswith(".pdf") and not (c in seen or seen.add(c))]
+        pages = [c for c in candidates if not c.lower().endswith(".pdf") and not (c in seen or seen.add(c))]
+        return pdfs + pages
+
+    def _unpaywall_pdf_url(self, doi: Optional[str]) -> Optional[str]:
+        if not doi:
+            return None
+        # normalise to bare DOI
+        doi_clean = doi.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+        if not doi_clean:
+            return None
+        url = f"{UNPAYWALL_BASE}{doi_clean}?email={self.mailto}"
+        try:
+            resp = self.api_session.get(url, timeout=self.request_timeout)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+        except Exception:
+            return None
+        # prefer best_oa_location, then oa_locations
+        best = data.get("best_oa_location") or {}
+        if best.get("url_for_pdf"):
+            return best["url_for_pdf"]
+        for loc in (data.get("oa_locations") or []):
+            if isinstance(loc, dict) and loc.get("url_for_pdf"):
+                return loc["url_for_pdf"]
+        return None
+
+    def _resolve_pdf_from_html(self, html_text: str, base_url: str) -> Optional[str]:
+        """parse <meta name='citation_pdf_url'> or ...fulltext_url from HTML."""
+        if not html_text:
+            return None
+        for rx in (_CITATION_PDF_META_RE, _CITATION_PDF_FULLTEXT_RE):
+            m = rx.search(html_text)
+            if m:
+                url = m.group(1).strip()
+                if url.startswith("//"):
+                    url = "https:" + url
+                elif url.startswith("/") and "://" in base_url:
+                    root = "/".join(base_url.split("/")[:3])
+                    url = root + url
+                return url
+        return None
 
     # ------------------------------------------------------------------
     # pdf download
     # ------------------------------------------------------------------
 
-    def download_pdf(self, work_id: str, pdf_url: str) -> Optional[Path]:
-        cache_path = self.pdf_dir / f"{work_id}.pdf"
-        fail_marker = self.pdf_dir / f"{work_id}.fail"
-        if cache_path.exists() and cache_path.stat().st_size > 0:
-            return cache_path
-        if fail_marker.exists():
-            return None
-        if not pdf_url:
-            fail_marker.write_text("no_url")
-            return None
+    def _try_fetch_pdf(self, url: str, cache_path: Path) -> Tuple[bool, str]:
+        """attempt to fetch ONE candidate URL. returns (success, reason).
 
+        if the response is HTML, parses <meta citation_pdf_url> and recurses
+        ONCE. keeps no fail marker here; caller decides."""
         try:
             with self.session.get(
-                pdf_url, timeout=self.request_timeout, stream=True, allow_redirects=True
+                url, timeout=self.request_timeout, stream=True, allow_redirects=True
             ) as resp:
                 if resp.status_code >= 400:
-                    fail_marker.write_text(f"http_{resp.status_code}")
-                    return None
+                    return False, f"http_{resp.status_code}"
                 ctype = (resp.headers.get("content-type") or "").lower()
-                if "pdf" not in ctype and not pdf_url.lower().endswith(".pdf"):
-                    fail_marker.write_text(f"not_pdf:{ctype}")
-                    return None
+                final_url = resp.url or url
+                # HTML: try to resolve to a real PDF URL
+                if "pdf" not in ctype and not final_url.lower().endswith(".pdf"):
+                    # only look at first ~500KB of HTML
+                    if "text/html" in ctype or "xml" in ctype:
+                        body = resp.raw.read(512 * 1024, decode_content=True) or b""
+                        try:
+                            html_text = body.decode("utf-8", errors="ignore")
+                        except Exception:
+                            html_text = ""
+                        resolved = self._resolve_pdf_from_html(html_text, final_url)
+                        if resolved and resolved != url:
+                            # one-level recursion with fresh request
+                            return self._try_fetch_pdf(resolved, cache_path)
+                    return False, f"not_pdf:{ctype[:30]}"
+                # stream the PDF
                 total = 0
                 tmp = cache_path.with_suffix(".pdf.part")
                 with open(tmp, "wb") as out:
@@ -268,14 +360,44 @@ class FullTextIndexer:
                         if total > self.max_pdf_bytes:
                             out.close()
                             tmp.unlink(missing_ok=True)
-                            fail_marker.write_text("too_large")
-                            return None
+                            return False, "too_large"
                         out.write(chunk)
                 tmp.rename(cache_path)
-            return cache_path
+                return True, "ok"
         except Exception as exc:
-            fail_marker.write_text(f"exc:{type(exc).__name__}")
-            return None
+            return False, f"exc:{type(exc).__name__}"
+
+    def download_pdf(
+        self, work_id: str, candidates: List[str], doi: Optional[str] = None
+    ) -> Tuple[Optional[Path], str]:
+        """try every candidate URL; on full failure, ask Unpaywall.
+        returns (pdf_path or None, status string)."""
+        cache_path = self.pdf_dir / f"{work_id}.pdf"
+        fail_marker = self.pdf_dir / f"{work_id}.fail"
+        if cache_path.exists() and cache_path.stat().st_size > 0:
+            return cache_path, "ok"
+        if fail_marker.exists():
+            return None, "already_failed"
+
+        reasons: List[str] = []
+        for url in candidates:
+            if not url:
+                continue
+            ok, why = self._try_fetch_pdf(url, cache_path)
+            if ok:
+                return cache_path, "ok"
+            reasons.append(f"{url[:60]}->{why}")
+
+        # Unpaywall fallback
+        unpaywall_url = self._unpaywall_pdf_url(doi)
+        if unpaywall_url and unpaywall_url not in candidates:
+            ok, why = self._try_fetch_pdf(unpaywall_url, cache_path)
+            if ok:
+                return cache_path, "ok_unpaywall"
+            reasons.append(f"unpaywall:{why}")
+
+        fail_marker.write_text(" | ".join(reasons)[:400] or "no_candidates")
+        return None, "pdf_download_failed"
 
     # ------------------------------------------------------------------
     # text extraction (pymupdf)
@@ -524,19 +646,22 @@ class FullTextIndexer:
             info["status"] = "meta_failed"
             return [], info
 
-        pdf_url = self._best_pdf_url(meta)
-        info["pdf_url"] = pdf_url
-        if not pdf_url:
+        candidates = self._candidate_pdf_urls(meta)
+        info["n_candidates"] = len(candidates)
+        if not candidates and not meta.get("doi"):
             info["status"] = "no_oa_pdf"
             return [], info
 
-        pdf_path = self.download_pdf(work_id, pdf_url)
+        pdf_path, dl_status = self.download_pdf(
+            work_id, candidates, doi=meta.get("doi")
+        )
+        info["download_status"] = dl_status
         if not pdf_path:
-            info["status"] = "pdf_download_failed"
+            info["status"] = dl_status
             return [], info
 
         doc = self.extract_text(work_id, pdf_path)
-        doc.source_pdf_url = pdf_url
+        doc.source_pdf_url = candidates[0] if candidates else ""
         if not doc.extraction_ok:
             info["status"] = f"extract_failed:{doc.error or 'no_text'}"
             return [], info
@@ -694,6 +819,8 @@ class FullTextIndexer:
             "meta_ok": 0, "pdf_ok": 0, "extract_ok": 0,
             "status_counts": {},
         }
+        running_ok = 0
+        running_fail = 0
         for i, uri in enumerate(unique_uris, 1):
             _, info = self.get_chunks_for_uri(uri)
             s = info.get("status", "unknown")
@@ -702,12 +829,19 @@ class FullTextIndexer:
                 stats["meta_ok"] += 1
                 stats["pdf_ok"] += 1
                 stats["extract_ok"] += 1
-            elif s in ("no_oa_pdf", "pdf_download_failed", "extract_failed"):
-                stats["meta_ok"] += 1
-                if s != "no_oa_pdf":
+                running_ok += 1
+            else:
+                running_fail += 1
+                if s != "meta_failed" and s != "not_openalex":
+                    stats["meta_ok"] += 1
+                if s in ("extract_failed",) or s.startswith("extract_failed"):
                     stats["pdf_ok"] += 1
-            if i % 25 == 0:
-                print(f"  [{i}/{len(unique_uris)}] status={s}")
+            if i % 25 == 0 or i == len(unique_uris):
+                total = i
+                print(
+                    f"  [{i}/{len(unique_uris)}] ok={running_ok} "
+                    f"fail={running_fail} ({100*running_ok/total:.0f}% success)"
+                )
         return stats
 
 
@@ -724,6 +858,8 @@ def _cli():
     pb.add_argument("--limit", type=int, default=None, help="cap number of docs (for smoke test)")
     pb.add_argument("--cache-dir", default=str(DEFAULT_CACHE_DIR))
     pb.add_argument("--mailto", default=DEFAULT_MAILTO)
+    pb.add_argument("--retry-failed", action="store_true",
+                    help="delete .fail markers before running so previous failures are retried")
 
     st = sub.add_parser("status", help="print cache stats")
     st.add_argument("--cache-dir", default=str(DEFAULT_CACHE_DIR))
@@ -733,6 +869,11 @@ def _cli():
 
     if args.cmd == "prebuild":
         fti = FullTextIndexer(cache_dir=Path(args.cache_dir), mailto=args.mailto)
+        if getattr(args, "retry_failed", False):
+            fails = list((fti.pdf_dir).glob("*.fail"))
+            for fp in fails:
+                fp.unlink(missing_ok=True)
+            print(f"cleared {len(fails)} .fail markers — will retry those docs")
         stats = fti.prebuild_from_csv(args.input, limit_docs=args.limit)
         print("\n=== prebuild complete ===")
         print(json.dumps(stats, indent=2))
