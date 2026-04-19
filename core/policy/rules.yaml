@@ -20,8 +20,6 @@
 rules:
 
   # tier-1: simple conceptual -- small + abstracts + direct prompt
-  # protects directness (set2 mean 7.93) on definition / application questions
-  # by stripping mechanism / uncertainty / implications sections.
   - name: simple_conceptual
     when:
       complexity: {lt: 0.35}
@@ -37,11 +35,6 @@ rules:
       reason: "simple conceptual -- abstracts + direct prompt"
 
   # tier-2a: quantitative global -- small + narrow excerpts
-  # closes the quant_precision gap (set2 mean 5.93, std 1.53). exp3 showed
-  # full-text adds +0.90 here. NOT spatially or temporally focal -- that
-  # is tier-2b. high quant alone is sufficient (>=0.55).
-  # guard: complexity < 0.6 so high-complexity mechanism questions fall
-  # through to tier-3 instead of being claimed here first.
   - name: quantitative_global
     when:
       quantitativity: {ge: 0.55}
@@ -62,10 +55,6 @@ rules:
       reason: "quantitative global -- narrow excerpts, homogeneous synthesis"
 
   # tier-2b: quantitative focal -- small + narrow excerpts + scope filter
-  # adds focused synthesis to prevent the -0.59 scope_awareness regression
-  # observed when full-text excerpts pull in off-region findings.
-  # guard: complexity < 0.6 mirrors tier-2a so focal high-complexity
-  # questions also fall through to tier-3.
   - name: quantitative_focal
     when:
       quantitativity: {ge: 0.55}
@@ -87,12 +76,10 @@ rules:
       reason: "quantitative focal -- narrow excerpts + scope filter, focused synthesis"
 
   # tier-3: complex mechanism / method-eval / comparison -- large + full excerpts
-  # large model is only used here, capping cost at ~15-20% of the run.
-  # comparison is included because cross-study comparisons are exactly where
-  # set2 scope_awareness drops the most.
+  # threshold raised to 0.70 (was 0.60): borderline questions now fall to tier-m.
   - name: complex_mechanism
     when:
-      complexity: {ge: 0.6}
+      complexity: {ge: 0.70}
       question_type: {in: [mechanism, method_eval, comparison]}
     config:
       model_name: mistral-large-latest
@@ -108,12 +95,11 @@ rules:
       reason: "complex mechanism / comparison -- large model + full excerpts"
 
   # tier-m: mid-complexity bridge -- small + narrow excerpts
-  # fills the 0.35..0.60 dead zone so moderately complex questions don't
-  # fall through to abstracts.
+  # upper bound raised from 0.60 to 0.70 to absorb questions freed by tier-3.
   - name: complexity_medium
     when:
       complexity: {ge: 0.35}
-      complexity_lt: {le: 0.6}
+      complexity_lt: {le: 0.70}
     config:
       model_name: mistral-small-latest
       evidence_mode: excerpts_narrow
@@ -128,7 +114,6 @@ rules:
       reason: "medium complexity -- narrow excerpts bridge tier"
 
   # fallback: identical to set2 (ontology-enhanced rag).
-  # adaptive pipeline can never score below the current champion.
   - name: fallback
     when:
       always: true
