@@ -40,9 +40,12 @@ rules:
   # closes the quant_precision gap (set2 mean 5.93, std 1.53). exp3 showed
   # full-text adds +0.90 here. NOT spatially or temporally focal -- that
   # is tier-2b. high quant alone is sufficient (>=0.55).
+  # guard: complexity < 0.6 so high-complexity mechanism questions fall
+  # through to tier-3 instead of being claimed here first.
   - name: quantitative_global
     when:
       quantitativity: {ge: 0.55}
+      complexity: {lt: 0.6}
       spatial_specificity: {lt: 0.5}
       temporal_specificity: {lt: 0.5}
     config:
@@ -61,9 +64,12 @@ rules:
   # tier-2b: quantitative focal -- small + narrow excerpts + scope filter
   # adds focused synthesis to prevent the -0.59 scope_awareness regression
   # observed when full-text excerpts pull in off-region findings.
+  # guard: complexity < 0.6 mirrors tier-2a so focal high-complexity
+  # questions also fall through to tier-3.
   - name: quantitative_focal
     when:
       quantitativity: {ge: 0.55}
+      complexity: {lt: 0.6}
       any:
         spatial_specificity: {ge: 0.5}
         temporal_specificity: {ge: 0.5}
