@@ -44,8 +44,35 @@ class MistralLLMWrapper:
         # Retry with exponential backoff on rate-limit / transient errors.
         # Max ~5 min of total backoff: 2, 4, 8, 16, 32, 60, 60, 60 seconds.
         max_attempts = 8
+        # Streaming avoids edge-level idle-connection kills that manifest as
+        # "Server disconnected without sending a response" on slow generations
+        # (large model, heavy prompts). Same tokens, same deterministic output
+        # at temperature=0 / low temperatures; equivalent to non-streaming.
+        use_stream = os.getenv("MISTRAL_STREAM", "1") not in ("0", "false", "False", "")
         for attempt in range(max_attempts):
             try:
+                if use_stream:
+                    parts: list = []
+                    stream = self.client.chat.stream(
+                        model=self.model,
+                        messages=messages,
+                        temperature=self.temperature,
+                        max_tokens=8000,
+                    )
+                    for ev in stream:
+                        # mistralai v1: each event has .data.choices[0].delta.content
+                        data = getattr(ev, "data", ev)
+                        choices = getattr(data, "choices", None) or []
+                        if not choices:
+                            continue
+                        delta = getattr(choices[0], "delta", None)
+                        chunk = getattr(delta, "content", None) if delta is not None else None
+                        if chunk:
+                            parts.append(chunk)
+                    content = "".join(parts)
+                    if not content:
+                        raise RuntimeError("empty stream response")
+                    return self._parse_output(content, force_json=force_json)
                 response = self.client.chat.complete(
                     model=self.model,
                     messages=messages,
