@@ -127,7 +127,15 @@ def get_llm_model(
     api_key = os.getenv("MISTRAL_API_KEY")
     if not api_key:
         raise ValueError("MISTRAL_API_KEY not found in .env")
-    client = Mistral(api_key=api_key)
+    # Large model on 40k+ token prompts can take > 60s (default) to start streaming.
+    # Use 5-minute timeout so we don't see spurious "Server disconnected" errors.
+    # Allow override via env var for local debugging.
+    timeout_ms = int(os.getenv("MISTRAL_TIMEOUT_MS", "300000"))
+    try:
+        client = Mistral(api_key=api_key, timeout_ms=timeout_ms)
+    except TypeError:
+        # older SDK versions don't support timeout_ms kwarg
+        client = Mistral(api_key=api_key)
     return MistralLLMWrapper(client, model=model, temperature=temperature)
 
 
