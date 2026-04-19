@@ -10,6 +10,8 @@
 !prompts/**
 !manual_analysis/
 !manual_analysis/**
+!evaluation/
+!evaluation/**
 
 # Always include root config files
 !.gitignore

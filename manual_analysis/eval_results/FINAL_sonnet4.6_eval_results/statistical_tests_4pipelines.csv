@@ -1,0 +1,7 @@
+comparison,pipeline_a,pipeline_b,mean_a,mean_b,diff,W,p_value,effect_r,sig
+Zero-Shot vs DLR 2-Step,Zero-Shot,DLR 2-Step RAG,6.28,5.51,-0.77,20,0.000000,0.984,***
+Zero-Shot vs No-Ontology,Zero-Shot,No-Ontology RAG,6.28,6.88,0.6,276,0.000000,0.778,***
+Zero-Shot vs Ontology,Zero-Shot,Ontology-Enhanced RAG,6.28,7.48,1.2,26,0.000000,0.979,***
+DLR 2-Step vs No-Ontology,DLR 2-Step RAG,No-Ontology RAG,5.51,6.88,1.37,54,0.000000,0.957,***
+DLR 2-Step vs Ontology,DLR 2-Step RAG,Ontology-Enhanced RAG,5.51,7.48,1.97,4,0.000000,0.997,***
+No-Ontology vs Ontology,No-Ontology RAG,Ontology-Enhanced RAG,6.88,7.48,0.6,172,0.000000,0.862,***
