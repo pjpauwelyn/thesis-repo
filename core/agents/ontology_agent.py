@@ -8,6 +8,7 @@ from core.utils.data_models import (
     AttributeValuePair,
     DynamicOntology,
     LogicalRelationship,
+    QuestionProfile,
 )
 
 
@@ -63,6 +64,88 @@ class OntologyConstructionAgent(BaseAgent):
         except Exception as e:
             self.logger.error(f"attribute extraction failed: {e}")
             return []
+
+    # ------------------------------------------------------------------
+    # adaptive pipeline (set5) -- fused av-pair + profile extraction
+    # ------------------------------------------------------------------
+
+    def process_with_profile(
+        self, question: str, include_relationships: bool = False
+    ):
+        """superset of process(): fuses av-pair extraction and profile
+        extraction into a single llm call. falls back to process() plus a
+        null-confidence profile on any error -- the null confidence then
+        triggers the safety net in core.policy.router.
+
+        include_relationships defaults to False because the adaptive
+        pipeline routes before refinement, so relationships add latency
+        without informing routing.
+        """
+        template = self.load_prompt("extract_profile.txt")
+        prompt = template.replace("{question}", question)
+
+        try:
+            resp = self.llm.invoke(prompt, force_json=True)
+            if not isinstance(resp, dict):
+                raise ValueError(f"unexpected response type: {type(resp)}")
+
+            av_pairs = [
+                AttributeValuePair(
+                    attribute=p.get("attribute", ""),
+                    value=p.get("value", ""),
+                    description=p.get("description", ""),
+                    centrality=p.get("centrality", 0.5),
+                )
+                for p in resp.get("pairs", [])
+            ]
+            relationships: List[LogicalRelationship] = []
+            if include_relationships:
+                relationships = self._define_logical_relationships(av_pairs, question)
+
+            ontology = DynamicOntology(
+                attribute_value_pairs=av_pairs,
+                logical_relationships=relationships,
+                source_query=question,
+                should_use_ontology=True,
+                include_relationships=include_relationships,
+            )
+
+            raw = resp.get("profile", {}) or {}
+            profile = QuestionProfile(
+                identity=question,
+                one_line_summary=raw.get("one_line_summary", ""),
+                question_type=raw.get("question_type", "continuous"),
+                complexity=float(raw.get("complexity", 0.5)),
+                quantitativity=float(raw.get("quantitativity", 0.3)),
+                spatial_specificity=float(raw.get("spatial_specificity", 0.1)),
+                temporal_specificity=float(raw.get("temporal_specificity", 0.1)),
+                methodological_depth=float(raw.get("methodological_depth", 0.1)),
+                confidence=raw.get("confidence", None),
+            )
+
+            self.logger.info(
+                f"profile: type={profile.question_type} "
+                f"complexity={profile.complexity:.2f} "
+                f"quant={profile.quantitativity:.2f} "
+                f"conf={profile.confidence}"
+            )
+            return ontology, profile
+
+        except Exception as e:
+            self.logger.error(f"process_with_profile failed: {e} -- falling back")
+            ontology = self.process(question, include_relationships)
+            profile = QuestionProfile(
+                identity=question,
+                one_line_summary="",
+                question_type="continuous",
+                complexity=0.5,
+                quantitativity=0.3,
+                spatial_specificity=0.1,
+                temporal_specificity=0.1,
+                methodological_depth=0.1,
+                confidence=None,  # triggers safety-tier3 in router
+            )
+            return ontology, profile
 
     def _define_logical_relationships(
         self, av_pairs: List[AttributeValuePair], question: str

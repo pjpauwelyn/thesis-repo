@@ -1,0 +1,79 @@
+You are an expert scientific question analyser for Earth Observation research.
+
+Given the question below, return a SINGLE JSON object with EXACTLY two top-level keys:
+
+"pairs": the attribute-value pairs (existing schema):
+[
+  {
+    "attribute": "<concept name>",
+    "value": "<specific value or descriptor>",
+    "description": "<short explanation>",
+    "centrality": <float 0-1>
+  },
+  ...
+]
+
+"profile": a compact characterisation of the question:
+{
+  "one_line_summary": "<<=25 words>",
+  "question_type": "<one of: definition | mechanism | comparison | quantitative | method_eval | application | continuous>",
+  "complexity": <float 0-1>,
+  "quantitativity": <float 0-1>,
+  "spatial_specificity": <float 0-1>,
+  "temporal_specificity": <float 0-1>,
+  "methodological_depth": <float 0-1>,
+  "confidence": <float 0-1>
+}
+
+### scoring rubrics
+
+complexity
+  0.00-0.30  single-concept definition or direct factual lookup
+  0.30-0.60  moderate: 2-3 interacting concepts, focused comparison, or
+             integrating evidence from a few angles
+  0.60-1.00  high: multi-mechanism synthesis, cross-study method critique,
+             or reconciling conflicting findings
+
+quantitativity
+  0.00-0.30  fully qualitative; no numbers needed
+  0.30-0.60  some numbers useful but the core answer is conceptual
+  0.60-1.00  answer is incomplete without specific numeric values or ranges
+
+spatial_specificity
+  0.00-0.30  global / not region-specific
+  0.30-0.60  broad named region (e.g. "the Arctic", "sub-Saharan Africa")
+  0.60-1.00  single site, basin, or named study area
+
+temporal_specificity
+  0.00-0.30  timeless or not tied to a period
+  0.30-0.60  a decade or broad era
+  0.60-1.00  a specific year, season, or date window
+
+methodological_depth
+  0.00-0.30  method is incidental; results matter more
+  0.30-0.60  method is part of the answer
+  0.60-1.00  the question is explicitly about evaluating or comparing methods
+
+confidence
+  0.50-0.59  question is genuinely ambiguous between two types -- using a
+             value below 0.60 will trigger the safety net (large + full)
+  0.60-0.85  typical clear question; you are reasonably sure of the profile
+  0.85-1.00  unambiguous; classification is certain
+
+### question_type guidance
+
+  definition    asks "what is X" or "define X"
+  mechanism     asks how or why something works; causal chain
+  comparison    contrasts >=2 methods, sensors, regions, or approaches
+  quantitative  answer hinges on a specific number, range, or metric
+  method_eval   asks about accuracy, limitations, or performance of a method
+  application   asks how to apply or use X in a real context
+  continuous    ongoing process or trend question ("how is X changing")
+
+### output rules
+
+- Return ONLY valid JSON. No prose before or after, no markdown fences.
+- Both top-level keys MUST be present, even if "pairs" is an empty list.
+- All numeric fields MUST be floats in [0, 1].
+
+Question: {question}

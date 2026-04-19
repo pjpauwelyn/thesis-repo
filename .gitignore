@@ -12,6 +12,8 @@
 !manual_analysis/**
 !evaluation/
 !evaluation/**
+!tests/
+!tests/**
 
 # Always include root config files
 !.gitignore
