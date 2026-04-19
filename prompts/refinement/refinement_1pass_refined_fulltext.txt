@@ -12,7 +12,8 @@ INPUT
 
 AQL RESULTS are numbered; scan them from 1 to N and use only the 3–8 most ontology-relevant items for the context.
 When selecting the 3–8 most relevant AQL RESULTS:
-- Prefer items whose title or first 3 sentences explicitly mention the key ONTOLOGY attributes in {ontology} (e.g., main biophysical variables or application domains).
+- Prefer items whose title, abstract, or full-text excerpts explicitly mention the key ONTOLOGY attributes in {ontology} (e.g., main biophysical variables or application domains).
+- Among matches, prefer items that HAVE full-text excerpts (these offer richer evidence than abstracts).
 - If more than 8 items match, choose the 3–8 most recent by publication year.
 - If fewer than 3 items match, use all matching items and state the limited coverage in [CAVEATS & GAPS].
 
@@ -23,17 +24,41 @@ When selecting the 3–8 most relevant AQL RESULTS:
 {fulltext_excerpts}
 ================================================================
 
+EVIDENCE PRECEDENCE (critical — this is the main reason full-text is provided)
+- Treat FULL-TEXT EXCERPTS as the PRIMARY evidence for every quantitative, methodological, and scope claim. The ABSTRACT is background only.
+- If the abstract and an excerpt disagree, or if both mention the same fact at different granularity, ALWAYS use the excerpt. Abstracts often round, omit units, or report headline values without context.
+- Extract from excerpts: numeric values with units, uncertainty (±, CI, p-value, R², RMSE), time windows, study regions, sensor/algorithm names, sample sizes, spatial resolution, statistical methods, ablation settings.
+- Use the abstract ONLY when: (a) no excerpt exists for that document, or (b) you need a one-line topical framing that the excerpts do not provide.
+- For each document, also track whether full-text excerpts are available; this feeds [CAVEATS & GAPS].
+
+EXCERPT-SAFETY RULES
+- Excerpts are CHUNKED; a sentence may be truncated at chunk boundaries. If a sentence ends mid-clause or mid-number, do not reconstruct the missing part — either skip it or flag it as "(excerpt truncated)".
+- Respect the section tag on each excerpt:
+   * Methods / Materials → source of method, instrument, algorithm, resolution, study area, study period.
+   * Results → source of numeric findings, trends, significance, effect sizes. Prefer these for quantitative claims.
+   * Discussion / Conclusions → source of interpretation, caveats, comparison to prior work. Use for framing, not for new numbers.
+   * Introduction / Background → weakest evidence; use only if no other section covers the point.
+   * Abstract / Unknown → treat as secondary; prefer Results/Methods when both exist.
+- Each excerpt is labelled `Doc [N] | Section: S | p. P`. Use these exact identifiers when citing.
+
+CITATION CONVENTION
+- Every quantitative claim MUST carry an evidence tag: `[doc N, Section, p. P]` (e.g., `[doc 3, Results, p. 7]`). If a section is "unknown", write `[doc N, p. P]`.
+- Every non-quantitative claim also carries `[doc N]` (page optional).
+- Short verbatim quotes (≤25 words) are allowed and encouraged for exact numeric statements; wrap them in double quotes and keep units verbatim.
+- Never merge numbers from two documents into a single claim; each value cites exactly one doc.
+- Never extrapolate a numeric finding to a region, period, or variable that the source excerpt does not explicitly cover.
+
 GENERAL RULES
-- Use ONLY information from the ONTOLOGY, AQL_RESULTS, and FULL-TEXT EXCERPTS. Do NOT use any training knowledge.
+- Use ONLY information from the ONTOLOGY, AQL_RESULTS, and FULL-TEXT EXCERPTS. Do NOT use training knowledge.
 - Hallucination guardrail:
-   - Do NOT invent numbers, regions, years, methods, or citations.
+   - Do NOT invent numbers, regions, years, methods, sensors, algorithms, or citations.
+   - Do NOT "round" or "clean up" verbatim numbers from excerpts — copy exactly, including decimal precision and units as written.
    - If something is missing, write "Not available in evidence" instead of leaving a placeholder.
    - Do NOT create new references or modify any reference metadata.
-- QUANTITATIVE PRIORITY: When the FULL-TEXT EXCERPTS contain a specific numeric value, unit, range, statistical significance, or methodological detail relevant to the ontology, PREFER it over any paraphrase from the abstract. Quote the number verbatim and attach its document number (e.g., "NDVI trend = +0.004 yr⁻¹, p<0.01 over 2001–2020 [3]").
-- Be concise but informative. Use bullets, but include key methodological details (sensor, algorithm, resolution) and at least one short explanatory sentence per topic when available.
+- Be concise but informative. Use bullets, but include key methodological details (sensor, algorithm, resolution, period) and at least one short explanatory sentence per topic when available.
 - Always specify scope (region + time) when giving quantitative results.
-- Clearly separate regional vs global findings.
-- For each critical attribute, if the evidence provides methods or drivers (e.g., satellite sensor, retrieval algorithm, forcing factors), append a brief clause describing them.
+- Clearly separate regional vs global findings; never aggregate regional numbers into a global statement.
+- Organise topics by ontology concept, not by document. A single topic may draw on excerpts from several documents.
 
 ================================================================
 OUTPUT FORMAT (plain text, no JSON, no code fences)
@@ -41,22 +66,22 @@ Include EACH of the following sections EXACTLY ONCE and in this ORDER.
 
 [ONTOLOGY SUMMARY]
 Critical attributes found:
-- attribute_name: value (with units, region, time, method if relevant) [doc #]
+- attribute_name: verbatim value with units (region, time window, method/sensor if known) [doc N, Section, p. P]
 - ...
 
 Supporting attributes found:
-- attribute_name: value [doc #]
+- attribute_name: value [doc N]
 - ...
 
 [TOPICS AND INFORMATION]
 # Topic name 1
-Findings: 1–2 key findings for this topic (quantitative and/or qualitative). Quote exact numeric values from FULL-TEXT EXCERPTS when available.
-Evidence: Short citation from AQL (e.g., "Author et al., 2020" or "Report Title, 2019") with document number.
-Mechanisms / methods: Brief description of the measurement approach or main drivers (e.g., "Trend derived from Sentinel‑1 backscatter; changes linked to precipitation anomalies").
+Findings: 1–3 key findings. For every numeric claim, quote the exact value and unit from the excerpt and attach [doc N, Section, p. P]. Prefer Results-section numbers; supplement with Methods for the instrument/algorithm.
+Evidence: Short citation (e.g., "Author et al., 2020") AND the doc index, e.g., "Smith et al., 2020 [doc 3]".
+Mechanisms / methods: Brief description of the measurement approach or main drivers, quoting the relevant Methods-section detail where available (e.g., "Trend derived from Sentinel‑1 backscatter at 10 m; Theil–Sen regression [doc 3, Methods, p. 4]").
 Scope: Geographic: {region or "global"} | Temporal: {years}.
-Confidence: {0–1} with 1 short reason (e.g., "direct measurements", "model-based").
-Limitations: 1–2 specific caveats.
-Use: Short instruction for the answer model.
+Confidence: {0–1} with 1 short reason grounded in the excerpts (e.g., "direct in-situ measurements with n=240 plots [doc 3, Methods, p. 3]").
+Limitations: 1–2 specific caveats drawn from the Discussion/Limitations excerpts when available.
+Use: Short instruction for the answer model (e.g., "Use as primary quantitative trend; note regional coverage gap from [doc 3, Discussion, p. 11]").
 
 Topic name 2 (optional)
 [same fields as above, only if it clearly adds value]
@@ -69,15 +94,15 @@ Topic name 3 (optional)
 {documents}
 
 For each reference above that you choose to include in the final context, provide the following details:
-- Scope: Geographic and temporal scope of the study.
-- Key contribution: Main finding or contribution of the study (prefer numeric values from FULL-TEXT EXCERPTS).
-- Limitations: Key limitations or caveats of the study.
-- Use: How this reference should be used in the answer (e.g., primary trend reference, mechanism reference, etc.).
+- Scope: Geographic and temporal scope of the study (prefer Methods-section wording when available).
+- Key contribution: Main finding or contribution, citing verbatim numeric values from FULL-TEXT EXCERPTS with [Section, p. P]. If only the abstract is available, say "(abstract only)".
+- Limitations: Key limitations or caveats (prefer Discussion/Conclusion excerpts).
+- Use: How this reference should be used in the answer (e.g., primary trend reference, mechanism reference, contrasting method).
 
 REQUIRED OUTPUT FORMAT (copy this exactly):
 1. Author et al. (Year). *Title*. URI.
    Scope: Geographic: Region | Temporal: Period
-   Key contribution: Main finding (with verbatim numbers if available).
+   Key contribution: Main finding with verbatim numbers and [Section, p. P] tags.
    Limitations: Key limitations.
    Use: How to use this reference.
 
@@ -98,13 +123,14 @@ Data coverage:
 Full-text coverage:
 - Documents with PDF excerpts available: {count}/{total}.
 - Documents relying on abstract only: {list doc numbers}.
+- Sections represented in excerpts: {e.g., "Methods, Results for docs 1,3; Discussion only for doc 5"}.
 
 Key limitations:
-- 1–3 bullets with the most important limitations for answering the question.
+- 1–3 bullets with the most important limitations for answering the question, drawn from Discussion/Conclusion excerpts where possible.
 
 Generation guidance:
-- Emphasise: 2–3 concepts or metrics that are best supported and most relevant to the question.
-- Caveat: 1–2 concepts that must always be qualified when mentioned.
+- Emphasise: 2–3 concepts or metrics that are best supported by Results-section excerpts and most relevant to the question.
+- Caveat: 1–2 concepts that must always be qualified when mentioned (e.g., because only abstract evidence or limited regional coverage exists).
 - Frame answer as: 1 sentence high-level framing suggestion for the final answer model.
 
 ================================================================
@@ -113,3 +139,4 @@ ADDITIONAL CONSTRAINTS
 - Prefer specific terms for geographic and temporal references.
 - Organise topics by concept (matching the ontology attributes), not by document.
 - Do not output any evaluation of the user, model, or system; only the context.
+- Do not add a preface, postscript, or meta-commentary about having used full text — just produce the context.
