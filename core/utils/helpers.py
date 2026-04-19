@@ -58,15 +58,28 @@ class MistralLLMWrapper:
                 msg = str(e)
                 status = getattr(e, "status_code", None) or getattr(e, "http_status", None)
                 # Treat 429, 5xx, and connection/timeout errors as retryable.
+                msg_l = msg.lower()
                 retryable = (
                     status == 429
                     or (isinstance(status, int) and 500 <= status < 600)
                     or "429" in msg
-                    or "rate limit" in msg.lower()
-                    or "too many requests" in msg.lower()
-                    or "timeout" in msg.lower()
-                    or "connection" in msg.lower()
-                    or "service unavailable" in msg.lower()
+                    or "rate limit" in msg_l
+                    or "too many requests" in msg_l
+                    or "timeout" in msg_l
+                    or "connection" in msg_l
+                    or "service unavailable" in msg_l
+                    or "disconnected" in msg_l
+                    or "server disconnected" in msg_l
+                    or "remote protocol" in msg_l
+                    or "read error" in msg_l
+                    or "broken pipe" in msg_l
+                    or "reset by peer" in msg_l
+                    or "eof" in msg_l
+                    or "incomplete read" in msg_l
+                    or "bad gateway" in msg_l
+                    or "gateway timeout" in msg_l
+                    or "overloaded" in msg_l
+                    or "capacity" in msg_l
                 )
                 if not retryable or attempt == max_attempts - 1:
                     logging.error(f"llm call failed (attempt {attempt+1}/{max_attempts}): {e}")

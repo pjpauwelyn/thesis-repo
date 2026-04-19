@@ -84,14 +84,39 @@ def _load_questions(input_csv: str, num: Optional[int], indices: Optional[List[i
 
 
 def _write_row(out_path: Path, row: Dict[str, str]) -> None:
-    """incremental writer: append to CSV, creating header if file is new."""
+    """incremental writer: append to CSV, creating header if file is new.
+
+    If a row with the same question_id already exists, it is replaced (the file
+    is rewritten). This keeps the CSV free of duplicate qids when a previously
+    broken row is re-run.
+    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    new_file = not out_path.exists()
-    with open(out_path, "a", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["question_id", "question", "answer"])
-        if new_file:
+    fieldnames = ["question_id", "question", "answer"]
+    new_qid = str(row.get("question_id", "")).strip()
+
+    if out_path.exists():
+        existing: List[Dict[str, str]] = []
+        with open(out_path, "r", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                if str(r.get("question_id", "")).strip() == new_qid:
+                    continue  # drop old version of this qid
+                existing.append({k: r.get(k, "") for k in fieldnames})
+        existing.append({k: row.get(k, "") for k in fieldnames})
+        with open(out_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
             w.writeheader()
-        w.writerow(row)
+            for r in existing:
+                w.writerow(r)
+    else:
+        with open(out_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            w.writerow({k: row.get(k, "") for k in fieldnames})
+
+
+# minimum answer length (chars) to consider a row "done". Anything shorter is
+# treated as a broken/empty-response row and will be re-run.
+_MIN_DONE_ANSWER_CHARS = 200
 
 
 def _load_already_done(out_path: Path) -> Dict[str, str]:
@@ -102,6 +127,9 @@ def _load_already_done(out_path: Path) -> Dict[str, str]:
         for row in csv.DictReader(f):
             qid = row.get("question_id", "").strip()
             ans = row.get("answer", "").strip()
+            if len(ans) < _MIN_DONE_ANSWER_CHARS:
+                # too short to be a real answer — re-run this qid
+                continue
             if qid and ans and not ans.startswith("ERROR"):
                 done[qid] = ans
     return done
