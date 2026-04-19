@@ -16,6 +16,29 @@ _DEFAULT_RULES = Path(__file__).parent / "rules.yaml"
 # which is what process_with_profile() returns on parse failure.
 _CONFIDENCE_FLOOR = 0.6
 
+# ---------------------------------------------------------------------------
+# deterministic answer_shape mapping
+# the LLM profiler tends to default to structured_long regardless of question
+# type, so we override answer_shape here based on question_type + complexity.
+# this keeps answer_shape consistent and removes LLM non-compliance as a
+# variable.
+# ---------------------------------------------------------------------------
+
+def _resolve_answer_shape(profile: QuestionProfile) -> str:
+    qt = profile.question_type
+    c  = profile.complexity
+    if qt in ("definition", "application"):
+        return "direct_paragraph"
+    if qt == "continuous":
+        return "short_explainer"
+    if qt == "comparison":
+        return "comparison_table"
+    if qt == "mechanism":
+        # simple causal chain -> step-by-step; multi-mechanism -> headed sections
+        return "mechanism_walkthrough" if c < 0.6 else "structured_long"
+    # quantitative, method_eval, fallback
+    return "structured_long"
+
 
 class Router:
     def __init__(self, rules_path: Union[str, Path] = _DEFAULT_RULES):
@@ -27,6 +50,10 @@ class Router:
     # ------------------------------------------------------------------
 
     def select(self, profile: QuestionProfile) -> PipelineConfig:
+        # override answer_shape deterministically before routing so downstream
+        # generation_structured.txt gets the correct directive.
+        profile.answer_shape = _resolve_answer_shape(profile)
+
         if profile.confidence is None or profile.confidence < _CONFIDENCE_FLOOR:
             return PipelineConfig(
                 model_name="mistral-large-latest",
