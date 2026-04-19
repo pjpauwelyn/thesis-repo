@@ -87,8 +87,8 @@ NICE = {
 LABEL_MAP = {
     "exp1_small_latest":     "Exp 1 – Small Latest",
     "exp2_large_latest":     "Exp 2 – Large Latest",
-    "exp3_small_fulltext":   "Exp 3 – Small + Full-text",
-    "exp4_large_fulltext":   "Exp 4 – Large + Full-text",
+    "exp3_ontology_fullindex_small":  "Ontology Full-Indexing – Small",
+    "exp4_ontology_fullindex_large":  "Ontology Full-Indexing – Large",
 }
 
 BASELINE_ORDER = [
