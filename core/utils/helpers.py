@@ -3,6 +3,8 @@
 import os
 import json
 import re
+import time
+import random
 import logging
 from typing import Optional, Dict, Any, Union
 from dotenv import load_dotenv
@@ -39,18 +41,43 @@ class MistralLLMWrapper:
 
         messages = [{"role": "user", "content": full_prompt}]
 
-        try:
-            response = self.client.chat.complete(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=8000,
-            )
-            content = response.choices[0].message.content
-            return self._parse_output(content, force_json=force_json)
-        except Exception as e:
-            logging.error(f"llm call failed: {e}")
-            return None
+        # Retry with exponential backoff on rate-limit / transient errors.
+        # Max ~5 min of total backoff: 2, 4, 8, 16, 32, 60, 60, 60 seconds.
+        max_attempts = 8
+        for attempt in range(max_attempts):
+            try:
+                response = self.client.chat.complete(
+                    model=self.model,
+                    messages=messages,
+                    temperature=self.temperature,
+                    max_tokens=8000,
+                )
+                content = response.choices[0].message.content
+                return self._parse_output(content, force_json=force_json)
+            except Exception as e:
+                msg = str(e)
+                status = getattr(e, "status_code", None) or getattr(e, "http_status", None)
+                # Treat 429, 5xx, and connection/timeout errors as retryable.
+                retryable = (
+                    status == 429
+                    or (isinstance(status, int) and 500 <= status < 600)
+                    or "429" in msg
+                    or "rate limit" in msg.lower()
+                    or "too many requests" in msg.lower()
+                    or "timeout" in msg.lower()
+                    or "connection" in msg.lower()
+                    or "service unavailable" in msg.lower()
+                )
+                if not retryable or attempt == max_attempts - 1:
+                    logging.error(f"llm call failed (attempt {attempt+1}/{max_attempts}): {e}")
+                    return None
+                # Exponential backoff with jitter; cap at 60s.
+                delay = min(60.0, (2 ** attempt)) + random.uniform(0, 1.5)
+                logging.warning(
+                    f"llm call retryable error (attempt {attempt+1}/{max_attempts}): {e} - sleeping {delay:.1f}s"
+                )
+                time.sleep(delay)
+        return None
 
     # ------------------------------------------------------------------
     # private helpers
