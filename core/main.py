@@ -199,10 +199,15 @@ class PipelineOrchestrator:
         if not data:
             return [], "", PipelineStats()
 
+        # preserve original 0-based row index so qid stays stable across --indices subsets
+        for i, row in enumerate(data):
+            row["_row_index"] = i
+
         if num_questions:
             data = data[:num_questions]
         if indices:
-            data = [row for i, row in enumerate(data) if i in indices]
+            idx_set = set(indices)
+            data = [row for row in data if row["_row_index"] in idx_set]
 
         # resolve output path
         output_path = self._resolve_output_path(output_csv)
@@ -216,7 +221,8 @@ class PipelineOrchestrator:
 
         results: List[PipelineResult] = []
         for idx, row in enumerate(data):
-            qid = int(row.get("question_id") or (idx + 1))
+            orig_idx = row.get("_row_index")
+            qid = int(row.get("question_id") or (int(orig_idx) + 1 if orig_idx is not None else (idx + 1)))
             result = self._process_question(idx, row, verbose=verbose, question_id=qid)
             results.append(result)
 

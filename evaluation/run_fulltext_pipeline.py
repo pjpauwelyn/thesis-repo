@@ -73,8 +73,11 @@ def _setup_logging(verbose: bool) -> logging.Logger:
 def _load_questions(input_csv: str, num: Optional[int], indices: Optional[List[int]]) -> List[Dict[str, Any]]:
     with open(input_csv, "r", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
+    # preserve original 0-based row index so qid stays consistent across --indices subsets
+    for i, r in enumerate(rows):
+        r["_row_index"] = i
     if indices:
-        rows = [r for i, r in enumerate(rows) if i in set(indices)]
+        rows = [r for r in rows if r["_row_index"] in set(indices)]
     if num:
         rows = rows[:num]
     return rows
@@ -162,7 +165,9 @@ def main():
     t_start = time.time()
 
     for i, row in enumerate(rows, start=1):
-        qid = str(row.get("question_id") or i)
+        # qid must be stable across --indices subsets; use original-row-index+1 (1-based, matches baseline)
+        orig_idx = row.get("_row_index")
+        qid = str(row.get("question_id") or (int(orig_idx) + 1 if orig_idx is not None else i))
         question = row.get("question", "").strip()
         if not question:
             log.warning("row %d has empty question, skipping", i)
