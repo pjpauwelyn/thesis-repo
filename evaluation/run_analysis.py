@@ -85,8 +85,12 @@ NICE = {
 }
 
 LABEL_MAP = {
-    "exp1_small_latest":     "Exp 1 – Small Latest",
-    "exp2_large_latest":     "Exp 2 – Large Latest",
+    # Exp 1 (mistral-small-latest abstract-only) is intentionally skipped:
+    # the baseline "Ontology-Enhanced RAG" pipeline already covers the
+    # small-model abstract-only cell (same pipeline, DEFAULT_MODEL=
+    # mistral-small-24b-instruct-2503 which is what mistral-small-latest
+    # aliased to at the baseline run time).
+    "exp2_large_latest":     "Ontology-Enhanced RAG (Large)",
     "exp3_ontology_fullindex_small":  "Ontology Full-Indexing – Small",
     "exp4_ontology_fullindex_large":  "Ontology Full-Indexing – Large",
 }
