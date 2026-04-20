@@ -20,8 +20,6 @@ _CONFIDENCE_FLOOR = 0.6
 # deterministic answer_shape mapping
 # the LLM profiler tends to default to structured_long regardless of question
 # type, so we override answer_shape here based on question_type + complexity.
-# this keeps answer_shape consistent and removes LLM non-compliance as a
-# variable.
 # ---------------------------------------------------------------------------
 
 def _resolve_answer_shape(profile: QuestionProfile) -> str:
@@ -34,7 +32,6 @@ def _resolve_answer_shape(profile: QuestionProfile) -> str:
     if qt == "comparison":
         return "comparison_table"
     if qt == "mechanism":
-        # simple causal chain -> step-by-step; multi-mechanism -> headed sections
         return "mechanism_walkthrough" if c < 0.6 else "structured_long"
     # quantitative, method_eval, fallback
     return "structured_long"
@@ -50,8 +47,7 @@ class Router:
     # ------------------------------------------------------------------
 
     def select(self, profile: QuestionProfile) -> PipelineConfig:
-        # override answer_shape deterministically before routing so downstream
-        # generation_structured.txt gets the correct directive.
+        # override answer_shape deterministically before routing
         profile.answer_shape = _resolve_answer_shape(profile)
 
         if profile.confidence is None or profile.confidence < _CONFIDENCE_FLOOR:
@@ -63,6 +59,10 @@ class Router:
                 global_budget=60000,
                 refinement_prompt="refinement_1pass_refined_fulltext.txt",
                 generation_prompt="generation_structured.txt",
+                gen_context_cap=200000,
+                max_output_tokens=1400,
+                system_prompt_modifier="",
+                doc_filter_min_keep=7,
                 rule_hit="safety-tier3",
                 reason=f"low/missing profiler confidence ({profile.confidence}) -> safety tier-3",
             )
@@ -94,8 +94,7 @@ class Router:
         if isinstance(cond, dict) and "in" in cond:
             return getattr(p, field, None) in cond["in"]
 
-        # complexity_lt is an alias so a single rule can express two
-        # inequalities on the complexity field without a custom yaml schema.
+        # complexity_lt is a router alias for a second inequality on complexity
         actual = "complexity" if field == "complexity_lt" else field
         val = getattr(p, actual, None)
         if val is None or not isinstance(cond, dict):
