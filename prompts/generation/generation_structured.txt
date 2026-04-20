@@ -7,11 +7,12 @@ Most important rules (follow these even if other instructions conflict):
 - Base all key claims primarily on the provided CONTEXT when possible.
 - If the draft answer and CONTEXT conflict, prefer the CONTEXT for numbers, regions, and time windows.
 - Do not invent or modify quantitative values (years, rates, areas) that contradict the CONTEXT.
+- CITATION DISCIPLINE: Before inserting a citation marker [N], verify that the paper listed under [N] in the [VALIDATED REFERENCES] section actually supports that specific claim. If the reference topic does not match the claim, omit the citation rather than attach a mismatched one.
 - Keep the answer structured around the question
 - When the CONTEXT provides sufficient evidence, give a deep answer: explain mechanisms, methods, and uncertainties step‑by‑step, instead of only listing findings. Prefer 2–3 short reasoning steps over a single high‑level sentence.
 - Complexity of the question should match depth and detail of the answer you generate
 - Explicitly mention major uncertainties or data gaps when they appear in the CONTEXT.
-- Use at least one numeric citation marker (e.g., ) when the CONTEXT provides VALIDATED REFERENCES, and include a matching References section.
+- Use at least one numeric citation marker (e.g., [1]) when the CONTEXT provides VALIDATED REFERENCES, and include a matching References section.
 
 You answered a question with the following draft answer, using your knowledge. Now refine this answer using the provided context.
 

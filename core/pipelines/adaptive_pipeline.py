@@ -29,10 +29,24 @@ from core.utils.data_models import (
 log = logging.getLogger(__name__)
 
 _ANSWER_SHAPE_DIRECTIVES = {
-    "direct_paragraph":      "Write a direct paragraph answer without section headings.",
+    "direct_paragraph":      (
+        "Write a direct paragraph answer of 3–5 sentences. "
+        "No section headings. No bullet lists. No Implications section."
+    ),
     "short_explainer":       "Write a short explanation in 2-4 sentences.",
-    "structured_long":       "Structure your answer with clear section headings matched to the question type.",
-    "comparison_table":      "Present your answer as a markdown comparison table followed by one explanatory paragraph per row.",
+    "structured_long":       (
+        "Structure your answer with 3–5 section headings that directly match "
+        "the sub-questions implied by the question. "
+        "Open with a 2–3 sentence direct answer before the first heading. "
+        "Do not add headings that are not needed to answer the question."
+    ),
+    "comparison_table":      (
+        "Your answer MUST include a markdown comparison table as the first "
+        "structured element after the opening paragraph. "
+        "The table must have one row per entity being compared and columns for "
+        "the key dimensions the question asks about. "
+        "Follow the table with one short paragraph per major finding."
+    ),
     "mechanism_walkthrough": "Walk through the mechanism step by step, one numbered step per causal link.",
     "raw":                   "",
 }
@@ -318,14 +332,30 @@ class AdaptivePipeline:
 
     @staticmethod
     def _build_query_hint(question: str, profile: QuestionProfile) -> str:
-        """Prepend lightweight routing hints to the question so the
-        refinement agent can orient its evidence selection."""
         hints = []
-        if profile.answer_shape and profile.answer_shape not in ("direct_paragraph", ""):
-            hints.append(f"[SYNTHESIS TARGET: {profile.answer_shape}]")
+
+        # complexity/depth signal
+        if profile.complexity is not None:
+            if profile.complexity < 0.50:
+                hints.append(
+                    "[DEPTH: concise — this is a foundational question; "
+                    "answer in 3–5 sentences without exhaustive enumeration]"
+                )
+            elif profile.complexity >= 0.75:
+                hints.append(
+                    "[DEPTH: comprehensive — this is a high-complexity question; "
+                    "provide mechanistic detail, quantitative evidence, and uncertainty assessment]"
+                )
+
+        # quantitative emphasis (unchanged)
         if getattr(profile, "needs_numeric_emphasis", False):
             hints.append(
                 "[NUMERIC EMPHASIS: prioritise excerpts with quantitative "
                 "values, rates, and units]"
             )
+
+        # answer shape (unchanged)
+        if profile.answer_shape and profile.answer_shape not in ("direct_paragraph", ""):
+            hints.append(f"[SYNTHESIS TARGET: {profile.answer_shape}]")
+
         return ("\n".join(hints) + "\n" + question) if hints else question

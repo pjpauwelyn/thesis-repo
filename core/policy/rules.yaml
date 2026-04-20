@@ -18,10 +18,10 @@
 
 rules:
 
-  # tier-1: simple conceptual -- small + abstracts + direct prompt
+# tier-1: simple conceptual -- small + abstracts + direct prompt
   - name: tier_1
     when:
-      complexity: {lt: 0.45}
+      complexity: {lt: 0.50}
     config:
       model_name: mistral-small-latest
       evidence_mode: abstracts
@@ -39,7 +39,7 @@ rules:
       rule_hit: tier-1
       reason: "simple / low-complexity -- abstracts + direct prompt"
 
-  # tier-2: moderate complexity -- small + narrow excerpts
+# tier-2: moderate complexity -- small + narrow excerpts
   - name: tier_2
     when:
       complexity: {ge: 0.40}
@@ -53,8 +53,8 @@ rules:
       refinement_prompt: refinement_1pass_refined_fulltext.txt
       generation_prompt: generation_structured.txt
       gen_context_cap: 200000
-      max_output_tokens: 900
-      system_prompt_modifier: "Be direct and precise. Lead with the core finding before elaborating."
+      max_output_tokens: 700           # ← was 900; moderate questions don't need 900
+      system_prompt_modifier: "Answer concisely and directly. Lead with the core finding in the first sentence. Use at most 2 short sections after the opening paragraph. Do not add an Implications section unless the question explicitly asks for one."
       doc_filter_min_keep: 6
       scope_filter: false
       synthesis_mode: homogeneous
@@ -78,7 +78,7 @@ rules:
       generation_prompt: generation_structured.txt
       gen_context_cap: 200000
       max_output_tokens: 1400
-      system_prompt_modifier: ""
+      system_prompt_modifier: "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' — do not present it as a cited fact."  # ← was empty; directly targets citation hallucination
       doc_filter_min_keep: 7
       scope_filter: false
       synthesis_mode: homogeneous

@@ -144,15 +144,13 @@ def test_phase1_profiles() -> None:
                 else "None"
             )
             tf.write(
-                f"Q{i:03d}: {question[:80]}\n"
                 f"  type={profile.question_type:<12} "
                 f"complexity={profile.complexity:.2f}  "
                 f"quant={profile.quantitativity:.2f}  "
+                f"meth={profile.methodological_depth:.2f}  "
                 f"conf={conf_str}  "
                 f"tier={cfg.rule_hit}  "
-                f"shape={profile.answer_shape}\n"
-                f"  numeric_emphasis={profile.needs_numeric_emphasis}\n"
-                "---\n"
+                f"shape={profile.answer_shape}\\n"
             )
 
         tf.write("\nTier distribution:\n")
