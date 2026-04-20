@@ -195,6 +195,19 @@ class AdaptivePipeline:
         )
         enriched = refined.enriched_context or ""
 
+        # Guarantee the [VALIDATED REFERENCES] footer survives to the
+        # generation stage. The refinement LLM summarises/reformats the
+        # documents_block and has no reliable reason to preserve the footer
+        # verbatim, so we append it here from the raw documents_block if it
+        # isn't already present. This keeps
+        # GenerationAgent._extract_references_from_context() able to recover
+        # real references for every tier-2/tier-3 answer, and prevents the
+        # generation LLM from inventing placeholder references.
+        if documents_block and "[VALIDATED REFERENCES]" not in enriched:
+            footer_start = documents_block.find("[VALIDATED REFERENCES]")
+            if footer_start != -1:
+                enriched = enriched + "\n\n" + documents_block[footer_start:]
+
         # 6. generation
         gen_agent = GenerationAgent(
             self._llm(cfg.model_name, cfg.temperature_generate, cfg.max_output_tokens),
