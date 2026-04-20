@@ -57,7 +57,9 @@ DEFAULT_RULES = "core/policy/rules.yaml"
 DEFAULT_PROMPTS = "prompts"
 DEFAULT_WORKERS = 4  # parallel workers; stays within Mistral rate limits
 
-# telemetry columns added beyond the run_judge.py-required triple
+# telemetry columns added beyond the run_judge.py-required triple.
+# run_judge.py reads only {question_id, question, answer} via row.get(), so
+# extra telemetry columns are always safe to append.
 _FIELDNAMES = [
     "question_id", "question", "answer",
     "rule_hit", "model_name", "evidence_mode",
@@ -65,6 +67,7 @@ _FIELDNAMES = [
     "complexity", "quantitativity",
     "spatial_specificity", "temporal_specificity",
     "profile_confidence", "profile_json",
+    "formatted_refs_count",
 ]
 
 # minimum answer length (chars) to consider a row "done"
@@ -152,6 +155,116 @@ def _load_already_done(out_path: Path) -> Dict[str, str]:
             if qid and ans and not ans.startswith("ERROR"):
                 done[qid] = ans
     return done
+
+
+_CITATION_MARKER_RE = None  # lazy-compiled
+
+
+def _strip_references_section(answer: str) -> str:
+    """Return answer body with any trailing References section removed.
+    Handles plain, markdown-heading, and bold forms. Kept in-sync with
+    core.pipelines.adaptive_pipeline.AdaptivePipeline._strip_self_written_refs
+    but tolerant of additional heading variants we may emit.
+    """
+    if not answer:
+        return ""
+    lines = answer.split("\n")
+    for i, line in enumerate(lines):
+        s = line.strip().strip("*#").strip()
+        if s in ("References", "REFERENCES"):
+            return "\n".join(lines[:i]).rstrip()
+        if s.lower().startswith("### references") or s.lower() == "references:":
+            return "\n".join(lines[:i]).rstrip()
+    return answer
+
+
+def _body_has_citation_markers(answer: str) -> bool:
+    """True iff the answer body (with References section removed) contains at
+    least one [N] numeric citation marker."""
+    global _CITATION_MARKER_RE
+    if _CITATION_MARKER_RE is None:
+        import re
+        _CITATION_MARKER_RE = re.compile(r"\[[0-9][0-9,;\s]*\]")
+    body = _strip_references_section(answer or "")
+    return bool(_CITATION_MARKER_RE.search(body))
+
+
+def _flag_empty_refs_with_citations(
+    out_path: Path, log: logging.Logger
+) -> Path:
+    """Scan the answers CSV. For each row where formatted_refs_count == 0 AND
+    the body contains [N] markers, append its question_id to a plaintext file
+    so the user can re-run just those questions via --indices.
+
+    Returns the path of the generated flags file (always created, may be empty).
+    """
+    flags_path = out_path.with_name(out_path.stem + "_needs_retry.txt")
+    if not out_path.exists():
+        log.warning("flagging: answers csv not found at %s", out_path)
+        flags_path.write_text("", encoding="utf-8")
+        return flags_path
+
+    flagged: List[Dict[str, str]] = []
+    total = 0
+    error_rows = 0
+    with open(out_path, "r", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            total += 1
+            qid = (row.get("question_id") or "").strip()
+            answer = (row.get("answer") or "").strip()
+            if answer.startswith("ERROR"):
+                error_rows += 1
+                continue
+            # parse formatted_refs_count defensively; absent/blank → 0
+            raw_cnt = (row.get("formatted_refs_count") or "").strip()
+            try:
+                refs_count = int(raw_cnt) if raw_cnt else 0
+            except ValueError:
+                refs_count = 0
+            if refs_count > 0:
+                continue
+            if not _body_has_citation_markers(answer):
+                continue
+            flagged.append({
+                "question_id": qid,
+                "question": (row.get("question") or "").strip(),
+                "model_name": (row.get("model_name") or "").strip(),
+                "rule_hit": (row.get("rule_hit") or "").strip(),
+            })
+
+    # write plaintext list of qids (one per line) — consumable by --indices
+    # via `xargs`, and by humans at a glance. also emit a sibling JSON with
+    # richer detail.
+    flags_path.write_text(
+        "\n".join(r["question_id"] for r in flagged) + ("\n" if flagged else ""),
+        encoding="utf-8",
+    )
+    json_path = flags_path.with_suffix(".json")
+    with open(json_path, "w", encoding="utf-8") as jf:
+        json.dump(
+            {
+                "source_csv": str(out_path),
+                "total_rows": total,
+                "error_rows": error_rows,
+                "flagged_count": len(flagged),
+                "criterion": "formatted_refs_count == 0 AND body contains [N] markers",
+                "flagged": flagged,
+            },
+            jf,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    log.info(
+        "citation-hygiene flag: %d / %d rows need retry (empty refs + citations in body); "
+        "qid list -> %s ; details -> %s",
+        len(flagged), total, flags_path, json_path,
+    )
+    if flagged:
+        preview = ", ".join(r["question_id"] for r in flagged[:10])
+        more = "" if len(flagged) <= 10 else f" ...(+{len(flagged)-10})"
+        log.info("flagged qids: %s%s", preview, more)
+    return flags_path
 
 
 def _print_histogram(counter: Counter, title: str) -> None:
@@ -251,6 +364,7 @@ def _process_row(
         "temporal_specificity": prof.temporal_specificity if prof else "",
         "profile_confidence": prof.confidence if prof else "",
         "profile_json": prof.model_dump_json() if prof else "",
+        "formatted_refs_count": len(result.formatted_references or []),
     })
     return (
         cfg.rule_hit if cfg else "?",
@@ -279,10 +393,19 @@ def main():
                     help="profile + route only, no generation (prints histogram)")
     ap.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
                     help="parallel worker threads (default: 4, use 1 to disable)")
+    ap.add_argument("--flag-only", action="store_true",
+                    help="skip generation; just scan --output and emit the "
+                         "_needs_retry.txt / .json flag files")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
     log = _setup_logging(args.verbose)
+
+    # --flag-only short-circuit: skip the pipeline entirely, just audit the csv
+    if args.flag_only:
+        out_path = Path(args.output)
+        _flag_empty_refs_with_citations(out_path, log)
+        sys.exit(0)
 
     from core.pipelines.adaptive_pipeline import AdaptivePipeline
 
@@ -350,6 +473,12 @@ def main():
     _print_histogram(model_hist, "model_name distribution")
     _print_histogram(shape_hist, "answer_shape distribution")
     print("=" * 72)
+
+    # post-run citation-hygiene audit: flag rows with citation markers but
+    # zero validated references so the user can target them with --indices.
+    # we only run this for real generation, not --dry-run (answers are stubs).
+    if not args.dry_run:
+        _flag_empty_refs_with_citations(out_path, log)
 
     sys.exit(0 if errors == 0 else 1)
 
