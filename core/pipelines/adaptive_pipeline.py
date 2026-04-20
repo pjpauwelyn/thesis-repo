@@ -154,8 +154,8 @@ class AdaptivePipeline:
         excerpts, excerpt_stats = self._build_evidence(cfg, question, ontology, full_docs)
 
         # 4. assemble unified documents_block for tier-2 / tier-3
+        aql_lookup = self._build_aql_lookup(aql_results_str, all_docs)
         if cfg.evidence_mode != "abstracts":
-            aql_lookup = self._build_aql_lookup(aql_results_str, all_docs)
             self._ensure_indexer()
             from core.utils.fulltext_indexer import FullTextIndexer
             documents_block = FullTextIndexer.render_documents_block(
@@ -166,6 +166,18 @@ class AdaptivePipeline:
             )
         else:
             documents_block = None  # tier-1/fallback: uses aql_results_str path unchanged
+
+        # Always build a standalone [VALIDATED REFERENCES] footer from the
+        # filtered documents, even for tier-1 (abstracts mode), so that every
+        # answer has a bounded, authoritative citation list to copy from.
+        # Without this, tier-1 answers hallucinate citation IDs (e.g. [7],
+        # [14]) that have no backing reference list.
+        from core.utils.fulltext_indexer import FullTextIndexer as _FTI
+        validated_footer = _FTI.render_validated_references(
+            full_docs=full_docs,
+            abstract_docs=abstract_docs,
+            aql_lookup=aql_lookup,
+        )
 
         # 5. refinement
         ref_llm = self._llm(cfg.model_name, cfg.temperature_refine, cfg.max_output_tokens)
@@ -203,10 +215,8 @@ class AdaptivePipeline:
         # GenerationAgent._extract_references_from_context() able to recover
         # real references for every tier-2/tier-3 answer, and prevents the
         # generation LLM from inventing placeholder references.
-        if documents_block and "[VALIDATED REFERENCES]" not in enriched:
-            footer_start = documents_block.find("[VALIDATED REFERENCES]")
-            if footer_start != -1:
-                enriched = enriched + "\n\n" + documents_block[footer_start:]
+        if "[VALIDATED REFERENCES]" not in enriched and validated_footer:
+            enriched = enriched + "\n\n" + validated_footer
 
         # 6. generation
         gen_agent = GenerationAgent(
@@ -236,8 +246,39 @@ class AdaptivePipeline:
             system_prompt=cfg.system_prompt_modifier,
         )
 
+        # Normalise the answer's citation hygiene. The generation prompt now
+        # forbids the model from writing its own References section (to prevent
+        # ID hallucination + truncation), and we take three defensive steps
+        # here:
+        #   1. strip any References section the model wrote anyway
+        #   2. strip any [N] citation marker whose N is outside the validated
+        #      reference range (prevents Q3-style [7] / [12] hallucinations)
+        #   3. append the authoritative References block we own, trimmed to
+        #      just the IDs actually cited in the final answer
+        final_answer = ans.answer or ""
+        final_answer = AdaptivePipeline._strip_self_written_refs(final_answer)
+
+        max_ref_id = len(ans.formatted_references or [])
+        final_answer = AdaptivePipeline._strip_out_of_range_citations(
+            final_answer, max_ref_id
+        )
+
+        cited_ids = AdaptivePipeline._extract_cited_ids(final_answer)
+        filtered_refs: List[str] = []
+        if ans.formatted_references and cited_ids:
+            filtered_refs = AdaptivePipeline._filter_refs_by_cited_ids(
+                ans.formatted_references, cited_ids
+            )
+            if filtered_refs:
+                final_answer = (
+                    final_answer.rstrip()
+                    + "\n\nReferences\n"
+                    + "\n".join(filtered_refs)
+                )
+        ans.formatted_references = filtered_refs
+
         return AdaptiveResult(
-            answer=ans.answer,
+            answer=final_answer,
             references=ans.references,
             formatted_references=ans.formatted_references,
             profile=profile,
@@ -342,6 +383,93 @@ class AdaptivePipeline:
             except Exception:
                 pass
         return lookup
+
+    # ------------------------------------------------------------------
+    # citation hygiene helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_cited_ids(answer: str) -> List[int]:
+        """Return sorted, deduplicated list of [N] citation IDs appearing in
+        the body of the answer (ignoring any existing References section).
+        """
+        import re
+        body = AdaptivePipeline._strip_self_written_refs(answer)
+        ids = set()
+        # match [1], [1, 2], [1,2,3], [1; 2]
+        for m in re.finditer(r"\[([0-9][0-9,;\s]*)\]", body):
+            for tok in re.split(r"[,;\s]+", m.group(1)):
+                if tok.isdigit():
+                    ids.add(int(tok))
+        return sorted(ids)
+
+    @staticmethod
+    def _strip_out_of_range_citations(answer: str, max_id: int) -> str:
+        """Remove any [N] marker in the body whose N is > max_id or <= 0.
+        Leaves the References section (if any) alone.
+        """
+        import re
+        lines = answer.split("\n")
+        refs_start = None
+        for i, line in enumerate(lines):
+            s = line.strip()
+            if s in ("References", "REFERENCES") or s.lower().startswith("### references"):
+                refs_start = i
+                break
+        body_end = refs_start if refs_start is not None else len(lines)
+        body = "\n".join(lines[:body_end])
+        tail = "\n".join(lines[body_end:]) if refs_start is not None else ""
+
+        def _sub(m: "re.Match") -> str:
+            inner = m.group(1)
+            # split keeping separators; keep only in-range digit tokens and
+            # the separators between them
+            tokens = re.split(r"([,;\s]+)", inner)
+            kept_digits: List[str] = []
+            for tok in tokens:
+                if tok.isdigit():
+                    n = int(tok)
+                    if 1 <= n <= max_id:
+                        kept_digits.append(tok)
+            if not kept_digits:
+                return ""
+            return "[" + ", ".join(kept_digits) + "]"
+
+        body = re.sub(r"\[([0-9][0-9,;\s]*)\]", _sub, body)
+        # tidy double spaces / space-before-punct left by removals
+        body = re.sub(r"[ \t]+([,.;:])", r"\1", body)
+        body = re.sub(r"[ \t]{2,}", " ", body)
+        return body + (("\n" + tail) if tail else "")
+
+    @staticmethod
+    def _strip_self_written_refs(answer: str) -> str:
+        """Remove any References / REFERENCES section the LLM wrote.
+        Handles markdown headings (### References), plain heading lines, and
+        bold forms (**References**).
+        """
+        import re
+        lines = answer.split("\n")
+        for i, line in enumerate(lines):
+            s = line.strip().strip("*#").strip()
+            if s in ("References", "REFERENCES"):
+                return "\n".join(lines[:i]).rstrip()
+        return answer
+
+    @staticmethod
+    def _filter_refs_by_cited_ids(
+        formatted_refs: List[str], cited_ids: List[int]
+    ) -> List[str]:
+        """Return the subset of formatted_refs whose leading [N] ID appears in
+        cited_ids. Preserves original order and leading IDs verbatim.
+        """
+        import re
+        cited = set(cited_ids)
+        out: List[str] = []
+        for line in formatted_refs:
+            m = re.match(r"\s*\[(\d+)\]", line)
+            if m and int(m.group(1)) in cited:
+                out.append(line)
+        return out
 
     @staticmethod
     def _build_query_hint(question: str, profile: QuestionProfile) -> str:

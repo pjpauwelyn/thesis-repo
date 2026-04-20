@@ -12,7 +12,7 @@ Most important rules (follow these even if other instructions conflict):
 - When the CONTEXT provides sufficient evidence, give a deep answer: explain mechanisms, methods, and uncertainties step‑by‑step, instead of only listing findings. Prefer 2–3 short reasoning steps over a single high‑level sentence.
 - Complexity of the question should match depth and detail of the answer you generate
 - Explicitly mention major uncertainties or data gaps when they appear in the CONTEXT.
-- Only include numeric citation markers (e.g., [1]) and a References section if the CONTEXT contains a [VALIDATED REFERENCES] block. If no such block is present, omit citations and the References section entirely — do not invent or use placeholder references.
+- Only include numeric citation markers (e.g., [1]) if the CONTEXT contains a [VALIDATED REFERENCES] block. If no such block is present, omit all citation markers entirely — do not invent or use placeholder references. When citing, only use IDs that actually exist in the [VALIDATED REFERENCES] block; never cite an ID larger than the last ID listed there.
 
 You answered a question with the following draft answer, using your knowledge. Now refine this answer using the provided context.
 
@@ -119,6 +119,12 @@ Treat the draft answer as a strong starting point and the context as high-priori
 
 ### CITATIONS
 
-Only include a References section if the provided CONTEXT contains a [VALIDATED REFERENCES] block. If it does, copy those references verbatim in the format: [i] Authors (Year). Title. URI. Use matching numeric markers like [1], [2] in the body for key claims backed by those references. If NO [VALIDATED REFERENCES] block is present in the CONTEXT, omit the References section entirely and do not insert numeric citation markers. Do NOT invent, guess, or use placeholder references (such as "[1] Author et al. (Year). Title. URI.") under any circumstances.
+The [VALIDATED REFERENCES] block in the CONTEXT is the ONLY authoritative source of citation IDs. Follow these rules exactly:
 
-Now write the final refined answer.
+1. If the CONTEXT contains a [VALIDATED REFERENCES] block listing references [1] through [N], you may cite those IDs inline using [N]-style markers. You MUST NOT cite any ID higher than N or any ID not listed in that block.
+2. Do NOT write your own References section in the output. The downstream system copies the [VALIDATED REFERENCES] block verbatim after the answer. Writing a References section in the body will cause duplicate or truncated references.
+3. If NO [VALIDATED REFERENCES] block is present in the CONTEXT, you MUST NOT insert any numeric citation markers ([1], [2], ...) anywhere in the answer. Produce the answer without citations.
+4. Never invent, guess, or use placeholder references (such as "[1] Author et al. (Year). Title. URI.").
+5. Before writing each [N] marker, silently check that line [N] exists in the [VALIDATED REFERENCES] block. If it does not, omit that marker.
+
+Now write the final refined answer (use inline [N] markers only when bounded by the [VALIDATED REFERENCES] block; do NOT write a References section).

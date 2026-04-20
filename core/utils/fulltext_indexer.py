@@ -357,11 +357,24 @@ class FullTextIndexer:
                 resp.raise_for_status()
                 data = resp.json()
                 # keep only the fields we need (still small)
+                # authorships trimmed to display_name for each author
+                auths_raw = data.get("authorships") or []
+                auths_slim: List[Dict[str, Any]] = []
+                for a in auths_raw:
+                    if not isinstance(a, dict):
+                        continue
+                    name = (
+                        (a.get("author") or {}).get("display_name")
+                        or a.get("raw_author_name")
+                    )
+                    if name:
+                        auths_slim.append({"display_name": name})
                 trimmed = {
                     "id": data.get("id"),
                     "doi": data.get("doi"),
                     "title": data.get("title"),
                     "publication_year": data.get("publication_year"),
+                    "authorships": auths_slim,
                     "open_access": data.get("open_access") or {},
                     "best_oa_location": data.get("best_oa_location") or {},
                     "primary_location": data.get("primary_location") or {},
@@ -1133,6 +1146,106 @@ class FullTextIndexer:
         parts.extend(ref_lines)
 
         return "\n".join(parts).strip()
+
+    @staticmethod
+    def render_validated_references(
+        full_docs: List[Dict[str, Any]],
+        abstract_docs: List[Dict[str, Any]],
+        aql_lookup: Dict[str, Dict[str, Any]],
+    ) -> str:
+        """Render a standalone [VALIDATED REFERENCES] footer block.
+
+        Reused by render_documents_block (tier-2/tier-3) and by the adaptive
+        pipeline (tier-1 abstracts mode) so every answer has an authoritative,
+        bounded citation list. Also opportunistically backfills author/year
+        from the on-disk OpenAlex metadata cache when the aql_results payload
+        does not carry them, producing cleaner references than
+        \"Unknown (n.d.)\".
+        """
+        all_docs = list(full_docs) + list(abstract_docs)
+        if not all_docs:
+            return ""
+
+        ref_lines: List[str] = ["[VALIDATED REFERENCES]"]
+        for i, doc in enumerate(all_docs, start=1):
+            uri  = doc.get("uri", "") or ""
+            meta = dict(aql_lookup.get(uri, {}) or {})
+            # backfill from the doc itself
+            for k, v in (doc or {}).items():
+                meta.setdefault(k, v)
+
+            title   = meta.get("title")   or "Unknown"
+            year    = meta.get("year")    or meta.get("publication_year")
+            authors = meta.get("authors") or meta.get("author")
+
+            # opportunistic backfill from the OpenAlex metadata cache
+            if (not year or not authors) and uri:
+                cached = FullTextIndexer._load_openalex_meta(uri)
+                if cached:
+                    if not year:
+                        year = cached.get("publication_year")
+                    if not authors:
+                        authors = cached.get("authors")
+
+            if isinstance(authors, list) and authors:
+                authors = (
+                    f"{authors[0]} et al." if len(authors) > 2
+                    else ", ".join(str(a) for a in authors)
+                )
+            if not authors:
+                authors = "Unknown"
+            if not year:
+                year = "n.d."
+
+            uri_part = f". {uri}" if uri else ""
+            ref_lines.append(f"[{i}] {authors} ({year}). {title}{uri_part}")
+
+        return "\n".join(ref_lines)
+
+    @staticmethod
+    def _load_openalex_meta(uri: str) -> Optional[Dict[str, Any]]:
+        """Best-effort lookup of cached OpenAlex metadata for a work URI.
+        Returns None on any failure. Extracts publication_year and a short
+        author-string from authorships when present."""
+        try:
+            work_id = uri.rstrip("/").rsplit("/", 1)[-1]
+            if not work_id.startswith("W"):
+                return None
+            # match FullTextIndexer.meta_dir layout: cache/fulltext/meta/<W>.json
+            candidates = [
+                Path("cache/fulltext/meta") / f"{work_id}.json",
+                Path(".cache/fulltext/meta") / f"{work_id}.json",
+            ]
+            path = next((p for p in candidates if p.exists()), None)
+            if path is None:
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+            out: Dict[str, Any] = {
+                "publication_year": data.get("publication_year"),
+            }
+            # authorships may be present if the cache format ever gains them;
+            # today the trimmed cache doesn't carry authors, so we simply
+            # return what we have -- the citation will read 'Unknown (YEAR).'
+            # which is still materially better than 'Unknown (n.d.).'.
+            auths = data.get("authorships") or data.get("authors")
+            if isinstance(auths, list) and auths:
+                names: List[str] = []
+                for a in auths:
+                    if isinstance(a, dict):
+                        name = (
+                            (a.get("author") or {}).get("display_name")
+                            or a.get("display_name")
+                            or a.get("raw_author_name")
+                        )
+                    else:
+                        name = str(a)
+                    if name:
+                        names.append(name)
+                if names:
+                    out["authors"] = names
+            return out
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # bulk prebuild (CLI)
