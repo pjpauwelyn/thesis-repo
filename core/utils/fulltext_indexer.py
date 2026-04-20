@@ -1052,20 +1052,69 @@ class FullTextIndexer:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def render_excerpts_block(excerpts: List[Dict[str, Any]]) -> str:
-        if not excerpts:
-            return "No full-text excerpts available for this question (abstracts only)."
-        parts: List[str] = []
-        current_doc = None
+    def render_documents_block(
+        full_docs: List[Dict[str, Any]],
+        abstract_docs: List[Dict[str, Any]],
+        excerpts: List[Dict[str, Any]],
+        aql_lookup: Dict[str, Dict[str, Any]],
+    ) -> str:
+        """Render a single unified text block containing all documents (full +
+        abstract) with their excerpts interleaved.
+
+        full_docs come first (indices 1..len(full_docs)); abstract_docs follow.
+        excerpts must carry a 'doc_index' key (1-based into full_docs) set by
+        select_excerpts_for_question.
+        aql_lookup maps URI -> metadata dict (title, abstract, year, authors).
+        """
+        from collections import defaultdict
+
+        excerpts_by_idx: Dict[int, List[Dict]] = defaultdict(list)
         for ex in excerpts:
-            di = ex["doc_index"]
-            if di != current_doc:
-                parts.append(f"\n### Document [{di}] — {ex.get('title','')}")
-                current_doc = di
+            excerpts_by_idx[ex.get("doc_index", -1)].append(ex)
+        for idx in excerpts_by_idx:
+            excerpts_by_idx[idx].sort(key=lambda e: e.get("page", 0))
+
+        all_docs = list(full_docs) + list(abstract_docs)
+        n_full   = len(full_docs)
+        parts: List[str] = []
+
+        for i, doc in enumerate(all_docs, start=1):
+            uri  = doc.get("uri", "")
+            meta = aql_lookup.get(uri, doc)
+
+            title    = meta.get("title")    or doc.get("title")    or "Unknown"
+            abstract = meta.get("abstract") or doc.get("abstract") or ""
+            year     = meta.get("year")     or meta.get("publication_year") or ""
+            authors  = meta.get("authors")  or meta.get("author")  or ""
+            if isinstance(authors, list):
+                authors = (
+                    f"{authors[0]} et al." if len(authors) > 2
+                    else ", ".join(str(a) for a in authors)
+                )
+
+            parts.append(f'=== Document [{i}]: "{title}" ===')
             parts.append(
-                f"<<< Doc [{di}] | Section: {ex.get('section','unknown')} | p. {ex.get('page','?')} >>>\n"
-                f"{ex.get('text','')}"
+                f"Authors: {authors} ({year}) | {uri}" if uri
+                else f"Authors: {authors} ({year})"
             )
+            parts.append(f"Abstract: {abstract}")
+
+            doc_excerpts = excerpts_by_idx.get(i, []) if i <= n_full else []
+            if doc_excerpts:
+                parts.append("Full-text excerpts:")
+                for ex in doc_excerpts:
+                    parts.append(
+                        f"  <<< Section: {ex.get('section', 'unknown')} "
+                        f"| p. {ex.get('page', '?')} >>>"
+                    )
+                    parts.append(f"  {ex.get('text', '')}")
+            else:
+                parts.append(
+                    "(Abstract only — no full-text selected for this document)"
+                )
+
+            parts.append("")  # blank separator between docs
+
         return "\n".join(parts).strip()
 
     # ------------------------------------------------------------------
