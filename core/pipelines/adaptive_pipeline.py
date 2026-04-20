@@ -6,14 +6,14 @@ the policy router based on the question profile.
 flow per question:
   1. profile     -- fused av-pair + profile call (small, temp=0)
   2. route       -- pure-python policy router selects PipelineConfig
-  3. evidence    -- abstracts (no extra work) | excerpts via FullTextIndexer
-  4. refinement  -- 1pass-refined or 1pass-fulltext, depending on evidence
-  5. generation  -- direct or structured prompt, with shape + synthesis directives
+  3. filter      -- llm-based document relevance filter (all tiers)
+  4. evidence    -- abstracts (no extra work) | excerpts via FullTextIndexer
+  5. refinement  -- 1pass-refined or 1pass-fulltext, depending on evidence
+  6. generation  -- direct or structured prompt, with shape + synthesis directives
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,7 +28,6 @@ from core.utils.data_models import (
 
 log = logging.getLogger(__name__)
 
-# directive maps -- injected into generation_structured.txt's two placeholders
 _ANSWER_SHAPE_DIRECTIVES = {
     "direct_paragraph":      "Write a direct paragraph answer without section headings.",
     "short_explainer":       "Write a short explanation in 2-4 sentences.",
@@ -78,9 +77,8 @@ class AdaptivePipeline:
     def profile_and_route(
         self, question: str
     ) -> Tuple[DynamicOntology, QuestionProfile, PipelineConfig]:
-        """profile a question and return the routing decision -- no refinement,
-        no generation. used by the runner's --dry-run flag.
-        """
+        """profile + route only -- no refinement, no generation.
+        used by the runner's --dry-run flag."""
         from core.agents.ontology_agent import OntologyConstructionAgent
 
         ont_agent = OntologyConstructionAgent(
@@ -90,6 +88,30 @@ class AdaptivePipeline:
         ontology, profile = ont_agent.process_with_profile(question)
         cfg = self.router.select(profile)
         return ontology, profile, cfg
+
+    def profile_and_route_with_filter(
+        self,
+        question: str,
+        docs: Optional[List[Dict[str, Any]]] = None,
+        aql_results_str: Optional[str] = None,
+    ) -> Tuple[DynamicOntology, QuestionProfile, PipelineConfig, Dict[str, Any]]:
+        """extended dry-run: profile + route + document filter, no generation."""
+        ontology, profile, cfg = self.profile_and_route(question)
+        filter_summary: Dict[str, Any] = {"n_total": 0}
+        if docs:
+            full_docs, abstract_docs, drop_docs = self._filter_documents(
+                docs, ontology, profile, question, cfg
+            )
+            filter_summary = {
+                "n_total":         len(docs),
+                "n_full":          len(full_docs),
+                "n_abstract":      len(abstract_docs),
+                "n_drop":          len(drop_docs),
+                "full_titles":     [d.get("title", "")[:80] for d in full_docs],
+                "abstract_titles": [d.get("title", "")[:80] for d in abstract_docs],
+                "drop_titles":     [d.get("title", "")[:80] for d in drop_docs],
+            }
+        return ontology, profile, cfg, filter_summary
 
     def run(
         self,
@@ -101,52 +123,74 @@ class AdaptivePipeline:
         from core.agents.refinement_agent_1pass_refined import RefinementAgent1PassRefined
         from core.agents.refinement_agent_fulltext import RefinementAgent1PassFullText
 
+        # 1. profile + route
         ontology, profile, cfg = self.profile_and_route(question)
         log.info(
             "q=%s... -> rule=%s model=%s evidence=%s",
             question[:60], cfg.rule_hit, cfg.model_name, cfg.evidence_mode,
         )
 
-        # 1. evidence
-        excerpts_text, excerpt_stats = self._build_evidence(cfg, question, ontology, docs)
+        # 2. document filter (all tiers)
+        all_docs = docs or []
+        full_docs, abstract_docs, drop_docs = self._filter_documents(
+            all_docs, ontology, profile, question, cfg
+        )
 
-        # 2. refinement
+        # 3. evidence -- PDF excerpts for full_docs only
+        excerpts, excerpt_stats = self._build_evidence(cfg, question, ontology, full_docs)
+
+        # 4. assemble unified documents_block for tier-2 / tier-3
+        if cfg.evidence_mode != "abstracts":
+            aql_lookup = self._build_aql_lookup(aql_results_str, all_docs)
+            self._ensure_indexer()
+            from core.utils.fulltext_indexer import FullTextIndexer
+            documents_block = FullTextIndexer.render_documents_block(
+                full_docs=full_docs,
+                abstract_docs=abstract_docs,
+                excerpts=excerpts,
+                aql_lookup=aql_lookup,
+            )
+        else:
+            documents_block = None  # tier-1/fallback: uses aql_results_str path unchanged
+
+        # 5. refinement
         ref_llm = self._llm(cfg.model_name, cfg.temperature_refine)
         if cfg.evidence_mode == "abstracts":
             ref_agent = RefinementAgent1PassRefined(
-                ref_llm, prompt_dir=str(self._prompts_root / "refinement"),
+                ref_llm,
+                prompt_dir=str(self._prompts_root / "refinement"),
             )
         else:
             ref_agent = RefinementAgent1PassFullText(
-                ref_llm, prompt_dir=str(self._prompts_root / "refinement"),
+                ref_llm,
+                prompt_dir=str(self._prompts_root / "refinement"),
             )
-            ref_agent.set_excerpts(excerpts_text)
-        # scope_filter is signalled to the agent if it supports it; otherwise
-        # synthesis_mode=focused already enforces the constraint at generation.
+            ref_agent.set_documents_block(documents_block)
+
         if hasattr(ref_agent, "set_scope_filter"):
             ref_agent.set_scope_filter(cfg.scope_filter)
 
+        query_hint = self._build_query_hint(question, profile)
         refined = ref_agent.process_context(
-            question=question,
+            question=query_hint,
             structured_context="",
             ontology=ontology,
             include_ontology=True,
-            aql_results_str=aql_results_str,
+            aql_results_str=aql_results_str if documents_block is None else None,
             context_filter="full",
         )
         enriched = refined.enriched_context or ""
 
-        # 3. generation -- override template + inject adaptive directives
+        # 6. generation
         gen_agent = GenerationAgent(
             self._llm(cfg.model_name, cfg.temperature_generate),
             prompt_dir=str(self._prompts_root / "generation"),
         )
         template = gen_agent._load_template(cfg.generation_prompt)
         if not template:
-            raise FileNotFoundError(f"generation prompt not found: {cfg.generation_prompt}")
-        # pre-fill our two placeholders before GenerationAgent.generate() does
-        # the rest of the .replace() chain. extra placeholders that aren't in
-        # this template are silently ignored by str.replace.
+            raise FileNotFoundError(
+                f"generation prompt not found: {cfg.generation_prompt}"
+            )
         template = template.replace(
             "{answer_shape_directives}",
             _ANSWER_SHAPE_DIRECTIVES.get(profile.answer_shape, ""),
@@ -156,7 +200,14 @@ class AdaptivePipeline:
         )
         gen_agent.refinement_template = template
 
-        ans = gen_agent.generate(question=question, text_context=enriched, ontology=ontology)
+        ans = gen_agent.generate(
+            question=question,
+            text_context=enriched,
+            ontology=ontology,
+            context_cap=cfg.gen_context_cap,
+            max_output_tokens=cfg.max_output_tokens,
+            system_prompt=cfg.system_prompt_modifier,
+        )
 
         return AdaptiveResult(
             answer=ans.answer,
@@ -170,30 +221,37 @@ class AdaptivePipeline:
         )
 
     # ------------------------------------------------------------------
-    # helpers
+    # private helpers
     # ------------------------------------------------------------------
 
     def _llm(self, model: str, temperature: float):
         key = (model, temperature)
         if key not in self._llm_cache:
             from core.utils.helpers import get_llm_model
-            self._llm_cache[key] = get_llm_model(model=model, temperature=temperature)
+            self._llm_cache[key] = get_llm_model(
+                model=model, temperature=temperature
+            )
         return self._llm_cache[key]
+
+    def _ensure_indexer(self) -> None:
+        if self._indexer is None:
+            from core.utils.fulltext_indexer import FullTextIndexer
+            self._indexer = FullTextIndexer(cache_dir=self._cache_dir)
 
     def _build_evidence(
         self,
         cfg: PipelineConfig,
         question: str,
         ontology: DynamicOntology,
-        docs: Optional[List[Dict[str, Any]]],
-    ) -> Tuple[str, Dict[str, Any]]:
+        docs: List[Dict[str, Any]],
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         if cfg.evidence_mode == "abstracts" or not docs:
-            return "", {"mode": cfg.evidence_mode, "n_excerpts": 0, "n_docs": len(docs or [])}
-
-        if self._indexer is None:
-            from core.utils.fulltext_indexer import FullTextIndexer
-            self._indexer = FullTextIndexer(cache_dir=self._cache_dir)
-
+            return [], {
+                "mode":       cfg.evidence_mode,
+                "n_excerpts": 0,
+                "n_docs":     len(docs),
+            }
+        self._ensure_indexer()
         excerpts, stats = self._indexer.select_excerpts_for_question(
             question=question,
             ontology=ontology,
@@ -202,11 +260,72 @@ class AdaptivePipeline:
             global_budget=cfg.global_budget,
             top_k_per_doc=cfg.top_k_per_doc,
         )
-        text = self._indexer.render_excerpts_block(excerpts)
         stats = dict(stats)
         stats.update({
-            "mode": cfg.evidence_mode,
-            "excerpt_chars": len(text),
-            "excerpt_tokens_est": len(text) // 4,
+            "mode":               cfg.evidence_mode,
+            "excerpt_chars":      sum(len(e.get("text", "")) for e in excerpts),
+            "excerpt_tokens_est": sum(len(e.get("text", "")) for e in excerpts) // 4,
         })
-        return text, stats
+        return excerpts, stats
+
+    def _filter_documents(
+        self,
+        docs: List[Dict[str, Any]],
+        ontology: DynamicOntology,
+        profile: QuestionProfile,
+        question: str,
+        cfg: PipelineConfig,
+    ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+        if not docs:
+            return [], [], []
+        from core.agents.ontology_agent import OntologyConstructionAgent
+        ont_agent = OntologyConstructionAgent(
+            self._llm("mistral-small-latest", 0.0),
+            prompt_dir=str(self._prompts_root / "ontology"),
+        )
+        return ont_agent.filter_documents(
+            docs=docs,
+            ontology=ontology,
+            profile=profile,
+            question=question,
+            min_keep=cfg.doc_filter_min_keep,
+        )
+
+    @staticmethod
+    def _build_aql_lookup(
+        aql_results_str: str,
+        docs: List[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Build a URI -> metadata dict from both the in-memory docs list
+        and the raw aql_results_str (which may contain richer metadata)."""
+        lookup: Dict[str, Dict[str, Any]] = {}
+        for d in docs:
+            uri = d.get("uri", "")
+            if uri:
+                lookup[uri] = d
+        if aql_results_str:
+            try:
+                import ast as _ast
+                raw = _ast.literal_eval(aql_results_str)
+                if isinstance(raw, list):
+                    for item in raw:
+                        uri = item.get("uri", "")
+                        if uri and uri not in lookup:
+                            lookup[uri] = item
+            except Exception:
+                pass
+        return lookup
+
+    @staticmethod
+    def _build_query_hint(question: str, profile: QuestionProfile) -> str:
+        """Prepend lightweight routing hints to the question so the
+        refinement agent can orient its evidence selection."""
+        hints = []
+        if profile.answer_shape and profile.answer_shape not in ("direct_paragraph", ""):
+            hints.append(f"[SYNTHESIS TARGET: {profile.answer_shape}]")
+        if getattr(profile, "needs_numeric_emphasis", False):
+            hints.append(
+                "[NUMERIC EMPHASIS: prioritise excerpts with quantitative "
+                "values, rates, and units]"
+            )
+        return ("\n".join(hints) + "\n" + question) if hints else question
