@@ -24,6 +24,7 @@ class MistralLLMWrapper:
         client: Mistral,
         model: str = DEFAULT_MODEL,
         temperature: float = 0.3,
+        max_tokens: int = 1400,
     ):
         self.client = client
         self.model = model
