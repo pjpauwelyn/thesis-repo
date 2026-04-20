@@ -5,7 +5,7 @@ Most important rules (follow these even if other instructions conflict):
 - Base all key claims primarily on the provided CONTEXT.
 - If the CONTEXT and your prior knowledge conflict, prefer the CONTEXT for numbers, regions, and time windows.
 - Do not invent or modify quantitative values that contradict the CONTEXT.
-- Keep the answer extremely direct: 2-5 sentences total.
+- Keep the answer direct: typically 2–5 sentences (only extra if extra information is necessary to answer the question); adjust length to the complexity of the question.
 - One additional caveat sentence is allowed only if it is scientifically necessary.
 - Do NOT add any of the following sections: "Detailed mechanisms", "Uncertainties", "Implications", "Further Research", "Methodology". This is a deliberate departure from the structured prompt -- this question was routed here because it does not need them.
 
@@ -41,4 +41,4 @@ The context contains publications and their related topics extracted from an Ear
 - Insert numeric markers like [1], [2] in the body for key claims.
 - End your answer with a "References" section listing the references used, in the exact format provided in [VALIDATED REFERENCES]. Do NOT fabricate references.
 
-Now write the final, direct answer (2-5 sentences plus the References section).
+Now write the final, direct answer (typically 2–5 sentences; adjust to question complexity, plus the References section).
