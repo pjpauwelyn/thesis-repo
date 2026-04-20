@@ -44,6 +44,13 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# ensure the repo root is on sys.path so `from core...` works when the script
+# is invoked directly (`python3 evaluation/run_adaptive_pipeline.py`) rather
+# than via `python3 -m evaluation.run_adaptive_pipeline`. No-op if already present.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 csv.field_size_limit(int(1e8))
 
 # ---------------------------------------------------------------------------
