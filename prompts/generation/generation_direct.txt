@@ -37,8 +37,6 @@ The context contains publications and their related topics extracted from an Ear
 
 ### CITATIONS
 
-- The CONTEXT includes a [VALIDATED REFERENCES] section with formatted references.
-- Insert numeric markers like [1], [2] in the body for key claims.
-- End your answer with a "References" section listing the references used, in the exact format provided in [VALIDATED REFERENCES]. Do NOT fabricate references.
+Only include a References section if the provided CONTEXT contains a [VALIDATED REFERENCES] block. If it does, copy those references verbatim in the format: [i] Authors (Year). Title. URI. Use matching numeric markers like [1], [2] in the body for key claims backed by those references. If NO [VALIDATED REFERENCES] block is present in the CONTEXT, omit the References section entirely and do not insert numeric citation markers. Do NOT invent, guess, or use placeholder references (such as "[1] Author et al. (Year). Title. URI.") under any circumstances.
 
-Now write the final, direct answer (typically 2–5 sentences; adjust to question complexity, plus the References section).
+Now write the final, direct answer (typically 2–5 sentences; adjust to question complexity; include a References section only if [VALIDATED REFERENCES] is present in the CONTEXT).

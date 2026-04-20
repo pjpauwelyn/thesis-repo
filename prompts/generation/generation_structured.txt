@@ -12,7 +12,7 @@ Most important rules (follow these even if other instructions conflict):
 - When the CONTEXT provides sufficient evidence, give a deep answer: explain mechanisms, methods, and uncertainties step‑by‑step, instead of only listing findings. Prefer 2–3 short reasoning steps over a single high‑level sentence.
 - Complexity of the question should match depth and detail of the answer you generate
 - Explicitly mention major uncertainties or data gaps when they appear in the CONTEXT.
-- Use at least one numeric citation marker (e.g., [1]) when the CONTEXT provides VALIDATED REFERENCES, and include a matching References section.
+- Only include numeric citation markers (e.g., [1]) and a References section if the CONTEXT contains a [VALIDATED REFERENCES] block. If no such block is present, omit citations and the References section entirely — do not invent or use placeholder references.
 
 You answered a question with the following draft answer, using your knowledge. Now refine this answer using the provided context.
 
@@ -119,14 +119,6 @@ Treat the draft answer as a strong starting point and the context as high-priori
 
 ### CITATIONS
 
-- The CONTEXT includes a [VALIDATED REFERENCES] section with formatted references (e.g., [1] Author et al. (Year). *Title*. URI.).
-- You should use these references for citations in your answer when relevant and useful. You can use references from you draft answer if they are still relevant based on the context.
-- Insert numeric markers like [1], [2] in the text for key claims, matching the references provided in the context.
-- You MUST add a "References" section at the end of your answer, listing the references used in the same format as provided in the context.
-
-### IMPORTANT FOR REFERENCING
-- Do NOT fabricate/hallucinate references or use placeholders.
-- Referenced papers should be be aligned with the context.
-- Use the exact format provided in the [VALIDATED REFERENCES] section.
+Only include a References section if the provided CONTEXT contains a [VALIDATED REFERENCES] block. If it does, copy those references verbatim in the format: [i] Authors (Year). Title. URI. Use matching numeric markers like [1], [2] in the body for key claims backed by those references. If NO [VALIDATED REFERENCES] block is present in the CONTEXT, omit the References section entirely and do not insert numeric citation markers. Do NOT invent, guess, or use placeholder references (such as "[1] Author et al. (Year). Title. URI.") under any circumstances.
 
 Now write the final refined answer.
