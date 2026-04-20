@@ -21,7 +21,7 @@ rules:
   # tier-1: simple conceptual -- small + abstracts + direct prompt
   - name: tier_1
     when:
-      complexity: {lt: 0.40}
+      complexity: {lt: 0.45}
     config:
       model_name: mistral-small-latest
       evidence_mode: abstracts

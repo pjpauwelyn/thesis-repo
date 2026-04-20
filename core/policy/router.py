@@ -32,7 +32,7 @@ def _resolve_answer_shape(profile: QuestionProfile) -> str:
     if qt == "comparison":
         return "comparison_table"
     if qt == "mechanism":
-        return "mechanism_walkthrough" if c < 0.6 else "structured_long"
+        return "mechanism_walkthrough" if c < 0.50 else "structured_long"
     # quantitative, method_eval, fallback
     return "structured_long"
 
@@ -67,11 +67,34 @@ class Router:
                 reason=f"low/missing profiler confidence ({profile.confidence}) -> safety tier-3",
             )
 
+        # ------------------------------------------------------------------
+        # answer_shape demotion: over-elevated single-concept questions
+        # fires ONLY when tier-3 was matched by complexity alone (not by
+        # question_type comparison/method_eval or methodological_depth).
+        # does NOT override safety-tier3 (handled above the loop).
+        # ------------------------------------------------------------------
         for rule in self._rules:
             if self._matches(rule["when"], profile):
-                return PipelineConfig(**rule["config"])
+                cfg = PipelineConfig(**rule["config"])
 
-        # the yaml always ends with always:true, so this is unreachable
+                # demotion: mechanism/definition with low depth that bled into tier-3
+                if (
+                    cfg.rule_hit == "tier-3"
+                    and profile.question_type in ("definition", "mechanism")
+                    and profile.complexity <= 0.72
+                    and profile.answer_shape in ("direct_paragraph", "short_explainer", "mechanism_walkthrough")
+                    and (profile.methodological_depth or 0.0) < 0.50
+                    and profile.question_type not in ("comparison", "method_eval")
+                ):
+                    for r2 in self._rules:
+                        if r2["config"].get("rule_hit") == "tier-2":
+                            cfg = PipelineConfig(
+                                **{**r2["config"],
+                                "reason": "answer_shape demotion: low-depth single-concept -> tier-2"}
+                            )
+                            break
+
+                return cfg
         raise RuntimeError("router: no rule matched and no fallback found in rules.yaml")
 
     # ------------------------------------------------------------------

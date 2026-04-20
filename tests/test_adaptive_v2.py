@@ -91,7 +91,15 @@ OUTPUT_DIR = Path("tests/output")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 _CSV_PATH: Optional[str] = _find_dlr_csv()
-_ROWS: List[Dict[str, Any]] = _load_questions(_CSV_PATH) if _CSV_PATH else []
+_ROWS_RAW: List[Dict[str, Any]] = _load_questions(_CSV_PATH) if _CSV_PATH else []
+# deduplicate by question text, preserve order
+_seen: set = set()
+_ROWS: List[Dict[str, Any]] = []
+for _r in _ROWS_RAW:
+    _key = _get_question(_r).strip().lower()
+    if _key and _key not in _seen:
+        _seen.add(_key)
+        _ROWS.append(_r)
 _PIPELINE = AdaptivePipeline()
 
 
@@ -124,7 +132,7 @@ def test_phase1_profiles() -> None:
             record = {
                 "q_index":    i,
                 "question":   question,
-                "profile":    profile.dict(),
+                "profile":    profile.model_dump(),
                 "tier":       cfg.rule_hit,
                 "confidence": profile.confidence,
             }
