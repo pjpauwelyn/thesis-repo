@@ -119,9 +119,8 @@ class GenerationAgent(BaseAgent):
         try:
             if system:
                 prompt = f"SYSTEM: {system}\n\n{prompt}"
-            response = self.llm.invoke(
-                prompt, force_json=False, max_tokens=max_tokens
-            )
+            response = self.llm.invoke(prompt)
+
             return response.strip() if response else "Error: empty LLM response."
         except Exception as e:
             self.logger.error(f"llm generation failed: {e}")
