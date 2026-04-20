@@ -46,7 +46,7 @@ import random
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as _futures_wait
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -221,6 +221,13 @@ def _infer_model(tier: str) -> str:
 # per-question worker
 # ---------------------------------------------------------------------------
 
+def _wait_any(futures, timeout: float):
+    """Wait for at least one future to complete or for the timeout to elapse.
+    Returns (done, not_done) sets. Thin wrapper so the main loop reads clean.
+    """
+    return _futures_wait(list(futures), timeout=timeout, return_when=FIRST_COMPLETED)
+
+
 def _run_one(
     job_idx: int,
     display_idx: int,
@@ -235,8 +242,23 @@ def _run_one(
     max_retries: int,
 ) -> Dict[str, Any]:
 
-    model = _infer_model(expected_tier)
-    sem = large_sem if model == "mistral-large-latest" else small_sem
+    # Pre-profile (cheap mistral-small call) so we know the ACTUAL model the
+    # pipeline will use for this question, not what the expected tier says.
+    # Tier expectations can be wrong at runtime (e.g. a tier-2 question can
+    # route to tier-3 if complexity lands high), and without this we may put
+    # two mistral-large calls under the 'small' semaphore and get server
+    # disconnects.
+    try:
+        _, _, cfg = pipeline.profile_and_route(question)
+        actual_model = cfg.model_name
+        actual_tier = cfg.rule_hit
+    except Exception as exc:
+        log.warning("[job=%d q=%d] pre-profile failed (%s); falling back to expected_tier=%s",
+                    job_idx, display_idx, exc, expected_tier)
+        actual_model = _infer_model(expected_tier)
+        actual_tier = expected_tier
+
+    sem = large_sem if actual_model == "mistral-large-latest" else small_sem
 
     last_exc: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
@@ -244,7 +266,10 @@ def _run_one(
             spacer.wait()
             t0 = time.time()
             try:
-                log.info("[job=%d q=%d tier=%s attempt=%d] starting", job_idx, display_idx, expected_tier, attempt)
+                log.info(
+                    "[job=%d q=%d expected=%s actual=%s model=%s attempt=%d] starting",
+                    job_idx, display_idx, expected_tier, actual_tier, actual_model, attempt,
+                )
                 ans = pipeline.run(question, aql, docs=docs or None)
                 elapsed = time.time() - t0
                 log.info(
@@ -367,10 +392,16 @@ def main() -> int:
                     help="global concurrency cap (default: 4)")
     ap.add_argument("--small-concurrency", type=int, default=4,
                     help="max concurrent mistral-small calls (default: 4)")
-    ap.add_argument("--large-concurrency", type=int, default=2,
-                    help="max concurrent mistral-large calls (default: 2)")
+    ap.add_argument("--large-concurrency", type=int, default=1,
+                    help="max concurrent mistral-large calls (default: 1 — "
+                         "serialise large-model work to avoid server disconnects)")
     ap.add_argument("--min-gap-ms", type=int, default=0,
                     help="minimum milliseconds between call starts (default: 0)")
+    ap.add_argument("--job-timeout-s", type=int, default=300,
+                    help="per-question wall-clock timeout in seconds "
+                         "(default: 300). A stuck request is abandoned and "
+                         "recorded as an error, so one bad call does not "
+                         "block the whole run.")
     ap.add_argument("--tier-mix", type=_parse_tier_mix, default="2,2,1",
                     help="'t1,t2,t3' count of questions per tier (default: 2,2,1)")
     ap.add_argument("--n", type=int, default=None,
@@ -428,7 +459,12 @@ def main() -> int:
     t_start = time.time()
     records: List[Dict[str, Any]] = []
 
-    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+    # daemon threads so a stuck one doesn't keep the process alive
+    pool = ThreadPoolExecutor(
+        max_workers=max(1, args.workers),
+        thread_name_prefix="phase3",
+    )
+    try:
         futures = {
             pool.submit(
                 _run_one,
@@ -443,23 +479,61 @@ def main() -> int:
                 large_sem=large_sem,
                 spacer=spacer,
                 max_retries=args.max_retries,
-            ): ji
+            ): (ji, display_idx, q, tier)
             for ji, (display_idx, q, aql, tier, docs) in enumerate(selected, start=1)
         }
-        for fut in as_completed(futures):
-            try:
-                records.append(fut.result())
-            except Exception as exc:
-                ji = futures[fut]
-                log.error("job %d crashed outside retry loop: %s", ji, exc)
-                records.append({
-                    "job_idx": ji, "q_index": ji,
-                    "question": "", "expected_tier": "?", "actual_tier": "ERROR",
-                    "answer": f"ERROR: crash: {exc}",
-                    "enriched_context": "", "enriched_context_chars": 0,
-                    "excerpt_stats": {}, "references": [], "formatted_references": [],
-                    "elapsed_s": 0.0, "error": repr(exc),
-                })
+
+        pending = set(futures.keys())
+        deadline_per_job: Dict[Any, float] = {f: time.time() + args.job_timeout_s for f in futures}
+
+        while pending:
+            # next soonest deadline
+            now = time.time()
+            next_deadline = min(deadline_per_job[f] for f in pending)
+            wait_s = max(0.1, next_deadline - now)
+            done, _ = _wait_any(pending, timeout=wait_s)
+
+            if done:
+                for fut in done:
+                    pending.discard(fut)
+                    ji, display_idx, q, tier = futures[fut]
+                    try:
+                        records.append(fut.result())
+                    except Exception as exc:
+                        log.error("job %d crashed outside retry loop: %s", ji, exc)
+                        records.append({
+                            "job_idx": ji, "q_index": display_idx,
+                            "question": q, "expected_tier": tier, "actual_tier": "ERROR",
+                            "answer": f"ERROR: crash: {exc}",
+                            "enriched_context": "", "enriched_context_chars": 0,
+                            "excerpt_stats": {}, "references": [], "formatted_references": [],
+                            "elapsed_s": 0.0, "error": repr(exc),
+                        })
+                continue
+
+            # no future completed within wait_s; check for timeouts
+            now = time.time()
+            for fut in list(pending):
+                if now >= deadline_per_job[fut]:
+                    ji, display_idx, q, tier = futures[fut]
+                    log.error(
+                        "job %d (q=%d tier=%s) exceeded --job-timeout-s=%ds; abandoning",
+                        ji, display_idx, tier, args.job_timeout_s,
+                    )
+                    fut.cancel()  # no-op if already running; best-effort
+                    pending.discard(fut)
+                    records.append({
+                        "job_idx": ji, "q_index": display_idx,
+                        "question": q, "expected_tier": tier, "actual_tier": "TIMEOUT",
+                        "answer": f"ERROR: exceeded job timeout of {args.job_timeout_s}s",
+                        "enriched_context": "", "enriched_context_chars": 0,
+                        "excerpt_stats": {}, "references": [], "formatted_references": [],
+                        "elapsed_s": float(args.job_timeout_s),
+                        "error": f"timeout_{args.job_timeout_s}s",
+                    })
+    finally:
+        # don't block shutdown on a stuck worker
+        pool.shutdown(wait=False, cancel_futures=True)
 
     elapsed = time.time() - t_start
     txt_path, jsonl_path = _write_outputs(records, Path(args.output_dir))
