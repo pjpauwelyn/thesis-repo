@@ -1,9 +1,10 @@
 """refinement agent variant that injects full-text excerpts into the prompt.
 
-This subclass reuses every piece of RefinementAgent1PassRefined (prompt building,
-ontology formatting, reference enrichment) and only overrides the template name
-plus the prompt-construction step so it fills the new `{fulltext_excerpts}`
-placeholder.
+Reuses all of RefinementAgent1PassRefined (prompt building, ontology
+formatting, reference enrichment).  Overrides only the prompt filename and
+the prompt-construction step so it can fill either:
+  - the new {documents_block} placeholder  (documents_block path, v2)
+  - the legacy {aql_results}/{fulltext_excerpts} placeholders (backwards compat)
 """
 
 from __future__ import annotations
@@ -25,16 +26,20 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
 
     def __init__(self, llm, prompt_dir: str = "prompts/refinement"):
         super().__init__(llm, prompt_dir=prompt_dir)
-        # holds the excerpts for the current question; set by the runner
         self._current_excerpts_text: str = ""
+        self._documents_block: Optional[str] = None
 
     # ------------------------------------------------------------------
-    # runner hook
+    # runner hooks
     # ------------------------------------------------------------------
 
     def set_excerpts(self, excerpts_text: str) -> None:
-        """Called by the runner *per question* before process_context."""
+        """Called by the runner per question before process_context (legacy path)."""
         self._current_excerpts_text = excerpts_text or ""
+
+    def set_documents_block(self, documents_block: str) -> None:
+        """Called by AdaptivePipeline.run() with the unified documents block (v2)."""
+        self._documents_block = documents_block
 
     # ------------------------------------------------------------------
     # overridden prompt builder
@@ -67,18 +72,85 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
 
         documents_text = self._format_documents_for_references(documents)
 
-        excerpts_text = self._current_excerpts_text or (
-            "No full-text excerpts available for this question (abstracts only)."
-        )
-
-        prompt = (
-            template.replace("{query}", question)
-            .replace("{ontology}", ontology_text)
-            .replace("{aql_results}", aql_text)
-            .replace("{documents}", documents_text)
-            .replace("{fulltext_excerpts}", excerpts_text)
-            .replace("{incomplete_references}", "")
-        )
+        if self._documents_block is not None:
+            # v2 path: unified documents_block replaces both aql_results and
+            # fulltext_excerpts slots.  The prompt template must contain
+            # {documents_block}; the legacy slots are replaced with empty
+            # strings so stray {aql_results} / {fulltext_excerpts} in any
+            # surrounding text don't cause KeyError.
+            prompt = (
+                template
+                .replace("{query}", question)
+                .replace("{ontology}", ontology_text)
+                .replace("{documents_block}", self._documents_block)
+                .replace("{aql_results}", "")
+                .replace("{fulltext_excerpts}", "")
+                .replace("{documents}", documents_text)
+                .replace("{incomplete_references}", "")
+            )
+        else:
+            # legacy path: fill {aql_results} and {fulltext_excerpts} as before
+            excerpts_text = self._current_excerpts_text or (
+                "No full-text excerpts available for this question (abstracts only)."
+            )
+            prompt = (
+                template
+                .replace("{query}", question)
+                .replace("{ontology}", ontology_text)
+                .replace("{aql_results}", aql_text)
+                .replace("{documents}", documents_text)
+                .replace("{fulltext_excerpts}", excerpts_text)
+                .replace("{incomplete_references}", "")
+            )
 
         _debug_logger.debug("fulltext refinement prompt head:\n%s", prompt[:500])
         return prompt, documents
+
+    # ------------------------------------------------------------------
+    # process_context: thin override to handle None aql_results_str
+    # ------------------------------------------------------------------
+
+    def process_context(
+        self,
+        question: str,
+        structured_context: str,
+        ontology: Optional[DynamicOntology] = None,
+        include_ontology: bool = True,
+        aql_results_str: Optional[str] = None,
+        context_filter: str = "full",
+    ) -> RefinedContext:
+        # v2 path: documents_block is set; aql_results_str is None
+        # — skip the parent's early-return guard so we still call the LLM
+        if self._documents_block is not None:
+            prompt, documents = self._build_refined_prompt(
+                question, ontology, include_ontology, aql_results_str
+            )
+            refined_text = self._invoke_llm_text(prompt)
+            est_tokens   = len(refined_text) // 4
+            self.logger.info(
+                "fulltext refined context: %d chars (~%d tokens)",
+                len(refined_text), est_tokens,
+            )
+            assessments  = self._minimal_assessments(documents)
+            ont_summary  = (
+                self._ontology_summary(ontology)
+                if include_ontology and ontology else ""
+            )
+            return RefinedContext(
+                original_context=structured_context,
+                question=question,
+                ontology_summary=ont_summary,
+                assessments=assessments,
+                summary=f"fulltext refined context: {len(refined_text)} chars",
+                enriched_context=refined_text,
+            )
+
+        # legacy path: delegate to parent (which guards on aql_results_str)
+        return super().process_context(
+            question=question,
+            structured_context=structured_context,
+            ontology=ontology,
+            include_ontology=include_ontology,
+            aql_results_str=aql_results_str,
+            context_filter=context_filter,
+        )
