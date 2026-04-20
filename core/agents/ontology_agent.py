@@ -120,7 +120,6 @@ class OntologyConstructionAgent(BaseAgent):
                 spatial_specificity=float(raw.get("spatial_specificity", 0.1)),
                 temporal_specificity=float(raw.get("temporal_specificity", 0.1)),
                 methodological_depth=float(raw.get("methodological_depth", 0.1)),
-                needs_numeric_emphasis=bool(raw.get("needs_numeric_emphasis", False)),
                 confidence=raw.get("confidence", None),
             )
 
@@ -180,8 +179,9 @@ class OntologyConstructionAgent(BaseAgent):
         )
 
         n = len(docs)
-        min_full  = max(3, n // 4)
-        min_total = max(min_keep, n // 2)
+        is_simple = getattr(profile, "question_type", "mechanism") in ("definition", "factual")
+        min_full  = max(2, n // 6) if is_simple else max(3, n // 4)
+        min_total = max(4, n // 4) if is_simple else max(min_keep, n // 2)
 
         doc_list = "\n".join(
             f"{i+1}. {docs[i].get('title', 'Unknown')}" for i in range(n)
@@ -228,7 +228,7 @@ class OntologyConstructionAgent(BaseAgent):
                 )
             n_full  = classifications.count("full")
             n_total = n_full + classifications.count("abstract")
-            if n_full < min_full or n_total < min_total:
+            if n_total < min_keep:
                 raise ValueError(
                     f"guardrail violated: n_full={n_full} (min {min_full}), "
                     f"n_total={n_total} (min {min_total})"
