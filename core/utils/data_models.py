@@ -102,7 +102,7 @@ class QuestionProfile(BaseModel):
     temporal_specificity: float = Field(0.1, ge=0.0, le=1.0)
     methodological_depth: float = Field(0.1, ge=0.0, le=1.0)
     scope: Literal["global", "regional", "local"] = "global"
-    expected_length: Literal["short", "medium", "long"] = "medium"
+    needs_numeric_emphasis: bool = False
     answer_shape: Literal[
         "direct_paragraph", "short_explainer", "structured_long",
         "comparison_table", "mechanism_walkthrough", "raw",
@@ -126,3 +126,7 @@ class PipelineConfig(BaseModel):
     temperature_generate: float = 0.2
     rule_hit: str = "fallback"
     reason: str = ""
+    gen_context_cap: int = 60_000
+    max_output_tokens: int = 700
+    system_prompt_modifier: str = ""
+    doc_filter_min_keep: int = 6
