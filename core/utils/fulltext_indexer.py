@@ -1115,6 +1115,23 @@ class FullTextIndexer:
 
             parts.append("")  # blank separator between docs
 
+        ref_lines: List[str] = []
+        for i, doc in enumerate(all_docs, start=1):
+            uri  = doc.get("uri", "")
+            meta = aql_lookup.get(uri, doc)
+            title   = meta.get("title")   or doc.get("title")   or "Unknown"
+            year    = meta.get("year")    or meta.get("publication_year") or "n.d."
+            authors = meta.get("authors") or meta.get("author")  or "Unknown"
+            if isinstance(authors, list):
+                authors = (
+                    f"{authors[0]} et al." if len(authors) > 2
+                    else ", ".join(str(a) for a in authors)
+                )
+            ref_lines.append(f"[{i}] {authors} ({year}). {title}. {uri}")
+
+        parts.append("\n[VALIDATED REFERENCES]")
+        parts.extend(ref_lines)
+
         return "\n".join(parts).strip()
 
     # ------------------------------------------------------------------
