@@ -1,7 +1,7 @@
 """constructs a dynamic ontology from a user question via llm calls."""
 
 import os
-from typing import List
+from typing import Any, Dict, List, Tuple
 
 from core.agents.base_agent import BaseAgent
 from core.utils.data_models import (
@@ -120,6 +120,7 @@ class OntologyConstructionAgent(BaseAgent):
                 spatial_specificity=float(raw.get("spatial_specificity", 0.1)),
                 temporal_specificity=float(raw.get("temporal_specificity", 0.1)),
                 methodological_depth=float(raw.get("methodological_depth", 0.1)),
+                needs_numeric_emphasis=bool(raw.get("needs_numeric_emphasis", False)),
                 confidence=raw.get("confidence", None),
             )
 
@@ -146,6 +147,102 @@ class OntologyConstructionAgent(BaseAgent):
                 confidence=None,  # triggers safety-tier3 in router
             )
             return ontology, profile
+
+    def filter_documents(
+        self,
+        docs: List[Dict[str, Any]],
+        ontology: "DynamicOntology",
+        profile: "QuestionProfile",
+        question: str,
+        min_keep: int = 6,
+    ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+        if not docs:
+            return [], [], []
+
+        # build top concepts from ontology av_pairs sorted by centrality
+        pairs = sorted(
+            getattr(ontology, "attribute_value_pairs", []),
+            key=lambda av: getattr(av, "centrality", 0.0),
+            reverse=True,
+        )[:5]
+        top_concepts = "\n".join(
+            f"- {getattr(av, 'attribute', '')}: {getattr(av, 'value', '')}"
+            for av in pairs
+        )
+
+        n = len(docs)
+        min_full = max(3, n // 4)
+        min_total = max(min_keep, n // 2)
+
+        doc_list = "\n".join(
+            f"{i+1}. {docs[i].get('title', 'Unknown')}" for i in range(n)
+        )
+
+        prompt = (
+            f"You are a document relevance filter for a scientific RAG pipeline.\n\n"
+            f"Question: {question}\n"
+            f"Key ontology concepts (most important first):\n{top_concepts}\n\n"
+            f"For each document below, classify it as exactly one of:\n"
+            f'- "full"     : clearly relevant to the ontology concepts; worth reading in depth\n'
+            f'- "abstract" : potentially relevant or provides supporting context; '
+            f'abstract only is sufficient\n'
+            f'- "drop"     : clearly unrelated to both the question and ontology concepts\n\n'
+            f"Rules:\n"
+            f'- Be GENEROUS. When uncertain, prefer "abstract" over "drop", '
+            f'"full" over "abstract".\n'
+            f'- "full" documents will have their complete PDF text fetched — only assign '
+            f'"full" if the document directly addresses the main topic or a closely '
+            f"related method or variable.\n"
+            f'- "drop" only when there is no plausible connection to the question or ontology.\n'
+            f'- You MUST return at least {min_full} "full" classifications.\n'
+            f'- You MUST return at least {min_total} combined "full"+"abstract" '
+            f"classifications.\n\n"
+            f"Documents:\n{doc_list}\n\n"
+            f'Return ONLY valid JSON: {{"classifications": ["full", "abstract", "drop", ...]}}\n'
+            f"No prose. The list length must equal the number of documents ({n})."
+        )
+
+        # follow the exact same llm invocation pattern used in process_with_profile()
+        try:
+            raw = self.llm.invoke(prompt, force_json=True)
+            if isinstance(raw, str):
+                import json as _json
+                data = _json.loads(raw)
+            elif isinstance(raw, dict):
+                data = raw
+            else:
+                raise ValueError(f"unexpected llm response type: {type(raw)}")
+
+            classifications = data.get("classifications", [])
+
+            if len(classifications) != n:
+                raise ValueError(
+                    f"classification count {len(classifications)} != doc count {n}"
+                )
+            n_full = classifications.count("full")
+            n_total = n_full + classifications.count("abstract")
+            if n_full < min_full or n_total < min_total:
+                raise ValueError(
+                    f"guardrail violated: n_full={n_full} (min {min_full}), "
+                    f"n_total={n_total} (min {min_total})"
+                )
+
+        except Exception as exc:
+            # fail-safe: keep all docs, never silently discard evidence
+            self.logger.warning(
+                "filter_documents failed (%s) — falling back to full set", exc
+            )
+            return list(docs), [], []
+
+        full_docs     = [docs[i] for i, c in enumerate(classifications) if c == "full"]
+        abstract_docs = [docs[i] for i, c in enumerate(classifications) if c == "abstract"]
+        drop_docs     = [docs[i] for i, c in enumerate(classifications) if c == "drop"]
+
+        self.logger.info(
+            "filter_documents: %d full, %d abstract, %d dropped (of %d)",
+            len(full_docs), len(abstract_docs), len(drop_docs), n,
+        )
+        return full_docs, abstract_docs, drop_docs
 
     def _define_logical_relationships(
         self, av_pairs: List[AttributeValuePair], question: str
