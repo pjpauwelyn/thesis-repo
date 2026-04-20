@@ -168,7 +168,7 @@ class AdaptivePipeline:
             documents_block = None  # tier-1/fallback: uses aql_results_str path unchanged
 
         # 5. refinement
-        ref_llm = self._llm(cfg.model_name, cfg.temperature_refine)
+        ref_llm = self._llm(cfg.model_name, cfg.temperature_refine, cfg.max_output_tokens)
         if cfg.evidence_mode == "abstracts":
             ref_agent = RefinementAgent1PassRefined(
                 ref_llm,
@@ -197,7 +197,7 @@ class AdaptivePipeline:
 
         # 6. generation
         gen_agent = GenerationAgent(
-            self._llm(cfg.model_name, cfg.temperature_generate),
+            self._llm(cfg.model_name, cfg.temperature_generate, cfg.max_output_tokens),
             prompt_dir=str(self._prompts_root / "generation"),
         )
         template = gen_agent._load_template(cfg.generation_prompt)
@@ -238,12 +238,12 @@ class AdaptivePipeline:
     # private helpers
     # ------------------------------------------------------------------
 
-    def _llm(self, model: str, temperature: float):
-        key = (model, temperature)
+    def _llm(self, model: str, temperature: float, max_tokens: int = 1400):
+        key = (model, temperature, max_tokens)
         if key not in self._llm_cache:
             from core.utils.helpers import get_llm_model
             self._llm_cache[key] = get_llm_model(
-                model=model, temperature=temperature
+                model=model, temperature=temperature, max_tokens=max_tokens
             )
         return self._llm_cache[key]
 

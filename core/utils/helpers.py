@@ -28,6 +28,7 @@ class MistralLLMWrapper:
         self.client = client
         self.model = model
         self.temperature = temperature
+        self.max_tokens = max_tokens
 
     def invoke(self, prompt_text: str, force_json: bool = False) -> Optional[Union[dict, str]]:
         """send a prompt and return parsed json (force_json=True) or raw text."""
@@ -57,7 +58,7 @@ class MistralLLMWrapper:
                         model=self.model,
                         messages=messages,
                         temperature=self.temperature,
-                        max_tokens=8000,
+                        max_tokens=self.max_tokens,
                     )
                     for ev in stream:
                         # mistralai v1: each event has .data.choices[0].delta.content
@@ -77,7 +78,7 @@ class MistralLLMWrapper:
                     model=self.model,
                     messages=messages,
                     temperature=self.temperature,
-                    max_tokens=8000,
+                    max_tokens=self.max_tokens,
                 )
                 content = response.choices[0].message.content
                 return self._parse_output(content, force_json=force_json)
@@ -149,6 +150,7 @@ class MistralLLMWrapper:
 def get_llm_model(
     model: str = DEFAULT_MODEL,
     temperature: float = 0.3,
+    max_tokens: int = 1400,
 ) -> MistralLLMWrapper:
     """create a mistral llm wrapper from env credentials."""
     api_key = os.getenv("MISTRAL_API_KEY")
@@ -163,7 +165,7 @@ def get_llm_model(
     except TypeError:
         # older SDK versions don't support timeout_ms kwarg
         client = Mistral(api_key=api_key)
-    return MistralLLMWrapper(client, model=model, temperature=temperature)
+    return MistralLLMWrapper(client, model=model, temperature=temperature, max_tokens=max_tokens)
 
 
 def setup_logging(name: str, level: str = "INFO") -> logging.Logger:
