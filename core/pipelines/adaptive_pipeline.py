@@ -219,6 +219,33 @@ class AdaptivePipeline:
         )
         enriched = refined.enriched_context or ""
 
+        # Defensive guard: if the refinement LLM returned an empty response
+        # (e.g. because the Mistral large-model endpoint was disconnecting
+        # under load), the enriched context collapses to essentially just the
+        # [VALIDATED REFERENCES] footer (~28 chars). Proceeding to generation
+        # in that state produces a plausible-looking but evidence-free
+        # answer, because the generation LLM will fall back on parametric
+        # knowledge. That is *worse* than failing loudly: it poisons the
+        # answers CSV with hallucinated content that the citation-hygiene
+        # flagger cannot catch (formatted_refs_count > 0 from the footer,
+        # answer body contains [N] markers that look valid).
+        #
+        # If the refined context has no real content beyond the validated-
+        # references footer, abort this question so it is written as
+        # ERROR in the answers CSV and picked up on the retry pass.
+        _ref_body = enriched
+        if validated_footer and validated_footer in _ref_body:
+            _ref_body = _ref_body.replace(validated_footer, "").strip()
+        # normalise whitespace before the length check
+        if len(_ref_body.strip()) < 120 and cfg.evidence_mode != "abstracts":
+            raise RuntimeError(
+                "refinement produced empty/degenerate context "
+                f"({len(_ref_body.strip())} chars after stripping validated "
+                "footer); aborting to avoid hallucinated answer. This is "
+                "typically caused by transient Mistral server disconnects "
+                "on large-payload refinement calls."
+            )
+
         # Guarantee the [VALIDATED REFERENCES] footer survives to the
         # generation stage. The refinement LLM summarises/reformats the
         # documents_block and has no reliable reason to preserve the footer
