@@ -243,13 +243,15 @@ def _run_one(
 ) -> Dict[str, Any]:
 
     # Pre-profile (cheap mistral-small call) so we know the ACTUAL model the
-    # pipeline will use for this question, not what the expected tier says.
-    # Tier expectations can be wrong at runtime (e.g. a tier-2 question can
-    # route to tier-3 if complexity lands high), and without this we may put
-    # two mistral-large calls under the 'small' semaphore and get server
-    # disconnects.
+    # pipeline will use for this question, and PASS the resulting route into
+    # pipeline.run() so the semaphore decision and the actual model used are
+    # guaranteed to agree. Without this, LLM nondeterminism in the profile
+    # step can let a second mistral-large call slip under the 'small'
+    # semaphore and trigger server disconnects.
+    precomputed_route = None
     try:
-        _, _, cfg = pipeline.profile_and_route(question)
+        precomputed_route = pipeline.profile_and_route(question)
+        _, _, cfg = precomputed_route
         actual_model = cfg.model_name
         actual_tier = cfg.rule_hit
     except Exception as exc:
@@ -270,7 +272,12 @@ def _run_one(
                     "[job=%d q=%d expected=%s actual=%s model=%s attempt=%d] starting",
                     job_idx, display_idx, expected_tier, actual_tier, actual_model, attempt,
                 )
-                ans = pipeline.run(question, aql, docs=docs or None)
+                ans = pipeline.run(
+                    question,
+                    aql,
+                    docs=docs or None,
+                    precomputed_route=precomputed_route,
+                )
                 elapsed = time.time() - t0
                 log.info(
                     "[job=%d q=%d] done tier=%s chars=%d refs=%d elapsed=%.1fs",
@@ -532,8 +539,12 @@ def main() -> int:
                         "error": f"timeout_{args.job_timeout_s}s",
                     })
     finally:
-        # don't block shutdown on a stuck worker
-        pool.shutdown(wait=False, cancel_futures=True)
+        # don't block shutdown on a stuck worker. cancel_futures was added in
+        # py3.9; fall back gracefully on older interpreters.
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            pool.shutdown(wait=False)
 
     elapsed = time.time() - t_start
     txt_path, jsonl_path = _write_outputs(records, Path(args.output_dir))

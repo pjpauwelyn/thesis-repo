@@ -132,13 +132,25 @@ class AdaptivePipeline:
         question: str,
         aql_results_str: str,
         docs: Optional[List[Dict[str, Any]]] = None,
+        precomputed_route: Optional[
+            Tuple[DynamicOntology, QuestionProfile, PipelineConfig]
+        ] = None,
     ) -> AdaptiveResult:
         from core.agents.generation_agent import GenerationAgent
         from core.agents.refinement_agent_1pass_refined import RefinementAgent1PassRefined
         from core.agents.refinement_agent_fulltext import RefinementAgent1PassFullText
 
         # 1. profile + route
-        ontology, profile, cfg = self.profile_and_route(question)
+        # Callers (e.g. the parallel runner) may pre-compute the route so the
+        # concurrency-semaphore decision and the actual model used here are
+        # guaranteed to agree. This avoids a race where two calls to
+        # profile_and_route for the same question return different tiers due
+        # to LLM nondeterminism, letting two large-model calls run under the
+        # 'small' semaphore.
+        if precomputed_route is not None:
+            ontology, profile, cfg = precomputed_route
+        else:
+            ontology, profile, cfg = self.profile_and_route(question)
         log.info(
             "q=%s... -> rule=%s model=%s evidence=%s",
             question[:60], cfg.rule_hit, cfg.model_name, cfg.evidence_mode,
