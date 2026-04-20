@@ -120,6 +120,7 @@ class OntologyConstructionAgent(BaseAgent):
                 spatial_specificity=float(raw.get("spatial_specificity", 0.1)),
                 temporal_specificity=float(raw.get("temporal_specificity", 0.1)),
                 methodological_depth=float(raw.get("methodological_depth", 0.1)),
+                needs_numeric_emphasis=bool(raw.get("needs_numeric_emphasis", False)),
                 confidence=raw.get("confidence", None),
             )
 
