@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from core.agents.refinement_agent_1pass_refined import RefinementAgent1PassRefined
 from core.utils.data_models import DynamicOntology, RefinedContext
+from core.utils.helpers import setup_logging
 
 _debug_logger = logging.getLogger("raw_prompts")
 
@@ -26,6 +27,12 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
 
     def __init__(self, llm, prompt_dir: str = "prompts/refinement"):
         super().__init__(llm, prompt_dir=prompt_dir)
+        # override the name inherited from RefinementAgent1PassRefined so logs
+        # correctly identify this agent as RefinementAgent1PassFullText. without
+        # this, tier-2/3 runs log as "RefinementAgent1PassRefined" which is
+        # misleading when diagnosing whether the correct refinement path fired.
+        self.name = "RefinementAgent1PassFullText"
+        self.logger = setup_logging(self.name)
         self._current_excerpts_text: str = ""
         self._documents_block: Optional[str] = None
 
