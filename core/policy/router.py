@@ -81,10 +81,9 @@ class Router:
                 if (
                     cfg.rule_hit == "tier-3"
                     and profile.question_type in ("definition", "mechanism")
-                    and profile.complexity <= 0.72
-                    and profile.answer_shape in ("direct_paragraph", "short_explainer", "mechanism_walkthrough")
+                    and profile.complexity <= 0.75
                     and (profile.methodological_depth or 0.0) < 0.50
-                    and profile.question_type not in ("comparison", "method_eval")
+                    and profile.quantitativity <= 0.60
                 ):
                     for r2 in self._rules:
                         if r2["config"].get("rule_hit") == "tier-2":
