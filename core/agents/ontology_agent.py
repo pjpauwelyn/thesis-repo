@@ -111,10 +111,15 @@ class OntologyConstructionAgent(BaseAgent):
             )
 
             raw = resp.get("profile", {}) or {}
+            # normalise question_type: strip whitespace and lowercase to guard
+            # against LLM responses like "Mechanism" or "mechanism " that would
+            # silently fail the {in: [...]} check in rules.yaml and cause
+            # tier-3 to never fire.
+            raw_qt = (raw.get("question_type") or "continuous").strip().lower()
             profile = QuestionProfile(
                 identity=question,
                 one_line_summary=raw.get("one_line_summary", ""),
-                question_type=raw.get("question_type", "continuous"),
+                question_type=raw_qt,
                 complexity=float(raw.get("complexity", 0.5)),
                 quantitativity=float(raw.get("quantitativity", 0.3)),
                 spatial_specificity=float(raw.get("spatial_specificity", 0.1)),

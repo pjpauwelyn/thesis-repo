@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, Union
 
@@ -10,6 +11,7 @@ import yaml
 from core.utils.data_models import PipelineConfig, QuestionProfile
 
 _DEFAULT_RULES = Path(__file__).parent / "rules.yaml"
+_log = logging.getLogger(__name__)
 
 # below this profiler confidence we ignore the rule table entirely and route
 # to the safety net (large + full excerpts). also fires on confidence=None,
@@ -67,33 +69,23 @@ class Router:
                 reason=f"low/missing profiler confidence ({profile.confidence}) -> safety tier-3",
             )
 
-        # ------------------------------------------------------------------
-        # answer_shape demotion: over-elevated single-concept questions
-        # fires ONLY when tier-3 was matched by complexity alone (not by
-        # question_type comparison/method_eval or methodological_depth).
-        # does NOT override safety-tier3 (handled above the loop).
-        # ------------------------------------------------------------------
+        _log.info(
+            "router.select: type=%s complexity=%.2f quant=%.2f spatial=%.2f "
+            "temporal=%.2f conf=%.2f",
+            profile.question_type,
+            profile.complexity,
+            profile.quantitativity,
+            profile.spatial_specificity,
+            profile.temporal_specificity,
+            profile.confidence or 0.0,
+        )
+
         for rule in self._rules:
             if self._matches(rule["when"], profile):
-                cfg = PipelineConfig(**rule["config"])
+                _log.info("router.select: matched rule '%s'", rule["name"])
+                return PipelineConfig(**rule["config"])
 
-                # demotion: mechanism/definition with low depth that bled into tier-3
-                if (
-                    cfg.rule_hit == "tier-3"
-                    and profile.question_type in ("definition", "mechanism")
-                    and profile.complexity <= 0.75
-                    and (profile.methodological_depth or 0.0) < 0.50
-                    and profile.quantitativity <= 0.60
-                ):
-                    for r2 in self._rules:
-                        if r2["config"].get("rule_hit") == "tier-2":
-                            cfg = PipelineConfig(
-                                **{**r2["config"],
-                                "reason": "answer_shape demotion: low-depth single-concept -> tier-2"}
-                            )
-                            break
-
-                return cfg
+        # the yaml always ends with always:true, so this is unreachable
         raise RuntimeError("router: no rule matched and no fallback found in rules.yaml")
 
     # ------------------------------------------------------------------
