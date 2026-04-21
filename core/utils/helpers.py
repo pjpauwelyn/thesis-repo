@@ -13,7 +13,7 @@ from mistralai import Mistral
 load_dotenv()
 
 # default model used across the pipeline; experiments can override via env or config
-DEFAULT_MODEL = os.getenv("PIPELINE_MODEL", "mistral-small-24b-instruct-2503")
+DEFAULT_MODEL = os.getenv("PIPELINE_MODEL", "mistral-small-latest")
 
 
 class MistralLLMWrapper:

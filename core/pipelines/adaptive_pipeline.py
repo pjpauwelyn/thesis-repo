@@ -6,10 +6,15 @@ the policy router based on the question profile.
 flow per question:
   1. profile     -- fused av-pair + profile call (small, temp=0)
   2. route       -- pure-python policy router selects PipelineConfig
-  3. filter      -- llm-based document relevance filter (all tiers)
+  3. retrieve    -- live ArangoDB KG (graph expansion) if available,
+                    else fall back to pre-baked aql_results_str from CSV
   4. evidence    -- abstracts (no extra work) | excerpts via FullTextIndexer
   5. refinement  -- 1pass-refined or 1pass-fulltext, depending on evidence
   6. generation  -- direct or structured prompt, with shape + synthesis directives
+
+KG retrieval is activated automatically when ARANGO_URL + ARANGO_ROOT_PASSWORD
+are present in the environment.  when they are absent the pipeline falls back
+to the existing CSV-based aql_results_str path unchanged.
 """
 
 from __future__ import annotations
@@ -69,6 +74,8 @@ class AdaptiveResult:
     enriched_context: str = ""
     rule_hit: str = ""
     excerpt_stats: Dict[str, Any] = field(default_factory=dict)
+    kg_docs_used: int = 0           # how many primary KG docs were retrieved
+    kg_source: str = "csv"          # "live" | "csv" | "none"
 
 
 class AdaptivePipeline:
@@ -91,8 +98,6 @@ class AdaptivePipeline:
     def profile_and_route(
         self, question: str
     ) -> Tuple[DynamicOntology, QuestionProfile, PipelineConfig]:
-        """profile + route only -- no refinement, no generation.
-        used by the runner's --dry-run flag."""
         from core.agents.ontology_agent import OntologyConstructionAgent
 
         ont_agent = OntologyConstructionAgent(
@@ -130,69 +135,65 @@ class AdaptivePipeline:
     def run(
         self,
         question: str,
-        aql_results_str: str,
+        aql_results_str: str = "",
         docs: Optional[List[Dict[str, Any]]] = None,
-        precomputed_route: Optional[
-            Tuple[DynamicOntology, QuestionProfile, PipelineConfig]
-        ] = None,
+        aql_params: Optional[Dict[str, Any]] = None,
     ) -> AdaptiveResult:
+        """run the full adaptive pipeline for one question.
+
+        retrieval order:
+          1. live ArangoDB KG  (if ARANGO_ROOT_PASSWORD is set)
+          2. pre-parsed docs   (if caller already passed docs list)
+          3. aql_results_str   (CSV fallback)
+        """
         from core.agents.generation_agent import GenerationAgent
         from core.agents.refinement_agent_1pass_refined import RefinementAgent1PassRefined
         from core.agents.refinement_agent_fulltext import RefinementAgent1PassFullText
+        from core.utils.aql_parser import parse_aql_results
 
-        # 1. profile + route
-        # Callers (e.g. the parallel runner) may pre-compute the route so the
-        # concurrency-semaphore decision and the actual model used here are
-        # guaranteed to agree. This avoids a race where two calls to
-        # profile_and_route for the same question return different tiers due
-        # to LLM nondeterminism, letting two large-model calls run under the
-        # 'small' semaphore.
-        if precomputed_route is not None:
-            ontology, profile, cfg = precomputed_route
-        else:
-            ontology, profile, cfg = self.profile_and_route(question)
+        ontology, profile, cfg = self.profile_and_route(question)
         log.info(
             "q=%s... -> rule=%s model=%s evidence=%s",
             question[:60], cfg.rule_hit, cfg.model_name, cfg.evidence_mode,
         )
 
-        # 2. document filter (all tiers)
-        all_docs = docs or []
-        full_docs, abstract_docs, drop_docs = self._filter_documents(
-            all_docs, ontology, profile, question, cfg
-        )
-
-        # 3. evidence -- PDF excerpts for full_docs only
-        excerpts, excerpt_stats = self._build_evidence(cfg, question, ontology, full_docs)
-
-        # 4. assemble unified documents_block for tier-2 / tier-3
-        aql_lookup = self._build_aql_lookup(aql_results_str, all_docs)
-        if cfg.evidence_mode != "abstracts":
-            self._ensure_indexer()
-            from core.utils.fulltext_indexer import FullTextIndexer
-            documents_block = FullTextIndexer.render_documents_block(
-                full_docs=full_docs,
-                abstract_docs=abstract_docs,
-                excerpts=excerpts,
-                aql_lookup=aql_lookup,
-            )
+        # ----------------------------------------------------------
+        # retrieval: live KG > caller docs > CSV fallback
+        # ----------------------------------------------------------
+        kg_source = "none"
+        live_docs = self._try_live_kg(question, ontology, aql_params)
+        if live_docs:
+            kg_source = "live"
+            docs = live_docs
+            aql_results_str = self._format_kg_context(live_docs)
+            log.info("KG live: %d primary docs, %d total nodes",
+                     len(live_docs),
+                     sum(1 + len(d.get("science_keywords", [])) +
+                         sum(len(sk.get("secondary_nodes", []))
+                             for sk in d.get("science_keywords", []))
+                         for d in live_docs))
+        elif docs:
+            kg_source = "csv"
         else:
-            documents_block = None  # tier-1/fallback: uses aql_results_str path unchanged
+            kg_source = "csv"
+            if aql_results_str:
+                parsed = parse_aql_results(aql_results_str)
+                try:
+                    docs = json.loads(parsed)
+                    if not isinstance(docs, list):
+                        docs = []
+                except json.JSONDecodeError:
+                    docs = []
 
-        # Always build a standalone [VALIDATED REFERENCES] footer from the
-        # filtered documents, even for tier-1 (abstracts mode), so that every
-        # answer has a bounded, authoritative citation list to copy from.
-        # Without this, tier-1 answers hallucinate citation IDs (e.g. [7],
-        # [14]) that have no backing reference list.
-        from core.utils.fulltext_indexer import FullTextIndexer as _FTI
-        validated_footer = _FTI.render_validated_references(
-            full_docs=full_docs,
-            abstract_docs=abstract_docs,
-            aql_lookup=aql_lookup,
-        )
+        # ----------------------------------------------------------
+        # evidence (fulltext excerpts when evidence_mode != abstracts)
+        # ----------------------------------------------------------
+        excerpts_text, excerpt_stats = self._build_evidence(cfg, question, ontology, docs)
 
-        # 5. refinement
-        ref_llm = self._llm(cfg.model_name, cfg.temperature_refine, cfg.max_output_tokens)
+        # ----------------------------------------------------------
+        # refinement
+        # ----------------------------------------------------------
+        ref_llm = self._llm(cfg.model_name, cfg.temperature_refine)
         if cfg.evidence_mode == "abstracts":
             ref_agent = RefinementAgent1PassRefined(
                 ref_llm,
@@ -203,70 +204,38 @@ class AdaptivePipeline:
                 ref_llm,
                 prompt_dir=str(self._prompts_root / "refinement"),
             )
-            ref_agent.set_documents_block(documents_block)
+            ref_agent.set_excerpts(excerpts_text)
 
         if hasattr(ref_agent, "set_scope_filter"):
             ref_agent.set_scope_filter(cfg.scope_filter)
 
-        query_hint = self._build_query_hint(question, profile)
+        # when we have live KG docs, pass the rich context string directly;
+        # otherwise fall through to the existing aql_results_str path
+        context_for_refinement = (
+            aql_results_str if kg_source == "live"
+            else (aql_results_str or "")
+        )
+
         refined = ref_agent.process_context(
             question=query_hint,
             structured_context="",
             ontology=ontology,
             include_ontology=True,
-            aql_results_str=aql_results_str if documents_block is None else None,
+            aql_results_str=context_for_refinement,
             context_filter="full",
         )
         enriched = refined.enriched_context or ""
 
-        # Defensive guard: if the refinement LLM returned an empty response
-        # (e.g. because the Mistral large-model endpoint was disconnecting
-        # under load), the enriched context collapses to essentially just the
-        # [VALIDATED REFERENCES] footer (~28 chars). Proceeding to generation
-        # in that state produces a plausible-looking but evidence-free
-        # answer, because the generation LLM will fall back on parametric
-        # knowledge. That is *worse* than failing loudly: it poisons the
-        # answers CSV with hallucinated content that the citation-hygiene
-        # flagger cannot catch (formatted_refs_count > 0 from the footer,
-        # answer body contains [N] markers that look valid).
-        #
-        # If the refined context has no real content beyond the validated-
-        # references footer, abort this question so it is written as
-        # ERROR in the answers CSV and picked up on the retry pass.
-        _ref_body = enriched
-        if validated_footer and validated_footer in _ref_body:
-            _ref_body = _ref_body.replace(validated_footer, "").strip()
-        # normalise whitespace before the length check
-        if len(_ref_body.strip()) < 120 and cfg.evidence_mode != "abstracts":
-            raise RuntimeError(
-                "refinement produced empty/degenerate context "
-                f"({len(_ref_body.strip())} chars after stripping validated "
-                "footer); aborting to avoid hallucinated answer. This is "
-                "typically caused by transient Mistral server disconnects "
-                "on large-payload refinement calls."
-            )
-
-        # Guarantee the [VALIDATED REFERENCES] footer survives to the
-        # generation stage. The refinement LLM summarises/reformats the
-        # documents_block and has no reliable reason to preserve the footer
-        # verbatim, so we append it here from the raw documents_block if it
-        # isn't already present. This keeps
-        # GenerationAgent._extract_references_from_context() able to recover
-        # real references for every tier-2/tier-3 answer, and prevents the
-        # generation LLM from inventing placeholder references.
-        if "[VALIDATED REFERENCES]" not in enriched and validated_footer:
-            enriched = enriched + "\n\n" + validated_footer
-
-        # 6. generation
+        # ----------------------------------------------------------
+        # generation
+        # ----------------------------------------------------------
         gen_agent = GenerationAgent(
             self._llm(cfg.model_name, cfg.temperature_generate, cfg.max_output_tokens),
             prompt_dir=str(self._prompts_root / "generation"),
         )
         template = gen_agent._load_template(cfg.generation_prompt)
         if not template:
-            raise FileNotFoundError(
-                f"generation prompt not found: {cfg.generation_prompt}"
-            )
+            raise FileNotFoundError(f"generation prompt not found: {cfg.generation_prompt}")
         template = template.replace(
             "{answer_shape_directives}",
             _ANSWER_SHAPE_DIRECTIVES.get(profile.answer_shape, ""),
@@ -325,10 +294,87 @@ class AdaptivePipeline:
             enriched_context=enriched,
             rule_hit=cfg.rule_hit,
             excerpt_stats=excerpt_stats,
+            kg_docs_used=len(live_docs) if live_docs else (len(docs) if docs else 0),
+            kg_source=kg_source,
         )
 
     # ------------------------------------------------------------------
-    # private helpers
+    # KG retrieval
+    # ------------------------------------------------------------------
+
+    def _try_live_kg(
+        self,
+        question: str,
+        ontology: DynamicOntology,
+        aql_params: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """attempt live ArangoDB query; return [] if unavailable or unconfigured."""
+        import os
+        if not os.getenv("ARANGO_ROOT_PASSWORD"):
+            return []
+
+        try:
+            from core.utils.arango_client import query_kg
+        except ImportError:
+            return []
+
+        # build a keyword-focused search string from the ontology + question
+        search_terms = self._build_search_query(question, ontology)
+
+        params = aql_params or {}
+        return query_kg(
+            search_query=search_terms,
+            kappa=params.get("n", 16),
+            phi=params.get("k", 3),
+            psi=params.get("s", 2),
+            theta_expand=params.get("k_threshold", 0.3),
+        )
+
+    def _build_search_query(self, question: str, ontology: DynamicOntology) -> str:
+        """combine question keywords with ontology attributes for BM25 search."""
+        parts = [question]
+        try:
+            if hasattr(ontology, "attributes") and ontology.attributes:
+                parts += [str(a) for a in ontology.attributes[:6]]
+            if hasattr(ontology, "relationships") and ontology.relationships:
+                parts += [str(r) for r in ontology.relationships[:4]]
+        except Exception:
+            pass
+        return " ".join(parts)
+
+    @staticmethod
+    def _format_kg_context(docs: List[Dict[str, Any]]) -> str:
+        """render the full KG neighbourhood as a structured text block.
+
+        structure mirrors DLR's _structure_context() but keeps keywords and
+        secondary nodes as named sections so the refinement agent can reason
+        over graph-adjacent documents.
+        """
+        sections: List[str] = []
+        for doc in docs:
+            lines = [f"## {doc.get('title', 'Untitled')}"]
+            if doc.get("abstract"):
+                lines.append(doc["abstract"])
+            if doc.get("uri"):
+                lines.append(f"URI: {doc['uri']}")
+
+            for sk in doc.get("science_keywords", []):
+                kw_name = sk.get("name", "")
+                kw_desc = sk.get("description", "")
+                lines.append(f"\n### Keyword: {kw_name}")
+                if kw_desc:
+                    lines.append(kw_desc)
+                for sn in sk.get("secondary_nodes", []):
+                    sn_title = sn.get("title", "")
+                    sn_abstract = sn.get("abstract", "")
+                    if sn_title or sn_abstract:
+                        lines.append(f"  - **{sn_title}**: {sn_abstract[:300]}")
+            sections.append("\n".join(lines))
+
+        return "\n\n".join(sections)
+
+    # ------------------------------------------------------------------
+    # helpers
     # ------------------------------------------------------------------
 
     def _llm(self, model: str, temperature: float, max_tokens: int = 1400):

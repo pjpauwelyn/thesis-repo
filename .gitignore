@@ -14,8 +14,8 @@
 !evaluation/**
 !tests/
 !tests/**
-!scripts/
-!scripts/**
+!AGENTS.md
+!PROJECT.md
 
 # Always include root config files
 !.gitignore

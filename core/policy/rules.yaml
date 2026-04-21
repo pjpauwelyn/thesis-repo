@@ -69,7 +69,26 @@ rules:
         question_type: {in: [comparison, method_eval]}
         methodological_depth: {ge: 0.60}
     config:
-      model_name: qwen/qwen3-30b-a3b-instruct
+      model_name: mistral-small-latest
+      evidence_mode: excerpts_narrow
+      top_k_per_doc: 6
+      per_doc_budget: 6000
+      global_budget: 30000
+      refinement_prompt: refinement_1pass_refined_fulltext.txt
+      generation_prompt: generation_structured.txt
+      scope_filter: true
+      synthesis_mode: focused
+      rule_hit: tier-2b
+      reason: "quantitative focal -- narrow excerpts + scope filter, focused synthesis"
+
+  # tier-3: complex mechanism / method-eval / comparison -- qwen3-30b-a3b + full excerpts
+  # threshold raised to 0.70 (was 0.60): borderline questions now fall to tier-m.
+  - name: complex_mechanism
+    when:
+      complexity: {ge: 0.70}
+      question_type: {in: [mechanism, method_eval, comparison]}
+    config:
+      model_name: qwen/qwen3-30b-a3b
       evidence_mode: excerpts_full
       top_k_per_doc: 8
       per_doc_budget: 7000
@@ -83,7 +102,26 @@ rules:
       scope_filter: false
       synthesis_mode: homogeneous
       rule_hit: tier-3
-      reason: "complex / comparison / method-eval -- large model + full excerpts"
+      reason: "complex mechanism / comparison -- qwen3-30b-a3b + full excerpts"
+
+  # tier-m: mid-complexity bridge -- small + narrow excerpts
+  # upper bound raised from 0.60 to 0.70 to absorb questions freed by tier-3.
+  - name: complexity_medium
+    when:
+      complexity: {ge: 0.35}
+      complexity_lt: {le: 0.70}
+    config:
+      model_name: mistral-small-latest
+      evidence_mode: excerpts_narrow
+      top_k_per_doc: 6
+      per_doc_budget: 6000
+      global_budget: 30000
+      refinement_prompt: refinement_1pass_refined_fulltext.txt
+      generation_prompt: generation_structured.txt
+      scope_filter: false
+      synthesis_mode: homogeneous
+      rule_hit: tier-m
+      reason: "medium complexity -- narrow excerpts bridge tier"
 
   # fallback: identical to set2 (ontology-enhanced rag)
   - name: fallback

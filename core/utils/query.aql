@@ -1,0 +1,37 @@
+FOR doc IN generic_search
+  SEARCH ANALYZER(
+    doc.title IN TOKENS(@query, "text_en") OR
+    doc.abstract IN TOKENS(@query, "text_en"),
+    "text_en"
+  )
+
+  SORT BM25(doc) DESC
+  LIMIT @kappa
+
+  LET science_keywords = (
+    FOR edge IN HasKeyword
+      FILTER edge._from == doc._id
+        AND edge.score >= @theta_expand
+      FOR science_keyword IN ScienceKeyword
+        FILTER science_keyword._id == edge._to
+      SORT edge.score DESC
+      LIMIT @phi
+
+      LET secondary_nodes = (
+        FOR secondary_edge in HasKeyword
+          FILTER secondary_edge._to == science_keyword._id
+
+          LET secondary_node = DOCUMENT(secondary_edge._from)
+          FILTER secondary_node != null
+          AND secondary_node != doc._id
+          AND secondary_node.abstract != null
+          AND secondary_node.title != null
+
+          SORT secondary_edge.score DESC
+          LIMIT @psi
+
+          RETURN MERGE(secondary_node, { score: secondary_edge.score })
+      )
+      RETURN MERGE(science_keyword, { score: edge.score, secondary_nodes })
+  )
+  RETURN MERGE(doc, { science_keywords })
