@@ -69,7 +69,7 @@ class Router:
                 reason=f"low/missing profiler confidence ({profile.confidence}) -> safety tier-3",
             )
 
-        _log.debug(
+        _log.info(
             "router.select: type=%s complexity=%.2f quant=%.2f spatial=%.2f "
             "temporal=%.2f conf=%.2f",
             profile.question_type,
@@ -82,7 +82,7 @@ class Router:
 
         for rule in self._rules:
             if self._matches(rule["when"], profile):
-                _log.debug("router.select: matched rule '%s'", rule["name"])
+                _log.info("router.select: matched rule '%s'", rule["name"])
                 return PipelineConfig(**rule["config"])
 
         # the yaml always ends with always:true, so this is unreachable
