@@ -179,6 +179,9 @@ class PipelineOrchestrator:
         self.generation_agent = GenerationAgent(self.generation_llm, prompt_dir=f"{prompt_dir}/generation")
         self.pipeline_analyzer = PipelineAnalyzer()
 
+        # adaptive pipeline instance (lazy, only used when pipeline_type == "adaptive")
+        self._adaptive_pipeline = None
+
         logger.info(
             f"orchestrator ready: {self.PIPELINE_TYPES[pipeline_type]} | model={model_name}"
         )
@@ -263,6 +266,29 @@ class PipelineOrchestrator:
         final_text_context = ""
 
         try:
+            # --- adaptive pipeline shortcut ---
+            if self.pipeline_type == "adaptive":
+                from core.pipelines.adaptive_pipeline import AdaptivePipeline
+                if self._adaptive_pipeline is None:
+                    self._adaptive_pipeline = AdaptivePipeline(
+                        prompts_root=self.prompt_dir
+                    )
+                adaptive_result = self._adaptive_pipeline.run(
+                    question=question,
+                    aql_results_str=aql_results or "",
+                )
+                result.answer = adaptive_result.answer
+                result.references = adaptive_result.references
+                result.formatted_references = adaptive_result.formatted_references
+                result.final_text_context = adaptive_result.enriched_context
+                result.status = "success"
+                result.time_elapsed = time.time() - start
+                if verbose:
+                    rule = getattr(adaptive_result.pipeline_config, "rule_hit", "?")
+                    model = getattr(adaptive_result.pipeline_config, "model_name", "?")
+                    self._progress("adaptive", "success", f"(rule={rule} model={model} {result.time_elapsed:.1f}s)")
+                return result
+
             # --- ontology ---
             if "without_ontology" not in self.pipeline_type:
                 self._progress("building ontology", "in_progress")
