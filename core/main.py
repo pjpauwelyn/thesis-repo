@@ -1,4 +1,4 @@
-"""pipeline orchestrator – runs ontology-rag experiments from a csv of questions.
+"""pipeline orchestrator - runs ontology-rag experiments from a csv of questions.
 
 usage examples:
     python3 core/main.py run --type 1_pass_with_ontology_refined --csv data.csv --num 5
@@ -9,6 +9,8 @@ import argparse
 import csv
 import json
 import logging
+import threading
+import asyncio
 import os
 import sys
 import time
@@ -221,11 +223,22 @@ class PipelineOrchestrator:
             self._print_header(data)
 
         results: List[PipelineResult] = []
-        for idx, row in enumerate(data):
+        self._csv_lock = threading.Lock()
+
+        async def process_question(idx, row):
             orig_idx = row.get("_row_index")
             qid = int(row.get("question_id") or (int(orig_idx) + 1 if orig_idx is not None else (idx + 1)))
-            result = self._process_question(idx, row, verbose=verbose, question_id=qid)
+            result = await asyncio.to_thread(self._process_question, idx, row, verbose=verbose, question_id=qid)
             results.append(result)
+            await asyncio.sleep(0.05)
+
+        async def main():
+            semaphore = asyncio.Semaphore(8)
+            async with semaphore:
+                tasks = [process_question(idx, row) for idx, row in enumerate(data)]
+                await asyncio.gather(*tasks)
+
+        asyncio.run(main())
 
         stats = PipelineStats()
         stats.update(results)
@@ -247,22 +260,37 @@ class PipelineOrchestrator:
         question = row.get("question", "")
         if verbose:
             print(f"\n[{idx + 1}] {question[:70]}...")
-
+        
         result = PipelineResult(index=idx, question=question)
         result.original_question_id = question_id
-
+        
         aql_results = row.get("aql_results", "")
         if aql_results:
             from core.utils.aql_parser import parse_aql_results
             result.clean_aql_used = parse_aql_results(aql_results)
-
+        
         structured_context = row.get("structured_context", "")
         start = time.time()
         ontology_time = refinement_time = generation_time = 0.0
         ontology = None
         final_text_context = ""
-
+        
         try:
+            if self.pipeline_type == "adaptive":
+                from core.pipelines.adaptive_pipeline import AdaptivePipeline
+                adaptive = AdaptivePipeline(prompts_root=self.prompt_dir)
+                adaptive_result = adaptive.run(
+                    question=question,
+                    aql_results_str=aql_results or "",
+                )
+                result.answer = adaptive_result.answer
+                result.references = adaptive_result.references
+                result.formatted_references = adaptive_result.formatted_references
+                result.final_text_context = adaptive_result.enriched_context
+                result.status = "success"
+                result.time_elapsed = time.time() - start
+                return result
+            
             # --- ontology ---
             if "without_ontology" not in self.pipeline_type:
                 self._progress("building ontology", "in_progress")
@@ -281,14 +309,14 @@ class PipelineOrchestrator:
                     )
                 else:
                     self._progress("building ontology", "success", "(skipped)")
-
+            
             # --- refinement ---
             self._progress("refining context", "in_progress")
             t0 = time.time()
-
+            
             include_ontology = "without_ontology" not in self.pipeline_type
             parsed_aql = result.clean_aql_used or aql_results or None
-
+            
             if self.refinement_agent:
                 refined = self.refinement_agent.process_context(
                     question=question,
@@ -300,11 +328,11 @@ class PipelineOrchestrator:
                 )
             else:
                 raise RuntimeError("no refinement agent configured for this pipeline type")
-
+            
             refinement_time = time.time() - t0
             result.refined_context_summary = refined.summary
             final_text_context = refined.enriched_context or structured_context or ""
-
+            
             # --- generation ---
             self._progress("generating answer", "in_progress")
             t0 = time.time()
@@ -314,14 +342,14 @@ class PipelineOrchestrator:
                 ontology=ontology,
             )
             generation_time = time.time() - t0
-
+            
             result.answer = answer_obj.answer
             result.references = answer_obj.references
             result.formatted_references = answer_obj.formatted_references
             result.final_text_context = final_text_context
             result.status = "success"
             self._progress("generating answer", "success", f"({generation_time:.1f}s)")
-
+            
         except Exception as exc:
             result.status = "error"
             result.error_message = str(exc)
@@ -329,7 +357,7 @@ class PipelineOrchestrator:
             logger.error(f"question {idx} failed: {exc}")
             if verbose:
                 traceback.print_exc()
-
+            
         finally:
             result.time_elapsed = time.time() - start
             # log analytics
@@ -338,7 +366,7 @@ class PipelineOrchestrator:
                 final_text_context, ontology, ontology_time,
                 refinement_time, generation_time,
             )
-
+        
         return result
 
     # ------------------------------------------------------------------
