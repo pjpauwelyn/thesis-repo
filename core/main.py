@@ -97,6 +97,11 @@ class PipelineResult:
     original_question_id: Optional[int] = None
     clean_aql_used: str = ""
     kg_docs_used: int = 0
+    # adaptive pipeline model config fields
+    rule_hit: str = ""
+    model_name: str = ""
+    evidence_mode: str = ""
+    kg_source: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -125,6 +130,9 @@ _CSV_FIELDS = [
     "question_id", "question", "pipeline", "context", "clean_aql_results",
     "answer", "references", "formatted_references", "processing_time",
     "documents_parsed", "timestamp", "experiment_type",
+    # adaptive model config
+    "rule_hit", "model_name", "evidence_mode", "kg_source",
+    # evaluation (filled later)
     "factuality", "relevance", "groundedness", "helpfulness", "depth",
     "overall_score", "evaluation_feedback", "validation_anomaly", "anomaly_details",
 ]
@@ -292,15 +300,25 @@ class PipelineOrchestrator:
                     aql_results_str=aql_results or "",
                 )
                 result.answer = adaptive_result.answer
-                result.references = adaptive_result.references
-                result.formatted_references = adaptive_result.formatted_references
+                result.references = adaptive_result.references or []
+                result.formatted_references = adaptive_result.formatted_references or []
                 result.final_text_context = adaptive_result.enriched_context
+                result.kg_docs_used = adaptive_result.kg_docs_used
+                # --- persist adaptive model config ---
+                result.rule_hit = adaptive_result.rule_hit or ""
+                result.kg_source = adaptive_result.kg_source or ""
+                cfg = adaptive_result.pipeline_config
+                if cfg is not None:
+                    result.model_name = getattr(cfg, "model_name", "")
+                    result.evidence_mode = getattr(cfg, "evidence_mode", "")
                 result.status = "success"
                 result.time_elapsed = time.time() - start
                 if verbose:
-                    rule = getattr(adaptive_result.pipeline_config, "rule_hit", "?")
-                    model = getattr(adaptive_result.pipeline_config, "model_name", "?")
-                    self._progress("adaptive", "success", f"(rule={rule} model={model} {result.time_elapsed:.1f}s)")
+                    self._progress(
+                        "adaptive", "success",
+                        f"(rule={result.rule_hit} model={result.model_name} "
+                        f"evidence={result.evidence_mode} {result.time_elapsed:.1f}s)",
+                    )
                 return result
 
             # --- ontology ---
@@ -478,6 +496,9 @@ class PipelineOrchestrator:
 
     def _result_to_row(self, r: PipelineResult) -> Dict[str, Any]:
         ctx = r.final_text_context or ""
+        # references: join list to pipe-separated string, guard against None
+        refs = r.references or []
+        fmt_refs = r.formatted_references or []
         return {
             "question_id": r.original_question_id,
             "question": r.question,
@@ -485,12 +506,17 @@ class PipelineOrchestrator:
             "context": ctx,
             "clean_aql_results": r.clean_aql_used,
             "answer": r.answer,
-            "references": " | ".join(r.references) if r.references else "",
-            "formatted_references": " | ".join(r.formatted_references) if r.formatted_references else "",
+            "references": " | ".join(str(x) for x in refs) if refs else "",
+            "formatted_references": " | ".join(str(x) for x in fmt_refs) if fmt_refs else "",
             "processing_time": f"{r.time_elapsed:.2f}",
             "documents_parsed": r.kg_docs_used if r.kg_docs_used > 0 else (len([s for s in ctx.split("##") if s.strip()]) if ctx else 0),
             "timestamp": datetime.now().isoformat(),
             "experiment_type": self.experiment_type,
+            # adaptive model config (empty string for non-adaptive pipelines)
+            "rule_hit": r.rule_hit,
+            "model_name": r.model_name,
+            "evidence_mode": r.evidence_mode,
+            "kg_source": r.kg_source,
             # evaluation placeholders
             "factuality": "", "relevance": "", "groundedness": "",
             "helpfulness": "", "depth": "", "overall_score": "",
