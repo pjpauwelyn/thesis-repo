@@ -7,11 +7,12 @@ Most important rules (follow these even if other instructions conflict):
 - Base all key claims primarily on the provided CONTEXT when possible.
 - If the draft answer and CONTEXT conflict, prefer the CONTEXT for numbers, regions, and time windows.
 - Do not invent or modify quantitative values (years, rates, areas) that contradict the CONTEXT.
+- CITATION DISCIPLINE: Before inserting a citation marker [N], verify that the paper listed under [N] in the [VALIDATED REFERENCES] section actually supports that specific claim. If the reference topic does not match the claim, omit the citation rather than attach a mismatched one.
 - Keep the answer structured around the question
 - When the CONTEXT provides sufficient evidence, give a deep answer: explain mechanisms, methods, and uncertainties step‑by‑step, instead of only listing findings. Prefer 2–3 short reasoning steps over a single high‑level sentence.
 - Complexity of the question should match depth and detail of the answer you generate
 - Explicitly mention major uncertainties or data gaps when they appear in the CONTEXT.
-- Use at least one numeric citation marker (e.g., ) when the CONTEXT provides VALIDATED REFERENCES, and include a matching References section.
+- Only include numeric citation markers (e.g., [1]) if the CONTEXT contains a [VALIDATED REFERENCES] block. If no such block is present, omit all citation markers entirely — do not invent or use placeholder references. When citing, only use IDs that actually exist in the [VALIDATED REFERENCES] block; never cite an ID larger than the last ID listed there.
 
 You answered a question with the following draft answer, using your knowledge. Now refine this answer using the provided context.
 
@@ -118,14 +119,12 @@ Treat the draft answer as a strong starting point and the context as high-priori
 
 ### CITATIONS
 
-- The CONTEXT includes a [VALIDATED REFERENCES] section with formatted references (e.g., [1] Author et al. (Year). *Title*. URI.).
-- You should use these references for citations in your answer when relevant and useful. You can use references from you draft answer if they are still relevant based on the context.
-- Insert numeric markers like [1], [2] in the text for key claims, matching the references provided in the context.
-- You MUST add a "References" section at the end of your answer, listing the references used in the same format as provided in the context.
+The [VALIDATED REFERENCES] block in the CONTEXT is the ONLY authoritative source of citation IDs. Follow these rules exactly:
 
-### IMPORTANT FOR REFERENCING
-- Do NOT fabricate/hallucinate references or use placeholders.
-- Referenced papers should be be aligned with the context.
-- Use the exact format provided in the [VALIDATED REFERENCES] section.
+1. If the CONTEXT contains a [VALIDATED REFERENCES] block listing references [1] through [N], you may cite those IDs inline using [N]-style markers. You MUST NOT cite any ID higher than N or any ID not listed in that block.
+2. Do NOT write your own References section in the output. The downstream system copies the [VALIDATED REFERENCES] block verbatim after the answer. Writing a References section in the body will cause duplicate or truncated references.
+3. If NO [VALIDATED REFERENCES] block is present in the CONTEXT, you MUST NOT insert any numeric citation markers ([1], [2], ...) anywhere in the answer. Produce the answer without citations.
+4. Never invent, guess, or use placeholder references (such as "[1] Author et al. (Year). Title. URI.").
+5. Before writing each [N] marker, silently check that line [N] exists in the [VALIDATED REFERENCES] block. If it does not, omit that marker.
 
-Now write the final refined answer.
+Now write the final refined answer (use inline [N] markers only when bounded by the [VALIDATED REFERENCES] block; do NOT write a References section).

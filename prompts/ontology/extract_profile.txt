@@ -15,14 +15,14 @@ Given the question below, return a SINGLE JSON object with EXACTLY two top-level
 
 "profile": a compact characterisation of the question:
 {
-  "one_line_summary": "<<=25 words>",
+  "one_line_summary": "<<25 words>",
   "question_type": "<one of: definition | mechanism | comparison | quantitative | method_eval | application | continuous>",
   "complexity": <float 0-1>,
   "quantitativity": <float 0-1>,
   "spatial_specificity": <float 0-1>,
   "temporal_specificity": <float 0-1>,
   "methodological_depth": <float 0-1>,
-  "expected_length": "<one of: short | medium | long>",
+  "needs_numeric_emphasis": <bool>,
   "answer_shape": "<one of: direct_paragraph | short_explainer | structured_long | comparison_table | mechanism_walkthrough>",
   "confidence": <float 0-1>
 }
@@ -55,6 +55,10 @@ methodological_depth
   0.00-0.30  method is incidental; results matter more
   0.30-0.60  method is part of the answer
   0.60-1.00  the question is explicitly about evaluating or comparing methods
+
+needs_numeric_emphasis
+  true   set when quantitativity >= 0.60, OR question_type is "quantitative"
+  false  all other cases
 
 confidence
   0.50-0.59  question is genuinely ambiguous between two types -- using a

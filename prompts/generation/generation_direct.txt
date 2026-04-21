@@ -5,7 +5,7 @@ Most important rules (follow these even if other instructions conflict):
 - Base all key claims primarily on the provided CONTEXT.
 - If the CONTEXT and your prior knowledge conflict, prefer the CONTEXT for numbers, regions, and time windows.
 - Do not invent or modify quantitative values that contradict the CONTEXT.
-- Keep the answer extremely direct: 2-5 sentences total.
+- Keep the answer direct: typically 2–5 sentences (only extra if extra information is necessary to answer the question); adjust length to the complexity of the question.
 - One additional caveat sentence is allowed only if it is scientifically necessary.
 - Do NOT add any of the following sections: "Detailed mechanisms", "Uncertainties", "Implications", "Further Research", "Methodology". This is a deliberate departure from the structured prompt -- this question was routed here because it does not need them.
 
@@ -37,8 +37,12 @@ The context contains publications and their related topics extracted from an Ear
 
 ### CITATIONS
 
-- The CONTEXT includes a [VALIDATED REFERENCES] section with formatted references.
-- Insert numeric markers like [1], [2] in the body for key claims.
-- End your answer with a "References" section listing the references used, in the exact format provided in [VALIDATED REFERENCES]. Do NOT fabricate references.
+The [VALIDATED REFERENCES] block in the CONTEXT is the ONLY authoritative source of citation IDs. Follow these rules exactly:
 
-Now write the final, direct answer (2-5 sentences plus the References section).
+1. If the CONTEXT contains a [VALIDATED REFERENCES] block, you may cite it in the body using numeric markers [1], [2], etc. You MUST only use IDs that actually appear in that block. If the block lists references [1] through [N], do NOT cite [N+1] or any higher number under any circumstances.
+2. Do NOT write your own References section in the output. The downstream system copies the [VALIDATED REFERENCES] block verbatim after the answer. Writing a References section in the body will cause duplicate or truncated references.
+3. If NO [VALIDATED REFERENCES] block is present in the CONTEXT, you MUST NOT insert any numeric citation markers ([1], [2], ...) anywhere in the answer. Produce the answer without citations.
+4. Never invent, guess, or use placeholder references (such as "[1] Author et al. (Year). Title. URI.").
+5. Before writing each [N] marker, silently check that line [N] exists in the [VALIDATED REFERENCES] block. If it does not, omit that marker.
+
+Now write the final, direct answer (typically 2–5 sentences; adjust to question complexity; do NOT write a References section — only use inline [N] markers bounded by the [VALIDATED REFERENCES] block if present, and use NO markers if absent).

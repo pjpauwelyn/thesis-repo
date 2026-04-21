@@ -1,11 +1,10 @@
-# adaptive routing rules (set5)
+# adaptive routing rules (set5 → v2)
 #
 # evaluated top-to-bottom, first match wins.
-# the final rule is the conservative set2 (ontology-enhanced rag) fallback,
-# so the adaptive pipeline can never score below the current champion.
+# the final rule is the conservative set2 (ontology-enhanced rag) fallback.
 #
-# thresholds are calibrated against the set2 score distribution and the
-# exp3 per-criterion deltas. see prompts/ontology/extract_profile.txt for
+# thresholds calibrated against the set2 score distribution and exp3
+# per-criterion deltas.  see prompts/ontology/extract_profile.txt for
 # the rubric the profiler uses to assign these dimensions.
 #
 # yaml notes:
@@ -19,49 +18,56 @@
 
 rules:
 
-  # tier-1: simple conceptual -- small + abstracts + direct prompt
-  - name: simple_conceptual
+# tier-1: simple conceptual -- small + abstracts + direct prompt
+  - name: tier_1
     when:
-      complexity: {lt: 0.35}
-      quantitativity: {lt: 0.35}
+      complexity: {lt: 0.50}
     config:
       model_name: mistral-small-latest
       evidence_mode: abstracts
+      top_k_per_doc: 0
+      per_doc_budget: 0
+      global_budget: 0
       refinement_prompt: refinement_1pass_refined_exp4.txt
       generation_prompt: generation_direct.txt
+      gen_context_cap: 60000
+      max_output_tokens: 450
+      system_prompt_modifier: ""
+      doc_filter_min_keep: 6
       scope_filter: false
       synthesis_mode: homogeneous
       rule_hit: tier-1
-      reason: "simple conceptual -- abstracts + direct prompt"
+      reason: "simple / low-complexity -- abstracts + direct prompt"
 
-  # tier-2a: quantitative global -- small + narrow excerpts
-  - name: quantitative_global
+# tier-2: moderate complexity -- small + narrow excerpts
+  - name: tier_2
     when:
-      quantitativity: {ge: 0.55}
-      complexity: {lt: 0.6}
-      spatial_specificity: {lt: 0.5}
-      temporal_specificity: {lt: 0.5}
+      complexity: {ge: 0.40}
+      complexity_lt: {le: 0.64}
     config:
       model_name: mistral-small-latest
       evidence_mode: excerpts_narrow
-      top_k_per_doc: 6
-      per_doc_budget: 6000
-      global_budget: 30000
+      top_k_per_doc: 5
+      per_doc_budget: 4500
+      global_budget: 25000
       refinement_prompt: refinement_1pass_refined_fulltext.txt
       generation_prompt: generation_structured.txt
+      gen_context_cap: 200000
+      max_output_tokens: 700
+      system_prompt_modifier: "Answer concisely and directly. Lead with the core finding in the first sentence. Use at most 2 short sections after the opening paragraph. Do not add an Implications section unless the question explicitly asks for one."
+      doc_filter_min_keep: 4 
       scope_filter: false
       synthesis_mode: homogeneous
-      rule_hit: tier-2a
-      reason: "quantitative global -- narrow excerpts, homogeneous synthesis"
+      rule_hit: tier-2
+      reason: "moderate complexity -- narrow excerpts"
 
-  # tier-2b: quantitative focal -- small + narrow excerpts + scope filter
-  - name: quantitative_focal
+  # tier-3: complex / method-eval / comparison -- large + full excerpts
+  - name: tier_3
     when:
-      quantitativity: {ge: 0.55}
-      complexity: {lt: 0.6}
       any:
-        spatial_specificity: {ge: 0.5}
-        temporal_specificity: {ge: 0.5}
+        complexity: {ge: 0.65}
+        question_type: {in: [comparison, method_eval]}
+        methodological_depth: {ge: 0.60}
     config:
       model_name: mistral-small-latest
       evidence_mode: excerpts_narrow
@@ -84,11 +90,15 @@ rules:
     config:
       model_name: qwen/qwen3-30b-a3b
       evidence_mode: excerpts_full
-      top_k_per_doc: 10
-      per_doc_budget: 9000
-      global_budget: 60000
+      top_k_per_doc: 8
+      per_doc_budget: 7000
+      global_budget: 50000
       refinement_prompt: refinement_1pass_refined_fulltext.txt
       generation_prompt: generation_structured.txt
+      gen_context_cap: 200000
+      max_output_tokens: 1400
+      system_prompt_modifier: "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' — do not present it as a cited fact."  # ← was empty; directly targets citation hallucination
+      doc_filter_min_keep: 5
       scope_filter: false
       synthesis_mode: homogeneous
       rule_hit: tier-3
@@ -113,15 +123,22 @@ rules:
       rule_hit: tier-m
       reason: "medium complexity -- narrow excerpts bridge tier"
 
-  # fallback: identical to set2 (ontology-enhanced rag).
+  # fallback: identical to set2 (ontology-enhanced rag)
   - name: fallback
     when:
       always: true
     config:
       model_name: mistral-small-latest
       evidence_mode: abstracts
+      top_k_per_doc: 0
+      per_doc_budget: 0
+      global_budget: 0
       refinement_prompt: refinement_1pass_refined_exp4.txt
       generation_prompt: generation_prompt_exp4.txt
+      gen_context_cap: 60000
+      max_output_tokens: 700
+      system_prompt_modifier: ""
+      doc_filter_min_keep: 4
       scope_filter: false
       synthesis_mode: homogeneous
       rule_hit: fallback

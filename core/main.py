@@ -1,4 +1,4 @@
-"""pipeline orchestrator – runs ontology-rag experiments from a csv of questions.
+"""pipeline orchestrator - runs ontology-rag experiments from a csv of questions.
 
 usage examples:
     python3 core/main.py run --type 1_pass_with_ontology_refined --csv data.csv --num 5
@@ -9,6 +9,8 @@ import argparse
 import csv
 import json
 import logging
+import threading
+import asyncio
 import os
 import sys
 import time
@@ -94,6 +96,12 @@ class PipelineResult:
     # set during processing
     original_question_id: Optional[int] = None
     clean_aql_used: str = ""
+    kg_docs_used: int = 0
+    # adaptive pipeline model config fields
+    rule_hit: str = ""
+    model_name: str = ""
+    evidence_mode: str = ""
+    kg_source: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -122,6 +130,9 @@ _CSV_FIELDS = [
     "question_id", "question", "pipeline", "context", "clean_aql_results",
     "answer", "references", "formatted_references", "processing_time",
     "documents_parsed", "timestamp", "experiment_type",
+    # adaptive model config
+    "rule_hit", "model_name", "evidence_mode", "kg_source",
+    # evaluation (filled later)
     "factuality", "relevance", "groundedness", "helpfulness", "depth",
     "overall_score", "evaluation_feedback", "validation_anomaly", "anomaly_details",
 ]
@@ -224,11 +235,22 @@ class PipelineOrchestrator:
             self._print_header(data)
 
         results: List[PipelineResult] = []
-        for idx, row in enumerate(data):
+        self._csv_lock = threading.Lock()
+
+        async def process_question(idx, row):
             orig_idx = row.get("_row_index")
             qid = int(row.get("question_id") or (int(orig_idx) + 1 if orig_idx is not None else (idx + 1)))
-            result = self._process_question(idx, row, verbose=verbose, question_id=qid)
+            result = await asyncio.to_thread(self._process_question, idx, row, verbose=verbose, question_id=qid)
             results.append(result)
+            await asyncio.sleep(0.05)
+
+        async def main():
+            semaphore = asyncio.Semaphore(8)
+            async with semaphore:
+                tasks = [process_question(idx, row) for idx, row in enumerate(data)]
+                await asyncio.gather(*tasks)
+
+        asyncio.run(main())
 
         stats = PipelineStats()
         stats.update(results)
@@ -250,21 +272,21 @@ class PipelineOrchestrator:
         question = row.get("question", "")
         if verbose:
             print(f"\n[{idx + 1}] {question[:70]}...")
-
+        
         result = PipelineResult(index=idx, question=question)
         result.original_question_id = question_id
-
+        
         aql_results = row.get("aql_results", "")
         if aql_results:
             from core.utils.aql_parser import parse_aql_results
             result.clean_aql_used = parse_aql_results(aql_results)
-
+        
         structured_context = row.get("structured_context", "")
         start = time.time()
         ontology_time = refinement_time = generation_time = 0.0
         ontology = None
         final_text_context = ""
-
+        
         try:
             # --- adaptive pipeline shortcut ---
             if self.pipeline_type == "adaptive":
@@ -278,15 +300,25 @@ class PipelineOrchestrator:
                     aql_results_str=aql_results or "",
                 )
                 result.answer = adaptive_result.answer
-                result.references = adaptive_result.references
-                result.formatted_references = adaptive_result.formatted_references
+                result.references = adaptive_result.references or []
+                result.formatted_references = adaptive_result.formatted_references or []
                 result.final_text_context = adaptive_result.enriched_context
+                result.kg_docs_used = adaptive_result.kg_docs_used
+                # --- persist adaptive model config ---
+                result.rule_hit = adaptive_result.rule_hit or ""
+                result.kg_source = adaptive_result.kg_source or ""
+                cfg = adaptive_result.pipeline_config
+                if cfg is not None:
+                    result.model_name = getattr(cfg, "model_name", "")
+                    result.evidence_mode = getattr(cfg, "evidence_mode", "")
                 result.status = "success"
                 result.time_elapsed = time.time() - start
                 if verbose:
-                    rule = getattr(adaptive_result.pipeline_config, "rule_hit", "?")
-                    model = getattr(adaptive_result.pipeline_config, "model_name", "?")
-                    self._progress("adaptive", "success", f"(rule={rule} model={model} {result.time_elapsed:.1f}s)")
+                    self._progress(
+                        "adaptive", "success",
+                        f"(rule={result.rule_hit} model={result.model_name} "
+                        f"evidence={result.evidence_mode} {result.time_elapsed:.1f}s)",
+                    )
                 return result
 
             # --- ontology ---
@@ -307,14 +339,14 @@ class PipelineOrchestrator:
                     )
                 else:
                     self._progress("building ontology", "success", "(skipped)")
-
+            
             # --- refinement ---
             self._progress("refining context", "in_progress")
             t0 = time.time()
-
+            
             include_ontology = "without_ontology" not in self.pipeline_type
             parsed_aql = result.clean_aql_used or aql_results or None
-
+            
             if self.refinement_agent:
                 refined = self.refinement_agent.process_context(
                     question=question,
@@ -326,11 +358,11 @@ class PipelineOrchestrator:
                 )
             else:
                 raise RuntimeError("no refinement agent configured for this pipeline type")
-
+            
             refinement_time = time.time() - t0
             result.refined_context_summary = refined.summary
             final_text_context = refined.enriched_context or structured_context or ""
-
+            
             # --- generation ---
             self._progress("generating answer", "in_progress")
             t0 = time.time()
@@ -340,14 +372,14 @@ class PipelineOrchestrator:
                 ontology=ontology,
             )
             generation_time = time.time() - t0
-
+            
             result.answer = answer_obj.answer
             result.references = answer_obj.references
             result.formatted_references = answer_obj.formatted_references
             result.final_text_context = final_text_context
             result.status = "success"
             self._progress("generating answer", "success", f"({generation_time:.1f}s)")
-
+            
         except Exception as exc:
             result.status = "error"
             result.error_message = str(exc)
@@ -355,7 +387,7 @@ class PipelineOrchestrator:
             logger.error(f"question {idx} failed: {exc}")
             if verbose:
                 traceback.print_exc()
-
+            
         finally:
             result.time_elapsed = time.time() - start
             # log analytics
@@ -364,7 +396,7 @@ class PipelineOrchestrator:
                 final_text_context, ontology, ontology_time,
                 refinement_time, generation_time,
             )
-
+        
         return result
 
     # ------------------------------------------------------------------
@@ -464,6 +496,9 @@ class PipelineOrchestrator:
 
     def _result_to_row(self, r: PipelineResult) -> Dict[str, Any]:
         ctx = r.final_text_context or ""
+        # references: join list to pipe-separated string, guard against None
+        refs = r.references or []
+        fmt_refs = r.formatted_references or []
         return {
             "question_id": r.original_question_id,
             "question": r.question,
@@ -471,12 +506,17 @@ class PipelineOrchestrator:
             "context": ctx,
             "clean_aql_results": r.clean_aql_used,
             "answer": r.answer,
-            "references": " | ".join(r.references) if r.references else "",
-            "formatted_references": " | ".join(r.formatted_references) if r.formatted_references else "",
+            "references": " | ".join(str(x) for x in refs) if refs else "",
+            "formatted_references": " | ".join(str(x) for x in fmt_refs) if fmt_refs else "",
             "processing_time": f"{r.time_elapsed:.2f}",
-            "documents_parsed": len([s for s in ctx.split("##") if s.strip()]) if ctx else 0,
+            "documents_parsed": r.kg_docs_used if r.kg_docs_used > 0 else (len([s for s in ctx.split("##") if s.strip()]) if ctx else 0),
             "timestamp": datetime.now().isoformat(),
             "experiment_type": self.experiment_type,
+            # adaptive model config (empty string for non-adaptive pipelines)
+            "rule_hit": r.rule_hit,
+            "model_name": r.model_name,
+            "evidence_mode": r.evidence_mode,
+            "kg_source": r.kg_source,
             # evaluation placeholders
             "factuality": "", "relevance": "", "groundedness": "",
             "helpfulness": "", "depth": "", "overall_score": "",

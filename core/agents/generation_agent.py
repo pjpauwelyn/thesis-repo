@@ -1,19 +1,12 @@
 """two-step generation agent: zero-shot draft then context-grounded refinement."""
 
 import os
-import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
 
 from core.agents.base_agent import BaseAgent
 from core.utils.data_models import DynamicOntology
-
-# cap context passed to LLM to ~2k tokens; prevents runaway latency on
-# large excerpts while preserving enough signal for accurate answers.
-_MAX_CONTEXT_CHARS = 8_000
-# cap output length so tier-m/tier-1 questions don't over-generate.
-_MAX_OUTPUT_TOKENS = 800
 
 
 @dataclass
@@ -49,23 +42,29 @@ class GenerationAgent(BaseAgent):
         question: str,
         text_context: str,
         ontology: Optional[DynamicOntology] = None,
+        context_cap: int = 60_000,
+        max_output_tokens: int = 700,
+        system_prompt: str = "",
     ) -> Answer:
         self.logger.info(f"generating answer for: {question[:80]}")
 
         # cap context before any LLM call
-        text_context = text_context[:_MAX_CONTEXT_CHARS]
+        if context_cap > 0:
+            text_context = text_context[:context_cap]
 
         # step 1: zero-shot draft (question only)
         zero_prompt = self.zero_shot_template.replace("{question}", question)
-        draft = self._call_llm(zero_prompt)
+        draft = self._call_llm(zero_prompt, max_tokens=max_output_tokens)
 
         # step 2: refine with context + ontology
         refine_prompt = self._build_refinement_prompt(
             question, draft, text_context, ontology
         )
-        final_answer = self._call_llm(refine_prompt)
+        final_answer = self._call_llm(
+            refine_prompt, max_tokens=max_output_tokens, system=system_prompt
+        )
 
-        refs = self._extract_references(final_answer)
+        refs     = self._extract_references(final_answer)
         fmt_refs = self._extract_formatted_references(final_answer)
 
         # fallback: pull references from context if the answer lacks them
@@ -88,7 +87,10 @@ class GenerationAgent(BaseAgent):
         prompt = self.refinement_template
         prompt = prompt.replace("{question}", question)
         prompt = prompt.replace("{draft_answer}", draft)
-        prompt = prompt.replace("{context}", context.strip() if context else "No additional context available.")
+        prompt = prompt.replace(
+            "{context}",
+            context.strip() if context else "No additional context available.",
+        )
 
         if ontology and ontology.attribute_value_pairs:
             ont_lines = [
@@ -111,24 +113,31 @@ class GenerationAgent(BaseAgent):
     # llm wrapper
     # ------------------------------------------------------------------
 
-    def _call_llm(self, prompt: str) -> str:
+    def _call_llm(
+        self, prompt: str, max_tokens: int = 700, system: str = ""
+    ) -> str:
         try:
-            response = self.llm.invoke(prompt, force_json=False, max_tokens=_MAX_OUTPUT_TOKENS)
+            if system:
+                prompt = f"SYSTEM: {system}\n\n{prompt}"
+            response = self.llm.invoke(prompt)
+
             return response.strip() if response else "Error: empty LLM response."
         except Exception as e:
             self.logger.error(f"llm generation failed: {e}")
             return "Error: Could not generate answer."
 
     # ------------------------------------------------------------------
-    # reference extraction
+    # reference extraction  (logic identical to original)
     # ------------------------------------------------------------------
 
     @staticmethod
     def _find_references_section(text: str) -> Optional[int]:
-        """return line index where the references section starts, or None."""
         for i, line in enumerate(text.split("\n")):
             stripped = line.strip()
-            if ("References" in stripped or "REFERENCES" in stripped) and not stripped.startswith("["):
+            if (
+                ("References" in stripped or "REFERENCES" in stripped)
+                and not stripped.startswith("[")
+            ):
                 return i
         return None
 
