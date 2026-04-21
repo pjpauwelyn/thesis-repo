@@ -75,14 +75,14 @@ rules:
       rule_hit: tier-2b
       reason: "quantitative focal -- narrow excerpts + scope filter, focused synthesis"
 
-  # tier-3: complex mechanism / method-eval / comparison -- large + full excerpts
+  # tier-3: complex mechanism / method-eval / comparison -- qwen3-30b-a3b + full excerpts
   # threshold raised to 0.70 (was 0.60): borderline questions now fall to tier-m.
   - name: complex_mechanism
     when:
       complexity: {ge: 0.70}
       question_type: {in: [mechanism, method_eval, comparison]}
     config:
-      model_name: mistral-large-latest
+      model_name: qwen/qwen3-30b-a3b
       evidence_mode: excerpts_full
       top_k_per_doc: 10
       per_doc_budget: 9000
@@ -92,7 +92,7 @@ rules:
       scope_filter: false
       synthesis_mode: homogeneous
       rule_hit: tier-3
-      reason: "complex mechanism / comparison -- large model + full excerpts"
+      reason: "complex mechanism / comparison -- qwen3-30b-a3b + full excerpts"
 
   # tier-m: mid-complexity bridge -- small + narrow excerpts
   # upper bound raised from 0.60 to 0.70 to absorb questions freed by tier-3.
