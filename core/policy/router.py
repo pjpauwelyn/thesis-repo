@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, Union
 
@@ -10,6 +11,7 @@ import yaml
 from core.utils.data_models import PipelineConfig, QuestionProfile
 
 _DEFAULT_RULES = Path(__file__).parent / "rules.yaml"
+_log = logging.getLogger(__name__)
 
 # below this profiler confidence we ignore the rule table entirely and route
 # to the safety net (large + full excerpts). also fires on confidence=None,
@@ -67,8 +69,20 @@ class Router:
                 reason=f"low/missing profiler confidence ({profile.confidence}) -> safety tier-3",
             )
 
+        _log.debug(
+            "router.select: type=%s complexity=%.2f quant=%.2f spatial=%.2f "
+            "temporal=%.2f conf=%.2f",
+            profile.question_type,
+            profile.complexity,
+            profile.quantitativity,
+            profile.spatial_specificity,
+            profile.temporal_specificity,
+            profile.confidence or 0.0,
+        )
+
         for rule in self._rules:
             if self._matches(rule["when"], profile):
+                _log.debug("router.select: matched rule '%s'", rule["name"])
                 return PipelineConfig(**rule["config"])
 
         # the yaml always ends with always:true, so this is unreachable
