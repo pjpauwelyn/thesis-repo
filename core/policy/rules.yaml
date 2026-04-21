@@ -99,7 +99,7 @@ rules:
   - name: complexity_medium
     when:
       complexity: {ge: 0.35}
-      complexity_lt: {le: 0.70}
+      "complexity_lt": {le: 0.70}
     config:
       model_name: mistral-small-latest
       evidence_mode: excerpts_narrow
