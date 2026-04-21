@@ -82,3 +82,51 @@ class RefinedContext(BaseModel):
             key=lambda a: a.relevance_score,
             reverse=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# adaptive pipeline (set5)  --  question profile + routing decision
+# ---------------------------------------------------------------------------
+
+class QuestionProfile(BaseModel):
+    """compact question characterisation emitted by the profiler."""
+    identity: str
+    one_line_summary: str = ""
+    question_type: Literal[
+        "definition", "mechanism", "comparison",
+        "quantitative", "method_eval", "application", "continuous",
+    ] = "continuous"
+    complexity: float = Field(0.5, ge=0.0, le=1.0)
+    quantitativity: float = Field(0.3, ge=0.0, le=1.0)
+    spatial_specificity: float = Field(0.1, ge=0.0, le=1.0)
+    temporal_specificity: float = Field(0.1, ge=0.0, le=1.0)
+    methodological_depth: float = Field(0.1, ge=0.0, le=1.0)
+    scope: Literal["global", "regional", "local"] = "global"
+    needs_numeric_emphasis: bool = False
+    answer_shape: Literal[
+        "direct_paragraph", "short_explainer", "structured_long",
+        "comparison_table", "mechanism_walkthrough", "raw",
+    ] = "structured_long"
+    # none = parse failure -> safety net triggers in router
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+class PipelineConfig(BaseModel):
+    """resolved routing decision for one question."""
+    model_name: str = "mistral-small-latest"
+    evidence_mode: Literal["abstracts", "excerpts_narrow", "excerpts_full"] = "abstracts"
+    top_k_per_doc: int = 6
+    per_doc_budget: int = 6000
+    global_budget: int = 30000
+    refinement_prompt: str = "refinement_1pass_refined_exp4.txt"
+    generation_prompt: str = "generation_prompt_exp4.txt"
+    scope_filter: bool = False
+    synthesis_mode: Literal["homogeneous", "focused"] = "homogeneous"
+    temperature_refine: float = 0.1
+    temperature_generate: float = 0.2
+    rule_hit: str = "fallback"
+    reason: str = ""
+    gen_context_cap: int = 60_000
+    max_output_tokens: int = 700
+    system_prompt_modifier: str = ""
+    doc_filter_min_keep: int = 6

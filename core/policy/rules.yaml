@@ -1,0 +1,128 @@
+# adaptive routing rules (set5)
+#
+# evaluated top-to-bottom, first match wins.
+# the final rule is the conservative set2 (ontology-enhanced rag) fallback,
+# so the adaptive pipeline can never score below the current champion.
+#
+# thresholds are calibrated against the set2 score distribution and the
+# exp3 per-criterion deltas. see prompts/ontology/extract_profile.txt for
+# the rubric the profiler uses to assign these dimensions.
+#
+# yaml notes:
+#   - {ge: x}, {gt: x}, {le: x}, {lt: x}  numeric inequality on a profile field
+#   - {in: [a, b, c]}                      categorical membership
+#   - any: { f1: cond, f2: cond }          ANY sub-condition must match
+#   - always: true                         unconditional match
+#   - complexity_lt is a router alias that re-evaluates the complexity field;
+#     used so a single rule can express two inequalities on the same field
+#     without a custom yaml parser.
+
+rules:
+
+  # tier-1: simple conceptual -- small + abstracts + direct prompt
+  - name: simple_conceptual
+    when:
+      complexity: {lt: 0.35}
+      quantitativity: {lt: 0.35}
+    config:
+      model_name: mistral-small-latest
+      evidence_mode: abstracts
+      refinement_prompt: refinement_1pass_refined_exp4.txt
+      generation_prompt: generation_direct.txt
+      scope_filter: false
+      synthesis_mode: homogeneous
+      rule_hit: tier-1
+      reason: "simple conceptual -- abstracts + direct prompt"
+
+  # tier-2a: quantitative global -- small + narrow excerpts
+  - name: quantitative_global
+    when:
+      quantitativity: {ge: 0.55}
+      complexity: {lt: 0.6}
+      spatial_specificity: {lt: 0.5}
+      temporal_specificity: {lt: 0.5}
+    config:
+      model_name: mistral-small-latest
+      evidence_mode: excerpts_narrow
+      top_k_per_doc: 6
+      per_doc_budget: 6000
+      global_budget: 30000
+      refinement_prompt: refinement_1pass_refined_fulltext.txt
+      generation_prompt: generation_structured.txt
+      scope_filter: false
+      synthesis_mode: homogeneous
+      rule_hit: tier-2a
+      reason: "quantitative global -- narrow excerpts, homogeneous synthesis"
+
+  # tier-2b: quantitative focal -- small + narrow excerpts + scope filter
+  - name: quantitative_focal
+    when:
+      quantitativity: {ge: 0.55}
+      complexity: {lt: 0.6}
+      any:
+        spatial_specificity: {ge: 0.5}
+        temporal_specificity: {ge: 0.5}
+    config:
+      model_name: mistral-small-latest
+      evidence_mode: excerpts_narrow
+      top_k_per_doc: 6
+      per_doc_budget: 6000
+      global_budget: 30000
+      refinement_prompt: refinement_1pass_refined_fulltext.txt
+      generation_prompt: generation_structured.txt
+      scope_filter: true
+      synthesis_mode: focused
+      rule_hit: tier-2b
+      reason: "quantitative focal -- narrow excerpts + scope filter, focused synthesis"
+
+  # tier-3: complex mechanism / method-eval / comparison -- large + full excerpts
+  # threshold raised to 0.70 (was 0.60): borderline questions now fall to tier-m.
+  - name: complex_mechanism
+    when:
+      complexity: {ge: 0.70}
+      question_type: {in: [mechanism, method_eval, comparison]}
+    config:
+      model_name: mistral-large-latest
+      evidence_mode: excerpts_full
+      top_k_per_doc: 10
+      per_doc_budget: 9000
+      global_budget: 60000
+      refinement_prompt: refinement_1pass_refined_fulltext.txt
+      generation_prompt: generation_structured.txt
+      scope_filter: false
+      synthesis_mode: homogeneous
+      rule_hit: tier-3
+      reason: "complex mechanism / comparison -- large model + full excerpts"
+
+  # tier-m: mid-complexity bridge -- small + narrow excerpts
+  # upper bound raised from 0.60 to 0.70 to absorb questions freed by tier-3.
+  - name: complexity_medium
+    when:
+      complexity: {ge: 0.35}
+      complexity_lt: {le: 0.70}
+    config:
+      model_name: mistral-small-latest
+      evidence_mode: excerpts_narrow
+      top_k_per_doc: 6
+      per_doc_budget: 6000
+      global_budget: 30000
+      refinement_prompt: refinement_1pass_refined_fulltext.txt
+      generation_prompt: generation_structured.txt
+      scope_filter: false
+      synthesis_mode: homogeneous
+      rule_hit: tier-m
+      reason: "medium complexity -- narrow excerpts bridge tier"
+
+  # fallback: identical to set2 (ontology-enhanced rag).
+  - name: fallback
+    when:
+      always: true
+    config:
+      model_name: mistral-small-latest
+      evidence_mode: abstracts
+      refinement_prompt: refinement_1pass_refined_exp4.txt
+      generation_prompt: generation_prompt_exp4.txt
+      scope_filter: false
+      synthesis_mode: homogeneous
+      rule_hit: fallback
+      reason: "no rule matched -- conservative set2 default"

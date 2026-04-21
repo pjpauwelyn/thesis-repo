@@ -132,6 +132,7 @@ class PipelineOrchestrator:
         "1_pass_with_ontology": "1-Pass with Ontology",
         "1_pass_without_ontology": "1-Pass without Ontology",
         "1_pass_with_ontology_refined": "1-Pass with Ontology Refined",
+        "adaptive": "Adaptive (set5) - profile + route per question",
     }
 
     def __init__(

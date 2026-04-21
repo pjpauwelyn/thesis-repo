@@ -1,0 +1,116 @@
+[
+  {
+    "question": "What is NDVI?",
+    "expected_question_type": "definition",
+    "expected_complexity_max": 0.35,
+    "expected_quantitativity_max": 0.35,
+    "expected_rule_hit": "tier-1",
+    "raw_response": {
+      "pairs": [
+        {"attribute": "ndvi", "value": "normalised difference vegetation index", "description": "spectral index", "centrality": 0.95}
+      ],
+      "profile": {
+        "one_line_summary": "asks for the definition of ndvi",
+        "question_type": "definition",
+        "complexity": 0.10,
+        "quantitativity": 0.10,
+        "spatial_specificity": 0.0,
+        "temporal_specificity": 0.0,
+        "methodological_depth": 0.0,
+        "confidence": 0.95
+      }
+    }
+  },
+  {
+    "question": "What are typical SAR backscatter values for boreal forest globally?",
+    "expected_question_type": "quantitative",
+    "expected_quantitativity_min": 0.55,
+    "expected_rule_hit": "tier-2a",
+    "raw_response": {
+      "pairs": [],
+      "profile": {
+        "one_line_summary": "asks for global typical sar backscatter values for boreal forest",
+        "question_type": "quantitative",
+        "complexity": 0.30,
+        "quantitativity": 0.80,
+        "spatial_specificity": 0.20,
+        "temporal_specificity": 0.10,
+        "methodological_depth": 0.20,
+        "confidence": 0.80
+      }
+    }
+  },
+  {
+    "question": "How did Greenland ice sheet mass loss accelerate between 2002 and 2020?",
+    "expected_question_type": "quantitative",
+    "expected_rule_hit": "tier-2b",
+    "raw_response": {
+      "pairs": [],
+      "profile": {
+        "one_line_summary": "quantifies greenland ice sheet mass loss acceleration 2002-2020",
+        "question_type": "quantitative",
+        "complexity": 0.40,
+        "quantitativity": 0.85,
+        "spatial_specificity": 0.80,
+        "temporal_specificity": 0.85,
+        "methodological_depth": 0.20,
+        "confidence": 0.90
+      }
+    }
+  },
+  {
+    "question": "Compare the strengths and limitations of MODIS vs Sentinel-3 for global SST retrieval.",
+    "expected_question_type": "comparison",
+    "expected_complexity_min": 0.6,
+    "expected_rule_hit": "tier-3",
+    "raw_response": {
+      "pairs": [],
+      "profile": {
+        "one_line_summary": "compares modis and sentinel-3 strengths and limitations for global sst retrieval",
+        "question_type": "comparison",
+        "complexity": 0.75,
+        "quantitativity": 0.30,
+        "spatial_specificity": 0.10,
+        "temporal_specificity": 0.10,
+        "methodological_depth": 0.80,
+        "confidence": 0.85
+      }
+    }
+  },
+  {
+    "question": "How are urban heat island patterns evolving across European cities?",
+    "expected_complexity_min": 0.35,
+    "expected_complexity_max": 0.6,
+    "expected_rule_hit": "tier-m",
+    "raw_response": {
+      "pairs": [],
+      "profile": {
+        "one_line_summary": "asks how urban heat island patterns evolve across european cities",
+        "question_type": "continuous",
+        "complexity": 0.50,
+        "quantitativity": 0.30,
+        "spatial_specificity": 0.40,
+        "temporal_specificity": 0.30,
+        "methodological_depth": 0.20,
+        "confidence": 0.80
+      }
+    }
+  },
+  {
+    "question": "ambiguous garbled text",
+    "expected_rule_hit": "safety-tier3",
+    "raw_response": {
+      "pairs": [],
+      "profile": {
+        "one_line_summary": "unclear question",
+        "question_type": "continuous",
+        "complexity": 0.50,
+        "quantitativity": 0.30,
+        "spatial_specificity": 0.10,
+        "temporal_specificity": 0.10,
+        "methodological_depth": 0.10,
+        "confidence": 0.45
+      }
+    }
+  }
+]

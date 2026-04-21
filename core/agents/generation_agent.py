@@ -9,6 +9,12 @@ from typing import List, Optional
 from core.agents.base_agent import BaseAgent
 from core.utils.data_models import DynamicOntology
 
+# cap context passed to LLM to ~2k tokens; prevents runaway latency on
+# large excerpts while preserving enough signal for accurate answers.
+_MAX_CONTEXT_CHARS = 8_000
+# cap output length so tier-m/tier-1 questions don't over-generate.
+_MAX_OUTPUT_TOKENS = 800
+
 
 @dataclass
 class Answer:
@@ -45,6 +51,9 @@ class GenerationAgent(BaseAgent):
         ontology: Optional[DynamicOntology] = None,
     ) -> Answer:
         self.logger.info(f"generating answer for: {question[:80]}")
+
+        # cap context before any LLM call
+        text_context = text_context[:_MAX_CONTEXT_CHARS]
 
         # step 1: zero-shot draft (question only)
         zero_prompt = self.zero_shot_template.replace("{question}", question)
@@ -104,7 +113,7 @@ class GenerationAgent(BaseAgent):
 
     def _call_llm(self, prompt: str) -> str:
         try:
-            response = self.llm.invoke(prompt, force_json=False)
+            response = self.llm.invoke(prompt, force_json=False, max_tokens=_MAX_OUTPUT_TOKENS)
             return response.strip() if response else "Error: empty LLM response."
         except Exception as e:
             self.logger.error(f"llm generation failed: {e}")
