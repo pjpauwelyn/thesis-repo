@@ -96,6 +96,7 @@ class PipelineResult:
     # set during processing
     original_question_id: Optional[int] = None
     clean_aql_used: str = ""
+    kg_docs_used: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -287,6 +288,7 @@ class PipelineOrchestrator:
                 result.references = adaptive_result.references
                 result.formatted_references = adaptive_result.formatted_references
                 result.final_text_context = adaptive_result.enriched_context
+                result.kg_docs_used = adaptive_result.kg_docs_used
                 result.status = "success"
                 result.time_elapsed = time.time() - start
                 return result
@@ -476,7 +478,7 @@ class PipelineOrchestrator:
             "references": " | ".join(r.references) if r.references else "",
             "formatted_references": " | ".join(r.formatted_references) if r.formatted_references else "",
             "processing_time": f"{r.time_elapsed:.2f}",
-            "documents_parsed": len([s for s in ctx.split("##") if s.strip()]) if ctx else 0,
+            "documents_parsed": r.kg_docs_used if r.kg_docs_used > 0 else (len([s for s in ctx.split("##") if s.strip()]) if ctx else 0),
             "timestamp": datetime.now().isoformat(),
             "experiment_type": self.experiment_type,
             # evaluation placeholders
