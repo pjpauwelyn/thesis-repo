@@ -205,9 +205,7 @@ class AdaptivePipeline:
                 ref_llm,
                 prompt_dir=str(self._prompts_root / "refinement"),
             )
-            # _build_evidence returns a list of excerpt dicts; render to string
-            self._ensure_indexer()
-            excerpts_text = self._indexer.render_excerpts_block(excerpts) if excerpts else ""
+            excerpts_text = self._render_excerpts_block(excerpts) if excerpts else ""
             ref_agent.set_excerpts(excerpts_text)
 
         if hasattr(ref_agent, "set_scope_filter"):
@@ -427,6 +425,30 @@ class AdaptivePipeline:
             "excerpt_tokens_est": sum(len(e.get("text", "")) for e in excerpts) // 4,
         })
         return excerpts, stats
+
+    @staticmethod
+    def _render_excerpts_block(excerpts: List[Dict[str, Any]]) -> str:
+        """Render a list of excerpt dicts (from select_excerpts_for_question)
+        into a plain-text block suitable for injection into the refinement
+        agent prompt.
+
+        Each excerpt dict has keys: doc_index, title, work_id, section,
+        page, text, tokens, score.
+        """
+        if not excerpts:
+            return ""
+        parts: List[str] = []
+        for ex in excerpts:
+            header = (
+                f"[Doc {ex.get('doc_index', '?')}] "
+                f"{ex.get('title', 'Unknown')} | "
+                f"Section: {ex.get('section', 'unknown')} | "
+                f"p. {ex.get('page', '?')}"
+            )
+            parts.append(header)
+            parts.append(ex.get("text", ""))
+            parts.append("")  # blank line between excerpts
+        return "\n".join(parts).strip()
 
     def _filter_documents(
         self,
