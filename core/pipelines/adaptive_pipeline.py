@@ -19,6 +19,7 @@ to the existing CSV-based aql_results_str path unchanged.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 from dataclasses import dataclass, field
@@ -36,14 +37,14 @@ log = logging.getLogger(__name__)
 
 _ANSWER_SHAPE_DIRECTIVES = {
     "direct_paragraph":      (
-        "Write a direct paragraph answer of 3–5 sentences. "
+        "Write a direct paragraph answer of 3-5 sentences. "
         "No section headings. No bullet lists. No Implications section."
     ),
     "short_explainer":       "Write a short explanation in 2-4 sentences.",
     "structured_long":       (
-        "Structure your answer with 3–5 section headings that directly match "
+        "Structure your answer with 3-5 section headings that directly match "
         "the sub-questions implied by the question. "
-        "Open with a 2–3 sentence direct answer before the first heading. "
+        "Open with a 2-3 sentence direct answer before the first heading. "
         "Do not add headings that are not needed to answer the question."
     ),
     "comparison_table":      (
@@ -76,7 +77,7 @@ class AdaptiveResult:
     rule_hit: str = ""
     excerpt_stats: Dict[str, Any] = field(default_factory=dict)
     kg_docs_used: int = 0           # how many primary KG docs were retrieved
-    kg_source: str = "csv"          # "live" | "csv" | "none"
+    kg_source: str = "csv"          # "live" | "csv" | "narrow_csv" | "none"
 
 
 class AdaptivePipeline:
@@ -145,7 +146,7 @@ class AdaptivePipeline:
         retrieval order:
           1. live ArangoDB KG  (if ARANGO_ROOT_PASSWORD is set)
           2. pre-parsed docs   (if caller already passed docs list)
-          3. aql_results_str   (CSV fallback)
+          3. aql_results_str   (CSV fallback, JSON first then ast.literal_eval)
         """
         from core.agents.generation_agent import GenerationAgent
         from core.agents.refinement_agent_1pass_refined import RefinementAgent1PassRefined
@@ -176,15 +177,21 @@ class AdaptivePipeline:
         elif docs:
             kg_source = "csv"
         else:
-            kg_source = "csv"
+            # CSV fallback: try JSON first, then ast.literal_eval for
+            # Python-style dicts produced by parse_aql_results
             if aql_results_str:
                 parsed = parse_aql_results(aql_results_str)
-                try:
-                    docs = json.loads(parsed)
-                    if not isinstance(docs, list):
-                        docs = []
-                except json.JSONDecodeError:
-                    docs = []
+                docs = self._parse_docs_from_str(parsed)
+            else:
+                docs = []
+            kg_source = "csv" if docs else "none"
+            if docs:
+                log.info("CSV fallback: parsed %d docs from aql_results_str", len(docs))
+            else:
+                log.warning(
+                    "CSV fallback: could not parse any docs from aql_results_str "
+                    "(len=%d)", len(aql_results_str or "")
+                )
 
         # ----------------------------------------------------------
         # evidence (fulltext excerpts when evidence_mode != abstracts)
@@ -382,6 +389,34 @@ class AdaptivePipeline:
     # helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _parse_docs_from_str(raw: str) -> List[Dict[str, Any]]:
+        """Parse a docs list from a raw string.
+
+        Tries JSON first (fast path), then falls back to ast.literal_eval
+        for Python-style dicts produced by parse_aql_results.
+        Returns an empty list on any failure.
+        """
+        if not raw or not raw.strip():
+            return []
+        # fast path: valid JSON
+        try:
+            result = json.loads(raw)
+            if isinstance(result, list):
+                return result
+        except (json.JSONDecodeError, ValueError):
+            pass
+        # fallback: Python literal (single quotes, True/False/None)
+        try:
+            result = ast.literal_eval(raw)
+            if isinstance(result, list):
+                return result
+            if isinstance(result, dict):
+                return [result]
+        except Exception:
+            pass
+        return []
+
     def _llm(self, model: str, temperature: float, max_tokens: int = 1400):
         key = (model, temperature, max_tokens)
         if key not in self._llm_cache:
@@ -486,16 +521,11 @@ class AdaptivePipeline:
             if uri:
                 lookup[uri] = d
         if aql_results_str:
-            try:
-                import ast as _ast
-                raw = _ast.literal_eval(aql_results_str)
-                if isinstance(raw, list):
-                    for item in raw:
-                        uri = item.get("uri", "")
-                        if uri and uri not in lookup:
-                            lookup[uri] = item
-            except Exception:
-                pass
+            parsed_docs = AdaptivePipeline._parse_docs_from_str(aql_results_str)
+            for item in parsed_docs:
+                uri = item.get("uri", "")
+                if uri and uri not in lookup:
+                    lookup[uri] = item
         return lookup
 
     # ------------------------------------------------------------------
@@ -536,8 +566,6 @@ class AdaptivePipeline:
 
         def _sub(m: "re.Match") -> str:
             inner = m.group(1)
-            # split keeping separators; keep only in-range digit tokens and
-            # the separators between them
             tokens = re.split(r"([,;\s]+)", inner)
             kept_digits: List[str] = []
             for tok in tokens:
@@ -550,17 +578,13 @@ class AdaptivePipeline:
             return "[" + ", ".join(kept_digits) + "]"
 
         body = re.sub(r"\[([0-9][0-9,;\s]*)\]", _sub, body)
-        # tidy double spaces / space-before-punct left by removals
         body = re.sub(r"[ \t]+([,.;:])", r"\1", body)
         body = re.sub(r"[ \t]{2,}", " ", body)
         return body + (("\n" + tail) if tail else "")
 
     @staticmethod
     def _strip_self_written_refs(answer: str) -> str:
-        """Remove any References / REFERENCES section the LLM wrote.
-        Handles markdown headings (### References), plain heading lines, and
-        bold forms (**References**).
-        """
+        """Remove any References / REFERENCES section the LLM wrote."""
         import re
         lines = answer.split("\n")
         for i, line in enumerate(lines):
@@ -589,27 +613,24 @@ class AdaptivePipeline:
     def _build_query_hint(question: str, profile: QuestionProfile) -> str:
         hints = []
 
-        # complexity/depth signal
         if profile.complexity is not None:
             if profile.complexity < 0.50:
                 hints.append(
-                    "[DEPTH: concise — this is a foundational question; "
-                    "answer in 3–5 sentences without exhaustive enumeration]"
+                    "[DEPTH: concise -- this is a foundational question; "
+                    "answer in 3-5 sentences without exhaustive enumeration]"
                 )
             elif profile.complexity >= 0.75:
                 hints.append(
-                    "[DEPTH: comprehensive — this is a high-complexity question; "
+                    "[DEPTH: comprehensive -- this is a high-complexity question; "
                     "provide mechanistic detail, quantitative evidence, and uncertainty assessment]"
                 )
 
-        # quantitative emphasis (unchanged)
         if getattr(profile, "needs_numeric_emphasis", False):
             hints.append(
                 "[NUMERIC EMPHASIS: prioritise excerpts with quantitative "
                 "values, rates, and units]"
             )
 
-        # answer shape (unchanged)
         if profile.answer_shape and profile.answer_shape not in ("direct_paragraph", ""):
             hints.append(f"[SYNTHESIS TARGET: {profile.answer_shape}]")
 
