@@ -19,6 +19,7 @@ to the existing CSV-based aql_results_str path unchanged.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -188,7 +189,7 @@ class AdaptivePipeline:
         # ----------------------------------------------------------
         # evidence (fulltext excerpts when evidence_mode != abstracts)
         # ----------------------------------------------------------
-        excerpts_text, excerpt_stats = self._build_evidence(cfg, question, ontology, docs)
+        excerpts, excerpt_stats = self._build_evidence(cfg, question, ontology, docs)
 
         # ----------------------------------------------------------
         # refinement
@@ -204,6 +205,9 @@ class AdaptivePipeline:
                 ref_llm,
                 prompt_dir=str(self._prompts_root / "refinement"),
             )
+            # _build_evidence returns a list of excerpt dicts; render to string
+            self._ensure_indexer()
+            excerpts_text = self._indexer.render_excerpts_block(excerpts) if excerpts else ""
             ref_agent.set_excerpts(excerpts_text)
 
         if hasattr(ref_agent, "set_scope_filter"):
@@ -215,6 +219,9 @@ class AdaptivePipeline:
             aql_results_str if kg_source == "live"
             else (aql_results_str or "")
         )
+
+        # build query hint from profile for richer generation context
+        query_hint = self._build_query_hint(question, profile)
 
         refined = ref_agent.process_context(
             question=query_hint,
