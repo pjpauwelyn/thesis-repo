@@ -18,10 +18,13 @@ _log = logging.getLogger(__name__)
 # which is what process_with_profile() returns on parse failure.
 _CONFIDENCE_FLOOR = 0.6
 
+# 60% of the 128k token window shared by mistral-small-latest and
+# mistral-large-latest. expressed in chars (tokens × 4) so generation_agent
+# can compare directly against len(text_context).
+_CONTEXT_CAP_CHARS = 307_200  # 76_800 tokens × 4
+
 # ---------------------------------------------------------------------------
 # deterministic answer_shape mapping
-# the LLM profiler tends to default to structured_long regardless of question
-# type, so we override answer_shape here based on question_type + complexity.
 # ---------------------------------------------------------------------------
 
 def _resolve_answer_shape(profile: QuestionProfile) -> str:
@@ -35,7 +38,6 @@ def _resolve_answer_shape(profile: QuestionProfile) -> str:
         return "comparison_table"
     if qt == "mechanism":
         return "mechanism_walkthrough" if c < 0.50 else "structured_long"
-    # quantitative, method_eval, fallback
     return "structured_long"
 
 
@@ -44,19 +46,10 @@ class Router:
         with open(rules_path, "r", encoding="utf-8") as f:
             self._rules = yaml.safe_load(f)["rules"]
 
-    # ------------------------------------------------------------------
-    # public api
-    # ------------------------------------------------------------------
-
     def select(self, profile: QuestionProfile) -> PipelineConfig:
-        # override answer_shape deterministically before routing
         profile.answer_shape = _resolve_answer_shape(profile)
 
         if profile.confidence is None or profile.confidence < _CONFIDENCE_FLOOR:
-            # safety-tier3: low/missing profiler confidence.
-            # Uses mistral-large-latest via Mistral direct API (128k context window).
-            # gen_context_cap is set to 128000 chars (~32k tokens), leaving ample
-            # headroom for the prompt wrapper and 1400 output tokens within 128k.
             return PipelineConfig(
                 model_name="mistral-large-latest",
                 evidence_mode="excerpts_full",
@@ -65,7 +58,7 @@ class Router:
                 global_budget=60000,
                 refinement_prompt="refinement_1pass_refined_fulltext.txt",
                 generation_prompt="generation_structured.txt",
-                gen_context_cap=128000,
+                gen_context_cap=_CONTEXT_CAP_CHARS,
                 max_output_tokens=1400,
                 system_prompt_modifier="",
                 doc_filter_min_keep=7,
@@ -89,12 +82,7 @@ class Router:
                 _log.info("router.select: matched rule '%s'", rule["name"])
                 return PipelineConfig(**rule["config"])
 
-        # the yaml always ends with always:true, so this is unreachable
         raise RuntimeError("router: no rule matched and no fallback found in rules.yaml")
-
-    # ------------------------------------------------------------------
-    # condition evaluation
-    # ------------------------------------------------------------------
 
     def _matches(self, when: Dict[str, Any], p: QuestionProfile) -> bool:
         for key, cond in when.items():
@@ -108,16 +96,12 @@ class Router:
         return True
 
     def _eval(self, field: str, cond: Any, p: QuestionProfile) -> bool:
-        # categorical membership: {in: [a, b, c]}
         if isinstance(cond, dict) and "in" in cond:
             return getattr(p, field, None) in cond["in"]
-
-        # complexity_lt is a router alias for a second inequality on complexity
         actual = "complexity" if field == "complexity_lt" else field
         val = getattr(p, actual, None)
         if val is None or not isinstance(cond, dict):
             return False
-
         for op, threshold in cond.items():
             if op == "lt" and not val < threshold:
                 return False

@@ -8,6 +8,11 @@ from typing import List, Optional
 from core.agents.base_agent import BaseAgent
 from core.utils.data_models import DynamicOntology
 
+# 60% of the 128k token window shared by mistral-small-latest and
+# mistral-large-latest, expressed in chars. this constant is the source of
+# truth; rules.yaml and router.py carry the same value for config clarity.
+_CONTEXT_WINDOW_60PCT_CHARS = 307_200  # 76_800 tokens × 4
+
 
 @dataclass
 class Answer:
@@ -34,7 +39,6 @@ class GenerationAgent(BaseAgent):
             return ""
 
     def process(self, input_data):
-        # required by base_agent but unused; callers use generate() directly
         pass
 
     def generate(
@@ -42,25 +46,33 @@ class GenerationAgent(BaseAgent):
         question: str,
         text_context: str,
         ontology: Optional[DynamicOntology] = None,
-        context_cap: int = 60_000,
+        context_cap: int = _CONTEXT_WINDOW_60PCT_CHARS,
         max_output_tokens: int = 700,
         system_prompt: str = "",
     ) -> Answer:
         self.logger.info(f"generating answer for: {question[:80]}")
 
-        # Guard: context must be non-empty — generation without grounded
-        # context is not acceptable anywhere in this pipeline.
+        # Guard: context must be non-empty.
         if not text_context or not text_context.strip():
             raise RuntimeError(
                 "GenerationAgent.generate(): text_context is empty. "
-                "Refusing to generate an ungrounded answer. "
-                "This means the refinement step produced no output — check the "
-                "refinement agent logs for the root cause."
+                "Refusing to generate an ungrounded answer."
             )
 
-        # cap context before any LLM call
-        if context_cap > 0:
-            text_context = text_context[:context_cap]
+        # Guard: context must not exceed the 60% window ceiling.
+        # This should almost never fire given the excerpt budgets, but if it
+        # does it means something upstream produced runaway output and we want
+        # a loud failure rather than silent evidence truncation.
+        ctx_len = len(text_context)
+        effective_cap = context_cap if context_cap > 0 else _CONTEXT_WINDOW_60PCT_CHARS
+        if ctx_len > effective_cap:
+            raise RuntimeError(
+                f"GenerationAgent.generate(): text_context length {ctx_len:,} chars "
+                f"exceeds the 60% context window ceiling of {effective_cap:,} chars "
+                f"({effective_cap // 4:,} tokens). "
+                "This indicates runaway excerpt output upstream. "
+                "Aborting — do not truncate evidence silently."
+            )
 
         # step 1: zero-shot draft (question only)
         zero_prompt = self.zero_shot_template.replace("{question}", question)
@@ -77,15 +89,10 @@ class GenerationAgent(BaseAgent):
         refs     = self._extract_references(final_answer)
         fmt_refs = self._extract_formatted_references(final_answer)
 
-        # fallback: pull references from context if the answer lacks them
         if not fmt_refs and text_context:
             fmt_refs = self._extract_references_from_context(text_context)
 
         return Answer(answer=final_answer, references=refs, formatted_references=fmt_refs)
-
-    # ------------------------------------------------------------------
-    # prompt helpers
-    # ------------------------------------------------------------------
 
     def _build_refinement_prompt(
         self,
@@ -119,38 +126,23 @@ class GenerationAgent(BaseAgent):
 
         return prompt
 
-    # ------------------------------------------------------------------
-    # llm wrapper — HARD FAIL on empty/None response
-    # ------------------------------------------------------------------
-
     def _call_llm(
         self, prompt: str, max_tokens: int = 700, system: str = ""
     ) -> str:
-        """Invoke the LLM and return the response text.
-
-        Raises RuntimeError if the LLM returns None or an empty string.
-        Silent error strings ('Error: ...') are never returned — the pipeline
-        must fail loudly so callers can retry rather than record a garbage answer.
-        """
         if system:
             prompt = f"SYSTEM: {system}\n\n{prompt}"
         response = self.llm.invoke(prompt)
         if not response:
             raise RuntimeError(
-                "GenerationAgent._call_llm(): LLM returned empty/None response "
-                "after all retries. Aborting generation — no silent fallback."
+                "GenerationAgent._call_llm(): LLM returned empty/None response. "
+                "Aborting generation — no silent fallback."
             )
         text = response.strip()
         if not text:
             raise RuntimeError(
-                "GenerationAgent._call_llm(): LLM response was whitespace-only "
-                "after stripping."
+                "GenerationAgent._call_llm(): LLM response was whitespace-only."
             )
         return text
-
-    # ------------------------------------------------------------------
-    # reference extraction  (logic identical to original)
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _find_references_section(text: str) -> Optional[int]:
@@ -169,7 +161,7 @@ class GenerationAgent(BaseAgent):
         if start is None:
             return []
         refs: List[str] = []
-        for line in lines[start + 1 :]:
+        for line in lines[start + 1:]:
             line = line.strip()
             if not line:
                 break
@@ -184,7 +176,7 @@ class GenerationAgent(BaseAgent):
         if start is None:
             return []
         refs: List[str] = []
-        for line in lines[start + 1 :]:
+        for line in lines[start + 1:]:
             line = line.strip()
             if not line:
                 break

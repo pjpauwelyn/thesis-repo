@@ -11,6 +11,12 @@
 #   with small+narrow than large+full even if complexity+type also satisfy
 #   tier-3. the cheaper route wins intentionally.
 #
+# context window: both mistral-small-latest and mistral-large-latest have
+# 128k token windows. gen_context_cap is set to 307200 chars (60% of 128k
+# tokens, i.e. 76800 tokens x4). this is a hard error ceiling -- if the
+# pipeline hits it, generation raises and the run is flagged as an error
+# rather than silently truncating evidence.
+#
 # yaml condition syntax:
 #   {ge: x}, {gt: x}, {le: x}, {lt: x}  numeric inequality on a profile field
 #   {in: [a, b, c]}                      categorical membership
@@ -23,8 +29,6 @@
 rules:
 
 # tier-2b: quantitative + spatially or temporally focal
-# high quant AND either spatial or temporal specificity >= 0.60.
-# sits BEFORE tier-3 so a focal question beats the complexity/type path.
   - name: tier_2b
     when:
       quantitativity: {ge: 0.60}
@@ -39,7 +43,7 @@ rules:
       global_budget: 30000
       refinement_prompt: refinement_1pass_refined_fulltext.txt
       generation_prompt: generation_structured.txt
-      gen_context_cap: 100000
+      gen_context_cap: 307200
       max_output_tokens: 700
       system_prompt_modifier: "Focus your synthesis strictly on the specific region and/or time period named in the question. Do not extrapolate findings to other regions or periods."
       doc_filter_min_keep: 5
@@ -48,8 +52,7 @@ rules:
       rule_hit: tier-2b
       reason: "quantitative focal -- narrow excerpts + scope filter, focused synthesis"
 
-# tier-3: complex mechanism / method-eval / comparison
-# uses mistral-large-latest via Mistral direct API (128k context window).
+# tier-3: complex mechanism / method-eval / comparison -- mistral-large-latest (128k)
   - name: tier_3
     when:
       complexity: {ge: 0.60}
@@ -62,7 +65,7 @@ rules:
       global_budget: 50000
       refinement_prompt: refinement_1pass_refined_fulltext.txt
       generation_prompt: generation_structured.txt
-      gen_context_cap: 128000
+      gen_context_cap: 307200
       max_output_tokens: 1400
       system_prompt_modifier: "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' — do not present it as a cited fact."
       doc_filter_min_keep: 5
@@ -71,8 +74,7 @@ rules:
       rule_hit: tier-3
       reason: "complex mechanism / comparison -- mistral-large-latest (128k) + full excerpts"
 
-# tier-2a: standalone high quantitativity (no focal threshold required)
-# quantitativity >= 0.55, regardless of spatial/temporal specificity.
+# tier-2a: standalone high quantitativity
   - name: tier_2a
     when:
       quantitativity: {ge: 0.55}
@@ -84,7 +86,7 @@ rules:
       global_budget: 25000
       refinement_prompt: refinement_1pass_refined_fulltext.txt
       generation_prompt: generation_structured.txt
-      gen_context_cap: 100000
+      gen_context_cap: 307200
       max_output_tokens: 700
       system_prompt_modifier: "Answer concisely and directly. Lead with the core finding in the first sentence. Use at most 2 short sections after the opening paragraph. Do not add an Implications section unless the question explicitly asks for one."
       doc_filter_min_keep: 4
@@ -94,9 +96,6 @@ rules:
       reason: "high quantitativity -- narrow excerpts, numeric focus"
 
 # tier-m: mid-complexity catch-all [0.35, 0.70)
-# catches everything with moderate complexity that doesn't have high
-# quant or a complex question type. also absorbs definition/factual at
-# complexity >= 0.35 (they don't hit tier-3 because type not in list).
   - name: tier_m
     when:
       complexity: {ge: 0.35}
@@ -109,7 +108,7 @@ rules:
       global_budget: 30000
       refinement_prompt: refinement_1pass_refined_fulltext.txt
       generation_prompt: generation_structured.txt
-      gen_context_cap: 100000
+      gen_context_cap: 307200
       max_output_tokens: 700
       system_prompt_modifier: ""
       doc_filter_min_keep: 5
@@ -130,7 +129,7 @@ rules:
       global_budget: 0
       refinement_prompt: refinement_1pass_refined_exp4.txt
       generation_prompt: generation_direct.txt
-      gen_context_cap: 60000
+      gen_context_cap: 307200
       max_output_tokens: 450
       system_prompt_modifier: ""
       doc_filter_min_keep: 6
@@ -140,8 +139,6 @@ rules:
       reason: "simple / low-complexity -- abstracts + direct prompt"
 
 # fallback: set2-equivalent conservative fallback (abstracts)
-# only reachable when complexity >= 0.70 AND no quant/type rule fired
-# (e.g. question_type=application with no quant signal)
   - name: fallback
     when:
       always: true
@@ -153,7 +150,7 @@ rules:
       global_budget: 0
       refinement_prompt: refinement_1pass_refined_exp4.txt
       generation_prompt: generation_prompt_exp4.txt
-      gen_context_cap: 60000
+      gen_context_cap: 307200
       max_output_tokens: 700
       system_prompt_modifier: ""
       doc_filter_min_keep: 4
