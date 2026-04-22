@@ -24,11 +24,28 @@ never receive a large-model ceiling and vice versa:
     tier-m/2a/2b    : --medium-timeout-s  (default 300s)
     tier-3/safety   : --large-timeout-s   (default 600s)
 
+Tier names (rule_hit values from rules.yaml)
+--------------------------------------------
+    tier-1      low complexity, abstracts only, small everywhere
+    tier-m      mid complexity [0.35, 0.60), medium everywhere
+    tier-2a     high quantitativity standalone, medium refine + small gen
+    tier-2b     quantitative + spatially/temporally focal, medium refine + small gen
+    tier-3      complex mechanism/comparison, medium refine + large gen
+    safety-tier3  low confidence fallback, same bucket as tier-3
+    fallback    no rule matched, same bucket as tier-1
+
 Usage:
-    python scripts/phase3_parallel.py
-    python scripts/phase3_parallel.py --workers 4 --indices 1 8 13 18 28
-    python scripts/phase3_parallel.py --questions 1,5,12,27
-    python scripts/phase3_parallel.py --tier-mix 2,2,2 --n 6
+    # specific indices (always works regardless of tier-mix)
+    python scripts/phase3_parallel.py --indices 1 8 13
+
+    # 1 question from each of the 5 real tiers
+    python scripts/phase3_parallel.py --tier-mix 1,1,1,1,1 --n 5
+
+    # 2 from tier-1, 1 from tier-m, 1 from tier-2b, 2 from tier-3
+    python scripts/phase3_parallel.py --tier-mix 2,1,0,1,2 --n 6
+
+    # legacy 3-int form still accepted (maps tier-1 / tier-2b / tier-3)
+    python scripts/phase3_parallel.py --tier-mix 2,2,1
 """
 
 from __future__ import annotations
@@ -204,23 +221,45 @@ def _acquire(sem: threading.Semaphore):
         sem.release()
 
 
-# Map tier names to semaphore bucket and job-timeout bucket.
-# tier-m / tier-2a / tier-2b all have medium refinement so they use the
-# medium semaphore for back-pressure; their generation is small or medium
-# but medium is the bottleneck slot.
+# Map tier names (rule_hit values from rules.yaml) to semaphore/timeout bucket.
+# tier-m / tier-2a / tier-2b all use the medium semaphore because medium
+# refinement is the shared bottleneck regardless of the generation model.
 _TIER_TO_BUCKET: Dict[str, str] = {
-    "tier-1":     "small",
-    "fallback":   "small",
-    "tier-m":     "medium",
-    "tier-2a":    "medium",
-    "tier-2b":    "medium",
-    "tier-3":     "large",
+    "tier-1":       "small",
+    "fallback":     "small",
+    "tier-m":       "medium",
+    "tier-2a":      "medium",
+    "tier-2b":      "medium",
+    "tier-3":       "large",
     "safety-tier3": "large",
 }
 
 
 def _tier_bucket(tier: str) -> str:
     return _TIER_TO_BUCKET.get(tier, "medium")
+
+
+# ---------------------------------------------------------------------------
+# tier-mix parsing  (supports both 3-int legacy and 5-int full form)
+# ---------------------------------------------------------------------------
+
+# Canonical order for the 5-int form: tier-1, tier-m, tier-2a, tier-2b, tier-3
+_TIER_ORDER_5 = ["tier-1", "tier-m", "tier-2a", "tier-2b", "tier-3"]
+# Legacy 3-int form mapped to tier-1 / tier-2b / tier-3 for backward compat
+_TIER_ORDER_3 = ["tier-1", "tier-2b", "tier-3"]
+
+
+def _parse_tier_mix(s: str) -> Dict[str, int]:
+    """Accept either 3 ints (legacy: t1,t2b,t3) or 5 ints (t1,tm,t2a,t2b,t3)."""
+    parts = [p.strip() for p in s.split(",")]
+    if len(parts) == 5:
+        return {tier: int(count) for tier, count in zip(_TIER_ORDER_5, parts)}
+    if len(parts) == 3:
+        return {tier: int(count) for tier, count in zip(_TIER_ORDER_3, parts)}
+    raise argparse.ArgumentTypeError(
+        "--tier-mix must be 3 ints (tier-1,tier-2b,tier-3) "
+        "or 5 ints (tier-1,tier-m,tier-2a,tier-2b,tier-3)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -380,13 +419,6 @@ def _write_outputs(records: List[Dict[str, Any]], output_dir: Path) -> Tuple[Pat
 # main
 # ---------------------------------------------------------------------------
 
-def _parse_tier_mix(s: str) -> Dict[str, int]:
-    parts = [p.strip() for p in s.split(",")]
-    if len(parts) != 3:
-        raise argparse.ArgumentTypeError("tier-mix must be 3 ints: t1,t2,t3")
-    return {"tier-1": int(parts[0]), "tier-2": int(parts[1]), "tier-3": int(parts[2])}
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description="parallel phase-3 adaptive pipeline runner")
     ap.add_argument("--workers", "-w", type=int, default=4)
@@ -397,17 +429,23 @@ def main() -> int:
     ap.add_argument("--large-concurrency",  type=int, default=1,
                     help="max concurrent large-model jobs (default: 1)")
     ap.add_argument("--min-gap-ms", type=int, default=0)
-    # Per-bucket job-level timeouts. These gate the outer deadline loop in
-    # main(); the per-call socket timeouts are set inside PipelineConfig and
-    # are always tighter than these job ceilings.
     ap.add_argument("--small-timeout-s",  type=int, default=90,
-                    help="job ceiling for tier-1/fallback jobs (default: 90s)")
+                    help="job ceiling for tier-1/fallback (default: 90s)")
     ap.add_argument("--medium-timeout-s", type=int, default=300,
-                    help="job ceiling for tier-m/2a/2b jobs (default: 300s)")
+                    help="job ceiling for tier-m/2a/2b (default: 300s)")
     ap.add_argument("--large-timeout-s",  type=int, default=600,
-                    help="job ceiling for tier-3/safety jobs (default: 600s)")
-    ap.add_argument("--tier-mix", type=_parse_tier_mix, default="2,2,1")
-    ap.add_argument("--n", type=int, default=None)
+                    help="job ceiling for tier-3/safety (default: 600s)")
+    ap.add_argument(
+        "--tier-mix", type=_parse_tier_mix, default="1,1,1,1,1",
+        help=(
+            "Counts per tier. Two forms accepted:\n"
+            "  5-int: tier-1,tier-m,tier-2a,tier-2b,tier-3  (e.g. '1,1,1,1,1')\n"
+            "  3-int legacy: tier-1,tier-2b,tier-3          (e.g. '2,2,1')\n"
+            "default: '1,1,1,1,1'"
+        ),
+    )
+    ap.add_argument("--n", type=int, default=None,
+                    help="override total question count; weights from --tier-mix")
     ap.add_argument("--indices",   type=int, nargs="+", default=None)
     ap.add_argument("--questions", type=lambda s: [int(x) for x in s.split(",")], default=None)
     ap.add_argument("--max-retries", type=int, default=3)
@@ -441,9 +479,13 @@ def main() -> int:
     target_counts = args.tier_mix
     if args.n is not None:
         total_mix = sum(target_counts.values()) or 1
-        scaled = {t: max(0, round(args.n * target_counts[t] / total_mix)) for t in target_counts}
+        scaled = {
+            t: max(0, round(args.n * target_counts[t] / total_mix))
+            for t in target_counts
+        }
+        # absorb rounding remainder into tier-m (mid bucket)
         diff = args.n - sum(scaled.values())
-        scaled["tier-2"] = scaled.get("tier-2", 0) + diff
+        scaled["tier-m"] = scaled.get("tier-m", 0) + diff
         target_counts = scaled
         log.info("scaled tier mix for n=%d: %s", args.n, target_counts)
 
@@ -462,7 +504,6 @@ def main() -> int:
     large_sem  = threading.Semaphore(max(1, args.large_concurrency))
     spacer = _StartSpacer(args.min_gap_ms / 1000.0)
 
-    # Per-bucket job-level timeout in seconds.
     bucket_timeout: Dict[str, int] = {
         "small":  args.small_timeout_s,
         "medium": args.medium_timeout_s,
