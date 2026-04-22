@@ -21,6 +21,14 @@ flow per question:
 KG retrieval is activated automatically when ARANGO_URL + ARANGO_ROOT_PASSWORD
 are present in the environment.  when they are absent the pipeline falls back
 to the existing CSV-based aql_results_str path unchanged.
+
+Hard-fail policy
+----------------
+No step silently swallows errors and falls back to generating an ungrounded
+answer.  If refinement or generation fails (LLM unavailable, empty response,
+empty documents_block) a RuntimeError propagates to the caller so that smoke
+tests and parallel runners see a clean, retryable error rather than a short
+garbage answer in the results CSV.
 """
 
 from __future__ import annotations
@@ -146,6 +154,7 @@ class AdaptivePipeline:
         aql_results_str: str = "",
         docs: Optional[List[Dict[str, Any]]] = None,
         aql_params: Optional[Dict[str, Any]] = None,
+        precomputed_route: Optional[Tuple[DynamicOntology, QuestionProfile, PipelineConfig]] = None,
     ) -> AdaptiveResult:
         """run the full adaptive pipeline for one question.
 
@@ -153,17 +162,29 @@ class AdaptivePipeline:
           1. live ArangoDB KG  (if ARANGO_ROOT_PASSWORD is set)
           2. pre-parsed docs   (if caller already passed docs list)
           3. aql_results_str   (CSV fallback, JSON first then ast.literal_eval)
+
+        precomputed_route: if phase3_parallel (or any caller) already ran
+          profile_and_route() to choose the semaphore, pass the result here
+          to skip a redundant LLM call.  Must be a 3-tuple
+          (ontology, profile, cfg) as returned by profile_and_route().
         """
         from core.agents.generation_agent import GenerationAgent
         from core.agents.refinement_agent_1pass_refined import RefinementAgent1PassRefined
         from core.agents.refinement_agent_fulltext import RefinementAgent1PassFullText
         from core.utils.aql_parser import parse_aql_results
 
-        ontology, profile, cfg = self.profile_and_route(question)
-        log.info(
-            "q=%s... -> rule=%s model=%s evidence=%s",
-            question[:60], cfg.rule_hit, cfg.model_name, cfg.evidence_mode,
-        )
+        if precomputed_route is not None:
+            ontology, profile, cfg = precomputed_route
+            log.info(
+                "q=%s... -> rule=%s model=%s evidence=%s (precomputed route)",
+                question[:60], cfg.rule_hit, cfg.model_name, cfg.evidence_mode,
+            )
+        else:
+            ontology, profile, cfg = self.profile_and_route(question)
+            log.info(
+                "q=%s... -> rule=%s model=%s evidence=%s",
+                question[:60], cfg.rule_hit, cfg.model_name, cfg.evidence_mode,
+            )
 
         # ----------------------------------------------------------
         # retrieval: live KG > caller docs > CSV fallback
@@ -199,6 +220,16 @@ class AdaptivePipeline:
                     "(len=%d)", len(aql_results_str or "")
                 )
 
+        # Guard: we must have at least some documents to proceed.
+        # For tier-1 (abstracts mode) we can proceed with abstracts alone;
+        # for tier-2/3 we need at least some full or abstract docs.
+        if not docs:
+            raise RuntimeError(
+                f"AdaptivePipeline.run(): no documents available for question "
+                f"'{question[:80]}...' (kg_source={kg_source}). "
+                "Cannot proceed — refinement and generation require document context."
+            )
+
         # ----------------------------------------------------------
         # document filter (second LLM pass)
         # skipped when the result set is already small enough that
@@ -217,6 +248,17 @@ class AdaptivePipeline:
             log.info(
                 "doc filter: %d full, %d abstract, %d dropped (of %d)",
                 len(full_docs), len(abstract_docs), len(drop_docs), len(docs),
+            )
+
+        # Guard: after filtering we must still have documents.
+        # filter_documents() already falls back to the full set on LLM error,
+        # but if it somehow returns empty we catch it here.
+        if not full_docs and not abstract_docs:
+            raise RuntimeError(
+                f"AdaptivePipeline.run(): document filter eliminated ALL documents "
+                f"for question '{question[:80]}...'. "
+                "This should never happen — filter_documents() falls back to the "
+                "full set on any error. Investigate ontology_agent.filter_documents()."
             )
 
         # rebuild aql_results_str from only the non-dropped docs so the
@@ -265,6 +307,7 @@ class AdaptivePipeline:
             documents_block = self._render_documents_block(
                 full_docs, abstract_docs, excerpts, aql_lookup
             )
+            # set_documents_block() raises RuntimeError if block is empty.
             ref_agent.set_documents_block(documents_block)
 
         # build query hint from profile for richer generation context
@@ -282,13 +325,13 @@ class AdaptivePipeline:
             context_for_refinement = aql_results_str
 
         if cfg.evidence_mode == "abstracts" and not context_for_refinement:
-            log.warning(
-                "abstracts mode but context_for_refinement is empty "
-                "(aql_results_str len=%d, kg_source=%s) -- generation will "
-                "receive no document context",
-                len(aql_results_str or ""), kg_source,
+            raise RuntimeError(
+                f"AdaptivePipeline.run(): abstracts mode but context_for_refinement "
+                f"is empty (aql_results_str len={len(aql_results_str or '')}, "
+                f"kg_source={kg_source}). Cannot proceed."
             )
 
+        # process_context() raises RuntimeError on LLM failure — let it propagate.
         refined = ref_agent.process_context(
             question=query_hint,
             structured_context="",
@@ -298,6 +341,16 @@ class AdaptivePipeline:
             context_filter="full",
         )
         enriched = refined.enriched_context or ""
+
+        # Double-check: enriched must be non-empty before generation.
+        # This is belt-and-suspenders — process_context() should have already raised.
+        if not enriched.strip():
+            raise RuntimeError(
+                f"AdaptivePipeline.run(): refinement produced empty enriched_context "
+                f"for question '{question[:80]}...'. "
+                "process_context() should have raised — this is a bug in the "
+                "refinement agent. Aborting generation."
+            )
 
         # ----------------------------------------------------------
         # generation
@@ -318,6 +371,7 @@ class AdaptivePipeline:
         )
         gen_agent.refinement_template = template
 
+        # generate() raises RuntimeError on LLM failure — let it propagate.
         ans = gen_agent.generate(
             question=question,
             text_context=enriched,

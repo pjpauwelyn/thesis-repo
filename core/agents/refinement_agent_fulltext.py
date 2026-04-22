@@ -5,6 +5,15 @@ formatting, reference enrichment).  Overrides only the prompt filename and
 the prompt-construction step so it can fill either:
   - the new {documents_block} placeholder  (documents_block path, v2)
   - the legacy {aql_results}/{fulltext_excerpts} placeholders (backwards compat)
+
+Hard-fail policy
+----------------
+This agent NEVER silently falls back to returning a placeholder string.
+If the LLM call fails (None/empty response) or the documents_block is empty,
+a RuntimeError is raised immediately so AdaptivePipeline.run() can propagate
+the failure to the caller (smoke test / phase3_parallel retry loop).
+There is no circumstance under which generation should proceed without a
+grounded, non-empty refined context.
 """
 
 from __future__ import annotations
@@ -28,9 +37,7 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
     def __init__(self, llm, prompt_dir: str = "prompts/refinement"):
         super().__init__(llm, prompt_dir=prompt_dir)
         # override the name inherited from RefinementAgent1PassRefined so logs
-        # correctly identify this agent as RefinementAgent1PassFullText. without
-        # this, tier-2/3 runs log as "RefinementAgent1PassRefined" which is
-        # misleading when diagnosing whether the correct refinement path fired.
+        # correctly identify this agent as RefinementAgent1PassFullText.
         self.name = "RefinementAgent1PassFullText"
         self.logger = setup_logging(self.name)
         self._current_excerpts_text: str = ""
@@ -46,6 +53,13 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
 
     def set_documents_block(self, documents_block: str) -> None:
         """Called by AdaptivePipeline.run() with the unified documents block (v2)."""
+        if not documents_block or not documents_block.strip():
+            raise RuntimeError(
+                "RefinementAgent1PassFullText.set_documents_block(): "
+                "documents_block is empty or whitespace-only. "
+                "The pipeline must always provide non-empty document context "
+                "before calling the refinement agent."
+            )
         self._documents_block = documents_block
 
     # ------------------------------------------------------------------
@@ -81,10 +95,7 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
 
         if self._documents_block is not None:
             # v2 path: unified documents_block replaces both aql_results and
-            # fulltext_excerpts slots.  The prompt template must contain
-            # {documents_block}; the legacy slots are replaced with empty
-            # strings so stray {aql_results} / {fulltext_excerpts} in any
-            # surrounding text don't cause KeyError.
+            # fulltext_excerpts slots.
             prompt = (
                 template
                 .replace("{query}", question)
@@ -114,7 +125,7 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
         return prompt, documents
 
     # ------------------------------------------------------------------
-    # process_context: thin override to handle None aql_results_str
+    # process_context: hard-fail on LLM error — no silent fallback
     # ------------------------------------------------------------------
 
     def process_context(
@@ -126,20 +137,21 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
         aql_results_str: Optional[str] = None,
         context_filter: str = "full",
     ) -> RefinedContext:
-        # v2 path: documents_block is set; aql_results_str is None
-        # — skip the parent's early-return guard so we still call the LLM
+        # v2 path: documents_block is set; aql_results_str is None.
+        # _documents_block emptiness is already checked in set_documents_block().
         if self._documents_block is not None:
             prompt, documents = self._build_refined_prompt(
                 question, ontology, include_ontology, aql_results_str
             )
+            # _invoke_llm_text raises RuntimeError on None/empty — let it propagate.
             refined_text = self._invoke_llm_text(prompt)
-            est_tokens   = len(refined_text) // 4
+            est_tokens = len(refined_text) // 4
             self.logger.info(
                 "fulltext refined context: %d chars (~%d tokens)",
                 len(refined_text), est_tokens,
             )
-            assessments  = self._minimal_assessments(documents)
-            ont_summary  = (
+            assessments = self._minimal_assessments(documents)
+            ont_summary = (
                 self._ontology_summary(ontology)
                 if include_ontology and ontology else ""
             )
@@ -152,7 +164,9 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
                 enriched_context=refined_text,
             )
 
-        # legacy path: delegate to parent (which guards on aql_results_str)
+        # legacy path: delegate to parent.
+        # Parent's process_context() now also hard-fails on empty aql_results_str
+        # and on empty LLM response.
         return super().process_context(
             question=question,
             structured_context=structured_context,

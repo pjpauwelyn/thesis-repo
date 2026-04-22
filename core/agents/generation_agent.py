@@ -48,6 +48,16 @@ class GenerationAgent(BaseAgent):
     ) -> Answer:
         self.logger.info(f"generating answer for: {question[:80]}")
 
+        # Guard: context must be non-empty — generation without grounded
+        # context is not acceptable anywhere in this pipeline.
+        if not text_context or not text_context.strip():
+            raise RuntimeError(
+                "GenerationAgent.generate(): text_context is empty. "
+                "Refusing to generate an ungrounded answer. "
+                "This means the refinement step produced no output — check the "
+                "refinement agent logs for the root cause."
+            )
+
         # cap context before any LLM call
         if context_cap > 0:
             text_context = text_context[:context_cap]
@@ -110,21 +120,33 @@ class GenerationAgent(BaseAgent):
         return prompt
 
     # ------------------------------------------------------------------
-    # llm wrapper
+    # llm wrapper — HARD FAIL on empty/None response
     # ------------------------------------------------------------------
 
     def _call_llm(
         self, prompt: str, max_tokens: int = 700, system: str = ""
     ) -> str:
-        try:
-            if system:
-                prompt = f"SYSTEM: {system}\n\n{prompt}"
-            response = self.llm.invoke(prompt)
+        """Invoke the LLM and return the response text.
 
-            return response.strip() if response else "Error: empty LLM response."
-        except Exception as e:
-            self.logger.error(f"llm generation failed: {e}")
-            return "Error: Could not generate answer."
+        Raises RuntimeError if the LLM returns None or an empty string.
+        Silent error strings ('Error: ...') are never returned — the pipeline
+        must fail loudly so callers can retry rather than record a garbage answer.
+        """
+        if system:
+            prompt = f"SYSTEM: {system}\n\n{prompt}"
+        response = self.llm.invoke(prompt)
+        if not response:
+            raise RuntimeError(
+                "GenerationAgent._call_llm(): LLM returned empty/None response "
+                "after all retries. Aborting generation — no silent fallback."
+            )
+        text = response.strip()
+        if not text:
+            raise RuntimeError(
+                "GenerationAgent._call_llm(): LLM response was whitespace-only "
+                "after stripping."
+            )
+        return text
 
     # ------------------------------------------------------------------
     # reference extraction  (logic identical to original)

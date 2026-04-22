@@ -38,12 +38,19 @@ class RefinementAgent1PassRefined(BaseRefinementAgent):
         context_filter: str = "full",
     ) -> RefinedContext:
         if not aql_results_str:
-            return self._empty_context(question, ontology)
+            # No documents at all — hard fail. The pipeline must always provide
+            # document context before reaching refinement.
+            raise RuntimeError(
+                "RefinementAgent1PassRefined: aql_results_str is empty; "
+                "no document context available for refinement. "
+                "This is a pipeline configuration error, not a transient failure."
+            )
 
         prompt, documents = self._build_refined_prompt(
             question, ontology, include_ontology, aql_results_str
         )
 
+        # _invoke_llm_text raises RuntimeError on failure — let it propagate.
         refined_text = self._invoke_llm_text(prompt)
 
         est_tokens = len(refined_text) // 4
@@ -186,19 +193,30 @@ class RefinementAgent1PassRefined(BaseRefinementAgent):
         return "\n".join(formatted)
 
     # ------------------------------------------------------------------
-    # llm call
+    # llm call — HARD FAIL on empty/None response
     # ------------------------------------------------------------------
 
     def _invoke_llm_text(self, prompt: str) -> str:
-        try:
-            response = self.llm.invoke(prompt)
-            if response:
-                return response.strip()
-            self.logger.warning("empty response from llm")
-            return "No refined context generated"
-        except Exception as e:
-            self.logger.error(f"refined context generation failed: {e}")
-            return "Error generating refined context"
+        """Invoke the LLM and return the response text.
+
+        Raises RuntimeError immediately if the LLM returns None or an empty
+        string. This surfaces as a hard pipeline failure so the caller
+        (adaptive_pipeline.run) can propagate the error rather than silently
+        falling back to parametric generation with zero document grounding.
+        """
+        response = self.llm.invoke(prompt)
+        if not response:
+            raise RuntimeError(
+                f"{self.__class__.__name__}: LLM returned empty/None response after all retries. "
+                "This indicates an API error, model unavailability, or token limit issue. "
+                "Aborting — no fallback to ungrounded generation."
+            )
+        text = response.strip()
+        if not text:
+            raise RuntimeError(
+                f"{self.__class__.__name__}: LLM response was whitespace-only after stripping."
+            )
+        return text
 
     # ------------------------------------------------------------------
     # compatibility stubs
