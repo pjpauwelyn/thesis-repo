@@ -554,6 +554,7 @@ class AdaptivePipeline:
             profile=profile,
             question=question,
             min_keep=cfg.doc_filter_min_keep,
+            evidence_mode=cfg.evidence_mode,
         )
 
     @staticmethod
