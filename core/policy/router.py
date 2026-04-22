@@ -53,15 +53,19 @@ class Router:
         profile.answer_shape = _resolve_answer_shape(profile)
 
         if profile.confidence is None or profile.confidence < _CONFIDENCE_FLOOR:
+            # safety-tier3: low/missing profiler confidence.
+            # Uses mistral-large-latest via Mistral direct API (128k context window).
+            # gen_context_cap is set to 128000 chars (~32k tokens), leaving ample
+            # headroom for the prompt wrapper and 1400 output tokens within 128k.
             return PipelineConfig(
-                model_name="mistralai/mistral-large-2512",
+                model_name="mistral-large-latest",
                 evidence_mode="excerpts_full",
                 top_k_per_doc=10,
                 per_doc_budget=9000,
                 global_budget=60000,
                 refinement_prompt="refinement_1pass_refined_fulltext.txt",
                 generation_prompt="generation_structured.txt",
-                gen_context_cap=200000,
+                gen_context_cap=128000,
                 max_output_tokens=1400,
                 system_prompt_modifier="",
                 doc_filter_min_keep=7,

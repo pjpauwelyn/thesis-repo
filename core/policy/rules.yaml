@@ -39,7 +39,7 @@ rules:
       global_budget: 30000
       refinement_prompt: refinement_1pass_refined_fulltext.txt
       generation_prompt: generation_structured.txt
-      gen_context_cap: 200000
+      gen_context_cap: 100000
       max_output_tokens: 700
       system_prompt_modifier: "Focus your synthesis strictly on the specific region and/or time period named in the question. Do not extrapolate findings to other regions or periods."
       doc_filter_min_keep: 5
@@ -48,27 +48,28 @@ rules:
       rule_hit: tier-2b
       reason: "quantitative focal -- narrow excerpts + scope filter, focused synthesis"
 
-# tier-3: complex mechanism / method-eval / comparison -- mistral-large + full excerpts
+# tier-3: complex mechanism / method-eval / comparison
+# uses mistral-large-latest via Mistral direct API (128k context window).
   - name: tier_3
     when:
       complexity: {ge: 0.60}
       question_type: {in: [mechanism, method_eval, comparison]}
     config:
-      model_name: mistralai/mistral-large-2512
+      model_name: mistral-large-latest
       evidence_mode: excerpts_full
       top_k_per_doc: 8
       per_doc_budget: 7000
       global_budget: 50000
       refinement_prompt: refinement_1pass_refined_fulltext.txt
       generation_prompt: generation_structured.txt
-      gen_context_cap: 200000
+      gen_context_cap: 128000
       max_output_tokens: 1400
       system_prompt_modifier: "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' — do not present it as a cited fact."
       doc_filter_min_keep: 5
       scope_filter: false
       synthesis_mode: homogeneous
       rule_hit: tier-3
-      reason: "complex mechanism / comparison -- mistral-large-2512 via openrouter + full excerpts"
+      reason: "complex mechanism / comparison -- mistral-large-latest (128k) + full excerpts"
 
 # tier-2a: standalone high quantitativity (no focal threshold required)
 # quantitativity >= 0.55, regardless of spatial/temporal specificity.
@@ -83,7 +84,7 @@ rules:
       global_budget: 25000
       refinement_prompt: refinement_1pass_refined_fulltext.txt
       generation_prompt: generation_structured.txt
-      gen_context_cap: 200000
+      gen_context_cap: 100000
       max_output_tokens: 700
       system_prompt_modifier: "Answer concisely and directly. Lead with the core finding in the first sentence. Use at most 2 short sections after the opening paragraph. Do not add an Implications section unless the question explicitly asks for one."
       doc_filter_min_keep: 4
@@ -108,7 +109,7 @@ rules:
       global_budget: 30000
       refinement_prompt: refinement_1pass_refined_fulltext.txt
       generation_prompt: generation_structured.txt
-      gen_context_cap: 200000
+      gen_context_cap: 100000
       max_output_tokens: 700
       system_prompt_modifier: ""
       doc_filter_min_keep: 5
