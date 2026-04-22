@@ -256,15 +256,16 @@ class AdaptivePipeline:
                 ref_llm,
                 prompt_dir=str(self._prompts_root / "refinement"),
             )
-            # build aql_lookup for render_documents_block
-            aql_lookup = self._build_aql_lookup(aql_results_str, docs or [])
+            # build aql_lookup: for live KG use the docs list directly
+            # (aql_results_str is prose, not parseable JSON in that case)
+            if kg_source == "live":
+                aql_lookup = {d["uri"]: d for d in (live_docs or []) if d.get("uri")}
+            else:
+                aql_lookup = self._build_aql_lookup(aql_results_str, docs or [])
             documents_block = self._render_documents_block(
                 full_docs, abstract_docs, excerpts, aql_lookup
             )
             ref_agent.set_documents_block(documents_block)
-
-        if hasattr(ref_agent, "set_scope_filter"):
-            ref_agent.set_scope_filter(cfg.scope_filter)
 
         # build query hint from profile for richer generation context
         query_hint = self._build_query_hint(question, profile)
@@ -279,6 +280,14 @@ class AdaptivePipeline:
         # live KG always provides its own rich context string regardless of mode
         if kg_source == "live" and cfg.evidence_mode == "abstracts":
             context_for_refinement = aql_results_str
+
+        if cfg.evidence_mode == "abstracts" and not context_for_refinement:
+            log.warning(
+                "abstracts mode but context_for_refinement is empty "
+                "(aql_results_str len=%d, kg_source=%s) -- generation will "
+                "receive no document context",
+                len(aql_results_str or ""), kg_source,
+            )
 
         refined = ref_agent.process_context(
             question=query_hint,

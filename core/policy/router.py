@@ -54,7 +54,7 @@ class Router:
 
         if profile.confidence is None or profile.confidence < _CONFIDENCE_FLOOR:
             return PipelineConfig(
-                model_name="mistral-large-latest",
+                model_name="mistralai/mistral-large-2512",
                 evidence_mode="excerpts_full",
                 top_k_per_doc=10,
                 per_doc_budget=9000,

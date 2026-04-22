@@ -48,13 +48,13 @@ rules:
       rule_hit: tier-2b
       reason: "quantitative focal -- narrow excerpts + scope filter, focused synthesis"
 
-# tier-3: complex mechanism / method-eval / comparison -- qwen3 + full excerpts
+# tier-3: complex mechanism / method-eval / comparison -- mistral-large + full excerpts
   - name: tier_3
     when:
       complexity: {ge: 0.60}
       question_type: {in: [mechanism, method_eval, comparison]}
     config:
-      model_name: qwen/qwen3-30b-a3b
+      model_name: mistralai/mistral-large-2512
       evidence_mode: excerpts_full
       top_k_per_doc: 8
       per_doc_budget: 7000
@@ -68,7 +68,7 @@ rules:
       scope_filter: false
       synthesis_mode: homogeneous
       rule_hit: tier-3
-      reason: "complex mechanism / comparison -- qwen3-30b-a3b + full excerpts"
+      reason: "complex mechanism / comparison -- mistral-large-2512 via openrouter + full excerpts"
 
 # tier-2a: standalone high quantitativity (no focal threshold required)
 # quantitativity >= 0.55, regardless of spatial/temporal specificity.
