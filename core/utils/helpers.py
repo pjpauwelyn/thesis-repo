@@ -226,7 +226,7 @@ def get_llm_model(
 ) -> Union[MistralLLMWrapper, OpenRouterLLMWrapper]:
     """create an llm wrapper -- routes to openrouter for qwen/openrouter models,
     mistral direct api otherwise."""
-    if model.startswith("qwen/") or model.startswith("openrouter/"):
+    if model.startswith("qwen/") or model.startswith("openrouter/") or model.startswith("mistralai/") or model.startswith("mistralai/"):
         from openai import OpenAI
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
