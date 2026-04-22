@@ -1,4 +1,4 @@
-# adaptive routing rules (set5 → v4)
+# adaptive routing rules (set5 → v5)
 #
 # evaluated top-to-bottom; first match wins.
 # the final fallback rule is always reached if nothing else matches.
@@ -14,20 +14,20 @@
 #
 # Model escalation rationale
 # --------------------------
-# tier-1 / tier-m / tier-2a  : small everywhere — low/medium complexity,
-#   output is short, structured context is enough for coherent answers.
-# tier-2b : medium refinement — quant-focal questions need a more reliable
-#   extractor for numeric values from full-text excerpts; small sometimes
-#   paraphrases numbers. generation stays small (focused output, short).
-# tier-3  : medium refinement + large generation — complex mechanism /
-#   comparison questions need coherent 1400-token synthesis. refinement
-#   is still extraction+structuring so medium is sufficient there.
+# tier-1-def / tier-1 : abstracts + small — definitional/factual or low
+#   complexity; no PDF fetch needed, short output is sufficient.
+# tier-m              : medium everywhere — mid-complexity catch-all.
+# tier-2a             : high quant standalone — medium refinement for
+#   numeric extraction, small generation (short focused output).
+# tier-2b             : quant + focal — medium refinement for numeric
+#   fidelity from full-text; small generation.
+# tier-3              : complex mechanism/comparison — medium refinement
+#   + large generation for coherent 1400-token synthesis.
 #
 # Per-call timeouts (model-aware)
 # --------------------------------
 # timeout_refine_s / timeout_generate_s set the Mistral client socket
-# deadline for each individual LLM call. They must match the assigned
-# model — never apply a small-model timeout to a large-model call.
+# deadline for each individual LLM call.
 #
 # Measured baselines (Mistral API, Apr 2026):
 #   small  : TTFT ~0.3s,  ~130 tok/s  → 700 tok ≈ 6s   → 60s ceiling
@@ -37,11 +37,49 @@
 # NOTE: safety-tier3 (confidence < 0.60) is handled directly in router.py
 # and does NOT appear here. Its timeouts match tier-3 (large generation).
 #
-# tier ordering: tier-2b before tier-3 so a high-quant focal question is
-# served with medium+narrow rather than medium+large even if complexity
-# also satisfies tier-3. cheaper route wins intentionally.
+# Rule ordering rationale
+# -----------------------
+# tier-1-def  : first — catch definitional/factual + low-quant before
+#               any complexity check fires (guards against profiler drift
+#               that scores definitions at 0.38-0.45 instead of <0.35).
+# tier-2b     : before tier-3 — quant-focal beats complex-type so a
+#               high-quant focal question uses medium+narrow not large.
+# tier-3      : complex type check.
+# tier-2a     : standalone quant catch.
+# tier-m      : mid-complexity catch-all [0.40, 0.60).
+# tier-1      : low complexity <0.40 (ceiling raised from 0.35 to absorb
+#               profiler drift zone 0.35-0.40).
+# fallback    : always: true.
 
 rules:
+
+# tier-1-def: definitional or factual + low quantitativity
+# Fires before tier-m to prevent profiler score drift (0.38-0.45) from
+# escalating simple "what is X" questions to the medium model.
+# Guard: quant < 0.45 ensures numeric-heavy definitions still reach tier-2a.
+  - name: tier_1_def
+    when:
+      question_type: {in: [definition, factual]}
+      quantitativity: {lt: 0.45}
+      complexity: {lt: 0.60}
+    config:
+      model_name:               mistral-small-latest
+      evidence_mode:            abstracts
+      top_k_per_doc:            0
+      per_doc_budget:           0
+      global_budget:            0
+      refinement_prompt:        refinement_1pass_refined_exp4.txt
+      generation_prompt:        generation_direct.txt
+      gen_context_cap:          307200
+      max_output_tokens:        450
+      system_prompt_modifier:   ""
+      doc_filter_min_keep:      6
+      scope_filter:             false
+      synthesis_mode:           homogeneous
+      timeout_refine_s:         60
+      timeout_generate_s:       45
+      rule_hit:                 tier-1-def
+      reason:                   "definitional/factual + low quant -- abstracts + small (drift guard)"
 
 # tier-2b: quantitative + spatially or temporally focal
   - name: tier_2b
@@ -119,10 +157,11 @@ rules:
       rule_hit:                 tier-2a
       reason:                   "high quantitativity -- medium refinement for numeric extraction, small generation"
 
-# tier-m: mid-complexity catch-all [0.35, 0.60)
+# tier-m: mid-complexity catch-all [0.40, 0.60)
+# Lower bound raised from 0.35 to 0.40 to match the raised tier-1 ceiling.
   - name: tier_m
     when:
-      complexity: {ge: 0.35}
+      complexity: {ge: 0.40}
       complexity_lt: {lt: 0.60}
     config:
       model_name:               mistral-medium-latest
@@ -141,12 +180,13 @@ rules:
       timeout_refine_s:         150
       timeout_generate_s:       150
       rule_hit:                 tier-m
-      reason:                   "mid-complexity [0.35, 0.60) -- medium for both agents"
+      reason:                   "mid-complexity [0.40, 0.60) -- medium for both agents"
 
 # tier-1: simple / low-complexity -- abstracts only, no PDF fetch
+# Ceiling raised from 0.35 to 0.40 to absorb the profiler drift zone.
   - name: tier_1
     when:
-      complexity: {lt: 0.35}
+      complexity: {lt: 0.40}
     config:
       model_name:               mistral-small-latest
       evidence_mode:            abstracts
@@ -164,7 +204,7 @@ rules:
       timeout_refine_s:         60
       timeout_generate_s:       45
       rule_hit:                 tier-1
-      reason:                   "simple/low-complexity -- abstracts + small everywhere"
+      reason:                   "simple/low-complexity (<0.40) -- abstracts + small everywhere"
 
 # fallback: conservative default (no rule matched)
   - name: fallback

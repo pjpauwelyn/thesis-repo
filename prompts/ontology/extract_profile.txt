@@ -30,7 +30,9 @@ Given the question below, return a SINGLE JSON object with EXACTLY two top-level
 
 complexity
   0.00-0.30  single-concept definition or direct factual lookup
-  0.30-0.60  moderate: 2-3 interacting concepts, focused comparison, or
+  0.30-0.40  near-simple: definitional but covers a few related properties
+             or characteristics (e.g. "what are the properties of X")
+  0.40-0.60  moderate: 2-3 interacting concepts, focused comparison, or
              integrating evidence from a few angles
   0.60-1.00  high: multi-mechanism synthesis, cross-study method critique,
              or reconciling conflicting findings
@@ -75,10 +77,54 @@ confidence
   application   asks how to apply or use X in a real context
   continuous    ongoing process or trend question ("how is X changing")
 
+### calibration examples
+
+These examples show the correct score range for typical questions.
+Use them to anchor your scores — do not drift toward the middle.
+
+Example A — simple definition (complexity ~0.15, tier-1 territory):
+  Question: "What is albedo in remote sensing?"
+  profile: {"question_type": "definition", "complexity": 0.15,
+            "quantitativity": 0.10, "spatial_specificity": 0.05,
+            "temporal_specificity": 0.05, "methodological_depth": 0.05,
+            "confidence": 0.95}
+  Why: single concept, no numbers required, no spatial/temporal scope.
+
+Example B — moderate multi-property definition (complexity ~0.35, tier-1/tier-m boundary):
+  Question: "What are the radiative properties of the land surface that influence backscatter?"
+  profile: {"question_type": "definition", "complexity": 0.35,
+            "quantitativity": 0.25, "spatial_specificity": 0.05,
+            "temporal_specificity": 0.05, "methodological_depth": 0.15,
+            "confidence": 0.88}
+  Why: definitional but lists multiple interacting surface properties;
+       still no numbers required, no specific region.
+
+Example C — moderate continuous/mechanism (complexity ~0.50, tier-m territory):
+  Question: "How is vegetation phenology changing in response to Arctic warming?"
+  profile: {"question_type": "continuous", "complexity": 0.50,
+            "quantitativity": 0.35, "spatial_specificity": 0.40,
+            "temporal_specificity": 0.30, "methodological_depth": 0.20,
+            "confidence": 0.82}
+  Why: ongoing trend + causal link, broad region, some numbers useful.
+
+Example D — complex mechanism (complexity ~0.75, tier-3 territory):
+  Question: "How do variations in cryospheric indicators such as glacier retreat
+             and sea ice extent influence atmospheric circulation patterns and
+             precipitation regimes at regional scales?"
+  profile: {"question_type": "mechanism", "complexity": 0.75,
+            "quantitativity": 0.45, "spatial_specificity": 0.35,
+            "temporal_specificity": 0.25, "methodological_depth": 0.30,
+            "confidence": 0.87}
+  Why: multi-mechanism causal chain across cryosphere, atmosphere, and
+       regional hydrology; requires synthesising evidence from several studies.
+
 ### output rules
 
 - Return ONLY valid JSON. No prose before or after, no markdown fences.
 - Both top-level keys MUST be present, even if "pairs" is an empty list.
 - All numeric fields MUST be floats in [0, 1].
+- Do NOT anchor to 0.40-0.55 out of uncertainty — use the examples above
+  to calibrate. If a question is clearly simple, score it below 0.35.
+  If it is clearly complex, score it above 0.65.
 
 Question: {question}

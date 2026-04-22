@@ -242,11 +242,16 @@ class OntologyConstructionAgent(BaseAgent):
         suffice. Complex mechanistic or comparison questions may need more,
         but the LLM is instructed to be selective rather than generous.
 
-        Guardrail floors are intentionally low (min 2) because the prompt
-        now actively steers toward fewer "full" classifications. The floors
-        are a safety net against degenerate 0-or-1 full responses, not a
-        target. On violation, falls back to _lexical_fallback() (ranked by
-        ontology keyword overlap) rather than returning all docs as full.
+        Guardrail floors:
+          min_full  : 2 for simple/definitional, 3 for all others.
+          min_total : always max(min_keep, n//3) — enough docs kept so the
+                      lexical fallback is not over-aggressive on large pools.
+                      Previously the simple branch used n//4 which dropped
+                      too many docs (e.g. 12 of 16) when the LLM filter
+                      fired and fell back to lexical ranking.
+
+        On guardrail violation, falls back to _lexical_fallback() (ranked
+        by ontology keyword overlap) rather than returning all docs as full.
 
         Returns (full_docs, abstract_docs, drop_docs).
         """
@@ -265,13 +270,13 @@ class OntologyConstructionAgent(BaseAgent):
         )
 
         n = len(docs)
-        # floors are now minimal safety nets, not targets.
-        # simple/definitional: floor=2, complex/mechanism: floor=2 as well —
-        # the prompt tells the LLM to be selective; trust it unless it
-        # returns 0 or 1 full doc (clearly degenerate).
         is_simple = getattr(profile, "question_type", "mechanism") in ("definition", "factual")
-        min_full  = 2
-        min_total = max(4, n // 4) if is_simple else max(min_keep, n // 3)
+        # min_full: slightly lower for simple questions (definitions often
+        # need fewer full PDFs), but never below 2 (safety net).
+        min_full  = 2 if is_simple else 3
+        # min_total: always n//3 floor — avoids the old is_simple branch that
+        # used n//4, which caused 12-of-16 drops in the lexical fallback.
+        min_total = max(min_keep, n // 3)
 
         doc_list = "\n".join(
             f"{i+1}. {docs[i].get('title', 'Unknown')}" for i in range(n)
