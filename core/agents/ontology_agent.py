@@ -1,6 +1,7 @@
 """constructs a dynamic ontology from a user question via llm calls."""
 
 import os
+import re
 from typing import Any, Dict, List, Tuple
 
 from core.agents.base_agent import BaseAgent
@@ -157,6 +158,70 @@ class OntologyConstructionAgent(BaseAgent):
     # document relevance filter (second LLM pass)
     # ------------------------------------------------------------------
 
+    def _lexical_fallback(
+        self,
+        docs: List[Dict[str, Any]],
+        ontology: "DynamicOntology",
+        min_full: int,
+        min_total: int,
+    ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+        """Rank docs by keyword overlap with ontology AV-pairs and split into
+        full / abstract / drop using min_full and min_total as cut-points.
+
+        Used as a fallback when the LLM filter fails or its response violates
+        the guardrail. Avoids the previous behaviour of returning all docs as
+        full, which defeats the purpose of filtering entirely.
+
+        If all scores are 0 (empty ontology / no AV-pairs), the ranking is
+        order-stable (first N docs become full), which is no worse than the
+        old all-full fallback but respects the budget.
+        """
+        word_re = re.compile(r"[a-z][a-z0-9\-]{1,}")
+
+        # build keyword + literal sets from ontology AV-pairs
+        kws: List[str] = []
+        lits: List[str] = []
+        for av in getattr(ontology, "attribute_value_pairs", []):
+            for field in ("attribute", "value", "description"):
+                val = getattr(av, field, None)
+                if val and isinstance(val, str):
+                    kws.extend(word_re.findall(val.lower()))
+                    short = val.strip().lower()
+                    if short and len(short) <= 40:
+                        lits.append(short)
+        seen: set = set()
+        kws = [k for k in kws if len(k) >= 3 and not (k in seen or seen.add(k))]
+
+        scored: List[Tuple[float, int, Dict]] = []
+        for idx, doc in enumerate(docs):
+            text = ((doc.get("abstract") or "") + " " + (doc.get("title") or "")).lower()
+            token_set = set(word_re.findall(text))
+            kw_hits  = sum(1 for k in kws if k in token_set)
+            lit_hits = sum(1 for l in lits if l and l in text)
+            score    = kw_hits + 0.5 * lit_hits
+            scored.append((score, idx, doc))
+
+        all_zero = all(s == 0 for s, _, _ in scored)
+        if all_zero:
+            self.logger.warning(
+                "filter_documents lexical_fallback: all scores are 0 "
+                "(empty ontology?) — using document order as tiebreak"
+            )
+
+        # sort by score desc, preserving original order as stable tiebreak
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        ranked = [doc for _, _, doc in scored]
+
+        full_docs     = ranked[:min_full]
+        abstract_docs = ranked[min_full:min_total]
+        drop_docs     = ranked[min_total:]
+
+        self.logger.info(
+            "filter_documents lexical_fallback: %d full, %d abstract, %d drop (of %d)",
+            len(full_docs), len(abstract_docs), len(drop_docs), len(docs),
+        )
+        return full_docs, abstract_docs, drop_docs
+
     def filter_documents(
         self,
         docs: List[Dict[str, Any]],
@@ -174,11 +239,16 @@ class OntologyConstructionAgent(BaseAgent):
 
         The filter is complexity-aware: simple/definitional questions are
         steered toward fewer "full" fetches since their abstracts typically
-        suffice. Complex mechanistic or comparison questions may use more.
+        suffice. Complex mechanistic or comparison questions may need more,
+        but the LLM is instructed to be selective rather than generous.
+
+        Guardrail floors are intentionally low (min 2) because the prompt
+        now actively steers toward fewer "full" classifications. The floors
+        are a safety net against degenerate 0-or-1 full responses, not a
+        target. On violation, falls back to _lexical_fallback() (ranked by
+        ontology keyword overlap) rather than returning all docs as full.
 
         Returns (full_docs, abstract_docs, drop_docs).
-        On any error (including LLM 503/timeout) falls back to returning
-        all docs as full_docs so the pipeline degrades gracefully.
         """
         if not docs:
             return [], [], []
@@ -195,10 +265,13 @@ class OntologyConstructionAgent(BaseAgent):
         )
 
         n = len(docs)
-        # simple questions (definition / factual) need fewer full-text fetches
+        # floors are now minimal safety nets, not targets.
+        # simple/definitional: floor=2, complex/mechanism: floor=2 as well —
+        # the prompt tells the LLM to be selective; trust it unless it
+        # returns 0 or 1 full doc (clearly degenerate).
         is_simple = getattr(profile, "question_type", "mechanism") in ("definition", "factual")
-        min_full  = max(2, n // 6) if is_simple else max(3, n // 4)
-        min_total = max(4, n // 4) if is_simple else max(min_keep, n // 2)
+        min_full  = 2
+        min_total = max(4, n // 4) if is_simple else max(min_keep, n // 3)
 
         doc_list = "\n".join(
             f"{i+1}. {docs[i].get('title', 'Unknown')}" for i in range(n)
@@ -265,9 +338,9 @@ class OntologyConstructionAgent(BaseAgent):
 
         except Exception as exc:
             self.logger.warning(
-                "filter_documents: %s \u2014 falling back to full set", exc
+                "filter_documents: %s \u2014 falling back to lexical ranking", exc
             )
-            return list(docs), [], []
+            return self._lexical_fallback(docs, ontology, min_full, min_total)
 
         full_docs     = [docs[i] for i, c in enumerate(classifications) if c == "full"]
         abstract_docs = [docs[i] for i, c in enumerate(classifications) if c == "abstract"]
