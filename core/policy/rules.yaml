@@ -1,27 +1,126 @@
-# adaptive routing rules (set5 → v2)
+# adaptive routing rules (set5 → v3)
 #
 # evaluated top-to-bottom, first match wins.
 # the final rule is the conservative set2 (ontology-enhanced rag) fallback.
 #
-# thresholds calibrated against the set2 score distribution and exp3
-# per-criterion deltas.  see prompts/ontology/extract_profile.txt for
-# the rubric the profiler uses to assign these dimensions.
+# NOTE: safety-tier3 is handled directly in router.py (confidence floor < 0.60),
+# it does NOT appear here. the yaml rules only fire when confidence >= 0.60.
 #
-# yaml notes:
-#   - {ge: x}, {gt: x}, {le: x}, {lt: x}  numeric inequality on a profile field
-#   - {in: [a, b, c]}                      categorical membership
-#   - any: { f1: cond, f2: cond }          ANY sub-condition must match
-#   - always: true                         unconditional match
-#   - complexity_lt is a router alias that re-evaluates the complexity field;
-#     used so a single rule can express two inequalities on the same field
-#     without a custom yaml parser.
+# tier ordering (important):
+#   tier-2b before tier-3: a high-quant focal question is cheaper to serve
+#   with small+narrow than large+full even if complexity+type also satisfy
+#   tier-3. the cheaper route wins intentionally.
+#
+# yaml condition syntax:
+#   {ge: x}, {gt: x}, {le: x}, {lt: x}  numeric inequality on a profile field
+#   {in: [a, b, c]}                      categorical membership
+#   any: { f1: cond, f2: cond }          ANY sub-condition must match
+#   always: true                         unconditional match
+#   complexity_lt                        router alias for a second inequality
+#                                        on complexity (avoids repeating the
+#                                        field name in a single-key yaml map)
 
 rules:
 
-# tier-1: simple conceptual -- small + abstracts + direct prompt
+# tier-2b: quantitative + spatially or temporally focal
+# high quant AND either spatial or temporal specificity >= 0.60.
+# sits BEFORE tier-3 so a focal question beats the complexity/type path.
+  - name: tier_2b
+    when:
+      quantitativity: {ge: 0.60}
+      any:
+        spatial_specificity:  {ge: 0.60}
+        temporal_specificity: {ge: 0.60}
+    config:
+      model_name: mistral-small-latest
+      evidence_mode: excerpts_narrow
+      top_k_per_doc: 6
+      per_doc_budget: 6000
+      global_budget: 30000
+      refinement_prompt: refinement_1pass_refined_fulltext.txt
+      generation_prompt: generation_structured.txt
+      gen_context_cap: 200000
+      max_output_tokens: 700
+      system_prompt_modifier: "Focus your synthesis strictly on the specific region and/or time period named in the question. Do not extrapolate findings to other regions or periods."
+      doc_filter_min_keep: 5
+      scope_filter: true
+      synthesis_mode: focused
+      rule_hit: tier-2b
+      reason: "quantitative focal -- narrow excerpts + scope filter, focused synthesis"
+
+# tier-3: complex mechanism / method-eval / comparison -- qwen3 + full excerpts
+  - name: tier_3
+    when:
+      complexity: {ge: 0.60}
+      question_type: {in: [mechanism, method_eval, comparison]}
+    config:
+      model_name: qwen/qwen3-30b-a3b
+      evidence_mode: excerpts_full
+      top_k_per_doc: 8
+      per_doc_budget: 7000
+      global_budget: 50000
+      refinement_prompt: refinement_1pass_refined_fulltext.txt
+      generation_prompt: generation_structured.txt
+      gen_context_cap: 200000
+      max_output_tokens: 1400
+      system_prompt_modifier: "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' — do not present it as a cited fact."
+      doc_filter_min_keep: 5
+      scope_filter: false
+      synthesis_mode: homogeneous
+      rule_hit: tier-3
+      reason: "complex mechanism / comparison -- qwen3-30b-a3b + full excerpts"
+
+# tier-2a: standalone high quantitativity (no focal threshold required)
+# quantitativity >= 0.55, regardless of spatial/temporal specificity.
+  - name: tier_2a
+    when:
+      quantitativity: {ge: 0.55}
+    config:
+      model_name: mistral-small-latest
+      evidence_mode: excerpts_narrow
+      top_k_per_doc: 5
+      per_doc_budget: 4500
+      global_budget: 25000
+      refinement_prompt: refinement_1pass_refined_fulltext.txt
+      generation_prompt: generation_structured.txt
+      gen_context_cap: 200000
+      max_output_tokens: 700
+      system_prompt_modifier: "Answer concisely and directly. Lead with the core finding in the first sentence. Use at most 2 short sections after the opening paragraph. Do not add an Implications section unless the question explicitly asks for one."
+      doc_filter_min_keep: 4
+      scope_filter: false
+      synthesis_mode: homogeneous
+      rule_hit: tier-2a
+      reason: "high quantitativity -- narrow excerpts, numeric focus"
+
+# tier-m: mid-complexity catch-all [0.35, 0.70)
+# catches everything with moderate complexity that doesn't have high
+# quant or a complex question type. also absorbs definition/factual at
+# complexity >= 0.35 (they don't hit tier-3 because type not in list).
+  - name: tier_m
+    when:
+      complexity: {ge: 0.35}
+      complexity_lt: {lt: 0.70}
+    config:
+      model_name: mistral-small-latest
+      evidence_mode: excerpts_narrow
+      top_k_per_doc: 6
+      per_doc_budget: 6000
+      global_budget: 30000
+      refinement_prompt: refinement_1pass_refined_fulltext.txt
+      generation_prompt: generation_structured.txt
+      gen_context_cap: 200000
+      max_output_tokens: 700
+      system_prompt_modifier: ""
+      doc_filter_min_keep: 5
+      scope_filter: false
+      synthesis_mode: homogeneous
+      rule_hit: tier-m
+      reason: "mid-complexity [0.35, 0.70) -- narrow excerpts bridge tier"
+
+# tier-1: simple / low-complexity -- abstracts only, no PDF fetch
   - name: tier_1
     when:
-      complexity: {lt: 0.50}
+      complexity: {lt: 0.35}
     config:
       model_name: mistral-small-latest
       evidence_mode: abstracts
@@ -39,91 +138,9 @@ rules:
       rule_hit: tier-1
       reason: "simple / low-complexity -- abstracts + direct prompt"
 
-# tier-2: moderate complexity -- small + narrow excerpts
-  - name: tier_2
-    when:
-      complexity: {ge: 0.40}
-      complexity_lt: {le: 0.64}
-    config:
-      model_name: mistral-small-latest
-      evidence_mode: excerpts_narrow
-      top_k_per_doc: 5
-      per_doc_budget: 4500
-      global_budget: 25000
-      refinement_prompt: refinement_1pass_refined_fulltext.txt
-      generation_prompt: generation_structured.txt
-      gen_context_cap: 200000
-      max_output_tokens: 700
-      system_prompt_modifier: "Answer concisely and directly. Lead with the core finding in the first sentence. Use at most 2 short sections after the opening paragraph. Do not add an Implications section unless the question explicitly asks for one."
-      doc_filter_min_keep: 4 
-      scope_filter: false
-      synthesis_mode: homogeneous
-      rule_hit: tier-2
-      reason: "moderate complexity -- narrow excerpts"
-
-  # tier-3: complex / method-eval / comparison -- large + full excerpts
-  - name: tier_3
-    when:
-      any:
-        complexity: {ge: 0.65}
-        question_type: {in: [comparison, method_eval]}
-        methodological_depth: {ge: 0.60}
-    config:
-      model_name: mistral-small-latest
-      evidence_mode: excerpts_narrow
-      top_k_per_doc: 6
-      per_doc_budget: 6000
-      global_budget: 30000
-      refinement_prompt: refinement_1pass_refined_fulltext.txt
-      generation_prompt: generation_structured.txt
-      scope_filter: true
-      synthesis_mode: focused
-      rule_hit: tier-2b
-      reason: "quantitative focal -- narrow excerpts + scope filter, focused synthesis"
-
-  # tier-3: complex mechanism / method-eval / comparison -- qwen3-30b-a3b + full excerpts
-  # threshold raised to 0.70 (was 0.60): borderline questions now fall to tier-m.
-  - name: complex_mechanism
-    when:
-      complexity: {ge: 0.70}
-      question_type: {in: [mechanism, method_eval, comparison]}
-    config:
-      model_name: qwen/qwen3-30b-a3b
-      evidence_mode: excerpts_full
-      top_k_per_doc: 8
-      per_doc_budget: 7000
-      global_budget: 50000
-      refinement_prompt: refinement_1pass_refined_fulltext.txt
-      generation_prompt: generation_structured.txt
-      gen_context_cap: 200000
-      max_output_tokens: 1400
-      system_prompt_modifier: "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' — do not present it as a cited fact."  # ← was empty; directly targets citation hallucination
-      doc_filter_min_keep: 5
-      scope_filter: false
-      synthesis_mode: homogeneous
-      rule_hit: tier-3
-      reason: "complex mechanism / comparison -- qwen3-30b-a3b + full excerpts"
-
-  # tier-m: mid-complexity bridge -- small + narrow excerpts
-  # upper bound raised from 0.60 to 0.70 to absorb questions freed by tier-3.
-  - name: complexity_medium
-    when:
-      complexity: {ge: 0.35}
-      "complexity_lt": {le: 0.70}
-    config:
-      model_name: mistral-small-latest
-      evidence_mode: excerpts_narrow
-      top_k_per_doc: 6
-      per_doc_budget: 6000
-      global_budget: 30000
-      refinement_prompt: refinement_1pass_refined_fulltext.txt
-      generation_prompt: generation_structured.txt
-      scope_filter: false
-      synthesis_mode: homogeneous
-      rule_hit: tier-m
-      reason: "medium complexity -- narrow excerpts bridge tier"
-
-  # fallback: identical to set2 (ontology-enhanced rag)
+# fallback: set2-equivalent conservative fallback (abstracts)
+# only reachable when complexity >= 0.70 AND no quant/type rule fired
+# (e.g. question_type=application with no quant signal)
   - name: fallback
     when:
       always: true
