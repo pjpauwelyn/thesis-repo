@@ -490,7 +490,7 @@ class FullTextIndexer:
         return None
 
     # ------------------------------------------------------------------
-    # NEW fallback helpers
+    # fallback helpers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -755,6 +755,11 @@ class FullTextIndexer:
         fail_marker = self.pdf_dir / f"{work_id}.fail"
         if cache_path.exists() and cache_path.stat().st_size > 0:
             return cache_path, "ok"
+        # FIX: delete zero-byte/corrupt cached PDFs so they don't block
+        # re-download on the next run (open_failed errors leave empty files)
+        if cache_path.exists() and cache_path.stat().st_size == 0:
+            cache_path.unlink(missing_ok=True)
+            logger.debug(f"download_pdf: removed zero-byte cache file for {work_id}")
         if fail_marker.exists():
             return None, "already_failed"
 
@@ -793,7 +798,7 @@ class FullTextIndexer:
             reasons.append(f"s2:{why}")
 
         # ------------------------------------------------------------------
-        # NEW fallbacks (ordered: cheapest / most likely first)
+        # fallbacks (ordered: cheapest / most likely first)
         # ------------------------------------------------------------------
 
         # 1. arXiv — zero-cost, instant for arXiv-hosted preprints
@@ -919,6 +924,13 @@ class FullTextIndexer:
             pdf = fitz.open(str(pdf_path))
         except Exception as exc:
             doc.error = f"open_failed:{exc}"
+            # FIX: remove the corrupt/unreadable file so --retry-failed
+            # actually re-downloads it rather than hitting it again next run
+            try:
+                pdf_path.unlink(missing_ok=True)
+                logger.debug(f"extract_text: removed unreadable PDF {pdf_path.name}")
+            except Exception:
+                pass
             cache_path.write_text(json.dumps(doc.to_dict()), encoding="utf-8")
             return doc
 
@@ -983,8 +995,11 @@ class FullTextIndexer:
         if not line or len(line) > 90:
             return None
         stripped = line.strip(" .:")
+        # FIX: was r"...\s+...\-/..." — double-escaped \s never matched and
+        # the char class [\-/] raised "bad character range" in some Python
+        # builds. Use a proper raw string with \s and move hyphen to end.
         # numbered sections like "2. Methods" or "3.1 Study area"
-        m = re.match(r"^(?:[0-9IVX]+\.?[0-9\.]*)\\s+([A-Z][A-Za-z \\-/]{2,60})$", stripped)
+        m = re.match(r"^(?:[0-9IVX]+\.?[0-9\.]*)\s+([A-Z][A-Za-z /\\-]{2,60})$", stripped)
         candidate = m.group(1) if m else stripped
         low = candidate.lower().strip()
         # exact / prefix matches against known keywords
