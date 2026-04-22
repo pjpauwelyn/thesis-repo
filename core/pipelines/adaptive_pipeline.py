@@ -36,6 +36,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -362,12 +363,16 @@ class AdaptivePipeline:
         template = gen_agent._load_template(cfg.generation_prompt)
         if not template:
             raise FileNotFoundError(f"generation prompt not found: {cfg.generation_prompt}")
+        n_docs = len(full_docs) + len(abstract_docs)
         template = template.replace(
             "{answer_shape_directives}",
             _ANSWER_SHAPE_DIRECTIVES.get(profile.answer_shape, ""),
         ).replace(
             "{synthesis_mode_directives}",
             _SYNTHESIS_DIRECTIVES.get(cfg.synthesis_mode, ""),
+        ).replace(
+            "{n_docs}",
+            str(n_docs),
         )
         gen_agent.refinement_template = template
 
@@ -651,7 +656,6 @@ class AdaptivePipeline:
 
     @staticmethod
     def _extract_cited_ids(answer: str) -> List[int]:
-        import re
         body = AdaptivePipeline._strip_self_written_refs(answer)
         ids = set()
         for m in re.finditer(r"\[([0-9][0-9,;\s]*)\]", body):
@@ -662,7 +666,6 @@ class AdaptivePipeline:
 
     @staticmethod
     def _strip_out_of_range_citations(answer: str, max_id: int) -> str:
-        import re
         lines = answer.split("\n")
         refs_start = None
         for i, line in enumerate(lines):
@@ -694,7 +697,6 @@ class AdaptivePipeline:
 
     @staticmethod
     def _strip_self_written_refs(answer: str) -> str:
-        import re
         lines = answer.split("\n")
         for i, line in enumerate(lines):
             s = line.strip().strip("*#").strip()
@@ -706,7 +708,6 @@ class AdaptivePipeline:
     def _filter_refs_by_cited_ids(
         formatted_refs: List[str], cited_ids: List[int]
     ) -> List[str]:
-        import re
         cited = set(cited_ids)
         out: List[str] = []
         for line in formatted_refs:
