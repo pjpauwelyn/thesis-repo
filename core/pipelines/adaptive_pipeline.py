@@ -16,7 +16,9 @@ flow per question:
   6. refinement  -- v2 unified documents_block (abstracts + excerpts) when
                     evidence_mode != abstracts; plain aql_results_str for
                     tier-1/abstracts mode
-  7. generation  -- direct or structured prompt, with shape + synthesis
+  7. generation  -- prompt template selected per tier; no per-question
+                    shape directives injected (generation_structured.txt
+                    provides its own complete output structure guidance)
 
 KG retrieval is activated automatically when ARANGO_URL + ARANGO_ROOT_PASSWORD
 are present in the environment.  when they are absent the pipeline falls back
@@ -49,36 +51,6 @@ from core.utils.data_models import (
 )
 
 log = logging.getLogger(__name__)
-
-_ANSWER_SHAPE_DIRECTIVES = {
-    "direct_paragraph":      (
-        "Write a direct paragraph answer of 3-5 sentences. "
-        "No section headings. No bullet lists. No Implications section."
-    ),
-    "short_explainer":       "Write a short explanation in 2-4 sentences.",
-    "structured_long":       (
-        "Structure your answer with 3-5 section headings that directly match "
-        "the sub-questions implied by the question. "
-        "Open with a 2-3 sentence direct answer before the first heading. "
-        "Do not add headings that are not needed to answer the question."
-    ),
-    "comparison_table":      (
-        "Your answer MUST include a markdown comparison table as the first "
-        "structured element after the opening paragraph. "
-        "The table must have one row per entity being compared and columns for "
-        "the key dimensions the question asks about. "
-        "Follow the table with one short paragraph per major finding."
-    ),
-    "mechanism_walkthrough": "Walk through the mechanism step by step, one numbered step per causal link.",
-    "raw":                   "",
-}
-_SYNTHESIS_DIRECTIVES = {
-    "homogeneous": "",
-    "focused": (
-        "Focus your synthesis strictly on the specific region and/or time period "
-        "named in the question. Do not extrapolate findings to other regions or periods."
-    ),
-}
 
 
 @dataclass
@@ -221,9 +193,6 @@ class AdaptivePipeline:
                     "(len=%d)", len(aql_results_str or "")
                 )
 
-        # Guard: we must have at least some documents to proceed.
-        # For tier-1 (abstracts mode) we can proceed with abstracts alone;
-        # for tier-2/3 we need at least some full or abstract docs.
         if not docs:
             raise RuntimeError(
                 f"AdaptivePipeline.run(): no documents available for question "
@@ -233,8 +202,6 @@ class AdaptivePipeline:
 
         # ----------------------------------------------------------
         # document filter (second LLM pass)
-        # skipped when the result set is already small enough that
-        # filtering would burn an LLM call for negligible benefit.
         # ----------------------------------------------------------
         full_docs: List[Dict] = list(docs) if docs else []
         abstract_docs: List[Dict] = []
@@ -251,27 +218,20 @@ class AdaptivePipeline:
                 len(full_docs), len(abstract_docs), len(drop_docs), len(docs),
             )
 
-        # Guard: after filtering we must still have documents.
-        # filter_documents() already falls back to the full set on LLM error,
-        # but if it somehow returns empty we catch it here.
         if not full_docs and not abstract_docs:
             raise RuntimeError(
                 f"AdaptivePipeline.run(): document filter eliminated ALL documents "
                 f"for question '{question[:80]}...'. "
-                "This should never happen — filter_documents() falls back to the "
-                "full set on any error. Investigate ontology_agent.filter_documents()."
+                "Investigate ontology_agent.filter_documents()."
             )
 
-        # rebuild aql_results_str from only the non-dropped docs so the
-        # refinement prompt never receives irrelevant context
         if filter_ran and (abstract_docs or drop_docs):
             aql_results_str = self._build_filtered_aql_str(
                 full_docs, abstract_docs
             )
 
         # ----------------------------------------------------------
-        # evidence: full_docs get PDF fetch; abstract_docs are
-        # abstract-only (no PDF fetch); drop_docs are excluded
+        # evidence
         # ----------------------------------------------------------
         excerpts, excerpt_stats = self._build_evidence(
             cfg, question, ontology, full_docs
@@ -287,20 +247,15 @@ class AdaptivePipeline:
         ref_llm = self._llm(cfg.model_name, cfg.temperature_refine)
 
         if cfg.evidence_mode == "abstracts":
-            # tier-1 / fallback: plain aql_results_str (no PDF fetch)
             ref_agent = RefinementAgent1PassRefined(
                 ref_llm,
                 prompt_dir=str(self._prompts_root / "refinement"),
             )
         else:
-            # tier-2/3: unified documents_block (v2) with abstracts +
-            # interleaved full-text excerpts
             ref_agent = RefinementAgent1PassFullText(
                 ref_llm,
                 prompt_dir=str(self._prompts_root / "refinement"),
             )
-            # build aql_lookup: for live KG use the docs list directly
-            # (aql_results_str is prose, not parseable JSON in that case)
             if kg_source == "live":
                 aql_lookup = {d["uri"]: d for d in (live_docs or []) if d.get("uri")}
             else:
@@ -308,20 +263,15 @@ class AdaptivePipeline:
             documents_block = self._render_documents_block(
                 full_docs, abstract_docs, excerpts, aql_lookup
             )
-            # set_documents_block() raises RuntimeError if block is empty.
             ref_agent.set_documents_block(documents_block)
 
-        # build query hint from profile for richer generation context
         query_hint = self._build_query_hint(question, profile)
 
-        # abstracts mode: pass filtered aql_results_str
-        # excerpts modes: pass None so process_context takes the v2 branch
         context_for_refinement = (
             aql_results_str
             if cfg.evidence_mode == "abstracts"
             else None
         )
-        # live KG always provides its own rich context string regardless of mode
         if kg_source == "live" and cfg.evidence_mode == "abstracts":
             context_for_refinement = aql_results_str
 
@@ -332,7 +282,6 @@ class AdaptivePipeline:
                 f"kg_source={kg_source}). Cannot proceed."
             )
 
-        # process_context() raises RuntimeError on LLM failure — let it propagate.
         refined = ref_agent.process_context(
             question=query_hint,
             structured_context="",
@@ -343,18 +292,21 @@ class AdaptivePipeline:
         )
         enriched = refined.enriched_context or ""
 
-        # Double-check: enriched must be non-empty before generation.
-        # This is belt-and-suspenders — process_context() should have already raised.
         if not enriched.strip():
             raise RuntimeError(
                 f"AdaptivePipeline.run(): refinement produced empty enriched_context "
-                f"for question '{question[:80]}...'. "
-                "process_context() should have raised — this is a bug in the "
-                "refinement agent. Aborting generation."
+                f"for question '{question[:80]}...'. Aborting generation."
             )
 
         # ----------------------------------------------------------
         # generation
+        # The generation template is selected per tier (cfg.generation_prompt).
+        # We do NOT inject per-question shape or synthesis directives:
+        # - answer_shape has been removed from QuestionProfile; the template's
+        #   own STRUCTURE section provides all the output shaping needed.
+        # - synthesis_mode_directives are rendered as empty string for all
+        #   tiers; the {synthesis_mode_directives} placeholder is retained in
+        #   the template for backwards compatibility but carries no content.
         # ----------------------------------------------------------
         gen_agent = GenerationAgent(
             self._llm(cfg.model_name, cfg.temperature_generate, cfg.max_output_tokens),
@@ -364,19 +316,14 @@ class AdaptivePipeline:
         if not template:
             raise FileNotFoundError(f"generation prompt not found: {cfg.generation_prompt}")
         n_docs = len(full_docs) + len(abstract_docs)
-        template = template.replace(
-            "{answer_shape_directives}",
-            _ANSWER_SHAPE_DIRECTIVES.get(profile.answer_shape, ""),
-        ).replace(
-            "{synthesis_mode_directives}",
-            _SYNTHESIS_DIRECTIVES.get(cfg.synthesis_mode, ""),
-        ).replace(
-            "{n_docs}",
-            str(n_docs),
+        template = (
+            template
+            .replace("{answer_shape_directives}", "")
+            .replace("{synthesis_mode_directives}", "")
+            .replace("{n_docs}", str(n_docs))
         )
         gen_agent.refinement_template = template
 
-        # generate() raises RuntimeError on LLM failure — let it propagate.
         ans = gen_agent.generate(
             question=question,
             text_context=enriched,
@@ -386,18 +333,13 @@ class AdaptivePipeline:
             system_prompt=cfg.system_prompt_modifier,
         )
 
-        # citation hygiene:
-        #   1. strip any References section the model wrote
-        #   2. strip out-of-range [N] markers
-        #   3. append authoritative References block (only cited IDs)
+        # citation hygiene
         final_answer = ans.answer or ""
         final_answer = AdaptivePipeline._strip_self_written_refs(final_answer)
-
         max_ref_id = len(ans.formatted_references or [])
         final_answer = AdaptivePipeline._strip_out_of_range_citations(
             final_answer, max_ref_id
         )
-
         cited_ids = AdaptivePipeline._extract_cited_ids(final_answer)
         filtered_refs: List[str] = []
         if ans.formatted_references and cited_ids:
@@ -435,7 +377,6 @@ class AdaptivePipeline:
         ontology: DynamicOntology,
         aql_params: Optional[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """attempt live ArangoDB query; return [] if unavailable."""
         import os
         if not os.getenv("ARANGO_ROOT_PASSWORD"):
             return []
@@ -480,7 +421,7 @@ class AdaptivePipeline:
                 if kw_desc:
                     lines.append(kw_desc)
                 for sn in sk.get("secondary_nodes", []):
-                    sn_title   = sn.get("title", "")
+                    sn_title    = sn.get("title", "")
                     sn_abstract = sn.get("abstract", "")
                     if sn_title or sn_abstract:
                         lines.append(f"  - **{sn_title}**: {sn_abstract[:300]}")
@@ -532,7 +473,6 @@ class AdaptivePipeline:
         ontology: DynamicOntology,
         docs: List[Dict[str, Any]],
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        """fetch excerpts for full_docs only. abstract_docs never reach here."""
         if cfg.evidence_mode == "abstracts" or not docs:
             return [], {
                 "mode":       cfg.evidence_mode,
@@ -563,9 +503,6 @@ class AdaptivePipeline:
         excerpts: List[Dict[str, Any]],
         aql_lookup: Dict[str, Dict[str, Any]],
     ) -> str:
-        """v2 unified documents block: full_docs with interleaved excerpts,
-        followed by abstract_docs (abstract only). delegates to
-        FullTextIndexer.render_documents_block for consistent formatting."""
         self._ensure_indexer()
         return self._indexer.render_documents_block(
             full_docs=full_docs,
@@ -576,7 +513,6 @@ class AdaptivePipeline:
 
     @staticmethod
     def _render_excerpts_block(excerpts: List[Dict[str, Any]]) -> str:
-        """Legacy flat excerpts block (kept for backwards compat / tier-1)."""
         if not excerpts:
             return ""
         parts: List[str] = []
@@ -597,10 +533,6 @@ class AdaptivePipeline:
         full_docs: List[Dict[str, Any]],
         abstract_docs: List[Dict[str, Any]],
     ) -> str:
-        """Rebuild aql_results_str from only full + abstract docs so the
-        refinement prompt never receives dropped documents. Returns a
-        compact JSON string matching the format expected by _parse_aql_for_prompt.
-        """
         combined = list(full_docs) + list(abstract_docs)
         if not combined:
             return ""
@@ -718,6 +650,12 @@ class AdaptivePipeline:
 
     @staticmethod
     def _build_query_hint(question: str, profile: QuestionProfile) -> str:
+        """Prepend lightweight routing-derived hints to the question string.
+
+        Deliberately narrow: only complexity depth and numeric emphasis.
+        No shape or synthesis directives -- those are handled by the tier's
+        prompt template, not by per-question injection.
+        """
         hints = []
         if profile.complexity is not None:
             if profile.complexity < 0.50:
@@ -735,6 +673,4 @@ class AdaptivePipeline:
                 "[NUMERIC EMPHASIS: prioritise excerpts with quantitative "
                 "values, rates, and units]"
             )
-        if profile.answer_shape and profile.answer_shape not in ("direct_paragraph", ""):
-            hints.append(f"[SYNTHESIS TARGET: {profile.answer_shape}]")
         return ("\n".join(hints) + "\n" + question) if hints else question
