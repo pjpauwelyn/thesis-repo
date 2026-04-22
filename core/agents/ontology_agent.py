@@ -176,8 +176,8 @@ class OntologyConstructionAgent(BaseAgent):
         so we don't over-fetch PDFs when a few abstracts suffice.
 
         Returns (full_docs, abstract_docs, drop_docs).
-        On any error falls back to returning all docs as full_docs so the
-        pipeline degrades gracefully rather than failing.
+        On any error (including LLM 503/timeout) falls back to returning
+        all docs as full_docs so the pipeline degrades gracefully.
         """
         if not docs:
             return [], [], []
@@ -215,7 +215,7 @@ class OntologyConstructionAgent(BaseAgent):
             f"Rules:\n"
             f'- Be GENEROUS. When uncertain, prefer "abstract" over "drop", '
             f'"full" over "abstract".\n'
-            f'- "full" documents will have their complete PDF text fetched — only assign '
+            f'- "full" documents will have their complete PDF text fetched \u2014 only assign '
             f'"full" if the document directly addresses the main topic or a closely '
             f"related method or variable.\n"
             f'- "drop" only when there is no plausible connection to the question or ontology.\n'
@@ -229,6 +229,12 @@ class OntologyConstructionAgent(BaseAgent):
 
         try:
             raw = self.llm.invoke(prompt, force_json=True)
+
+            # explicit None check: invoke() returns None when all retries are
+            # exhausted (503, timeout, etc.). treat as transient -- fall back.
+            if raw is None:
+                raise ValueError("LLM unavailable after retries (returned None)")
+
             if isinstance(raw, str):
                 import json as _json
                 data = _json.loads(raw)
@@ -238,6 +244,8 @@ class OntologyConstructionAgent(BaseAgent):
                 raise ValueError(f"unexpected llm response type: {type(raw)}")
 
             classifications = data.get("classifications", [])
+            if not classifications:
+                raise ValueError("LLM returned empty classifications list")
             if len(classifications) != n:
                 raise ValueError(
                     f"classification count {len(classifications)} != doc count {n}"
@@ -253,7 +261,7 @@ class OntologyConstructionAgent(BaseAgent):
 
         except Exception as exc:
             self.logger.warning(
-                "filter_documents failed (%s) — falling back to full set", exc
+                "filter_documents: %s \u2014 falling back to full set", exc
             )
             return list(docs), [], []
 
