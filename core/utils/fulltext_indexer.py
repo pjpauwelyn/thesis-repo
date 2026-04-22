@@ -56,6 +56,23 @@ logger = logging.getLogger(__name__)
 DEFAULT_CACHE_DIR = Path(os.getenv("FULLTEXT_CACHE_DIR", "cache/fulltext"))
 DEFAULT_MAILTO = os.getenv("FULLTEXT_MAILTO", "pjpauwelyn@gmail.com")
 
+# EZproxy prefix for RU.nl institutional access
+# override with env var EZPROXY_PREFIX or CLI --ezproxy-prefix
+DEFAULT_EZPROXY_PREFIX = os.getenv(
+    "EZPROXY_PREFIX", "https://ezproxy.ru.nl/login?url="
+)
+
+# CORE.ac.uk API key (free: https://core.ac.uk/api-keys/register)
+CORE_API_KEY = os.getenv("CORE_API_KEY", "")
+CORE_API_BASE = "https://api.core.ac.uk/v3/search/works"
+
+# Europe PMC base
+EUROPEPMC_SEARCH = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+EUROPEPMC_PDF    = "https://europepmc.org/backend/ptpmcrender.fcgi"
+
+# arXiv PDF base
+ARXIV_PDF_BASE = "https://export.arxiv.org/pdf/"
+
 # browser-like UA: many publishers (Wiley, OUP, IOP, Nature) 403 non-browser
 # requests. polite pool for OpenAlex/Unpaywall uses mailto param instead.
 BROWSER_UA = (
@@ -306,12 +323,14 @@ class FullTextIndexer:
         request_timeout: int = 30,
         max_pdf_mb: int = 40,
         use_browser: bool = False,
+        ezproxy_prefix: str = DEFAULT_EZPROXY_PREFIX,
     ):
         self.cache_dir = Path(cache_dir)
         self.mailto = mailto
         self.request_timeout = request_timeout
         self.max_pdf_bytes = max_pdf_mb * 1024 * 1024
         self.use_browser = use_browser
+        self.ezproxy_prefix = ezproxy_prefix or ""
         self._browser_fetcher = None  # lazy init
         # serialize Playwright calls across threads (Chromium context is not
         # safe to share from multiple python threads; HTTP fetches remain fully
@@ -470,6 +489,131 @@ class FullTextIndexer:
                 return loc["url_for_pdf"]
         return None
 
+    # ------------------------------------------------------------------
+    # NEW fallback helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _doi_clean(doi: Optional[str]) -> Optional[str]:
+        """normalise DOI to bare form (no https://doi.org/ prefix)."""
+        if not doi:
+            return None
+        d = doi.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+        return d or None
+
+    def _ezproxy_url(self, doi: Optional[str]) -> Optional[str]:
+        """build an EZproxy-prefixed DOI landing-page URL so the requests
+        session goes through the RU.nl institutional proxy.
+
+        This is the single biggest remaining lever for paywalled papers
+        because the proxy authenticates via IP/cookie rather than login,
+        meaning a plain requests.get() with the right Referer header
+        often succeeds without a browser.
+
+        Returns None when ezproxy_prefix is empty (disabled) or no DOI."""
+        if not self.ezproxy_prefix:
+            return None
+        doi_bare = self._doi_clean(doi)
+        if not doi_bare:
+            return None
+        landing = f"https://doi.org/{doi_bare}"
+        return self.ezproxy_prefix + landing
+
+    def _core_pdf_url(self, doi: Optional[str]) -> Optional[str]:
+        """query CORE.ac.uk API v3 for a downloadUrl for this DOI.
+
+        Requires CORE_API_KEY env var (free at https://core.ac.uk/api-keys/register).
+        Returns None when key is absent, DOI missing, or paper not found."""
+        if not CORE_API_KEY or not doi:
+            return None
+        doi_bare = self._doi_clean(doi)
+        if not doi_bare:
+            return None
+        params = {
+            "q": f"doi:{doi_bare}",
+            "_source": "downloadUrl,doi",
+            "limit": 1,
+            "apiKey": CORE_API_KEY,
+        }
+        try:
+            resp = self.api_session.get(
+                CORE_API_BASE, params=params, timeout=self.request_timeout
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            results = data.get("results") or []
+            if not results:
+                return None
+            url = (results[0] or {}).get("downloadUrl")
+            if url and url.startswith("http"):
+                return url
+        except Exception as exc:
+            logger.debug(f"CORE lookup failed for doi={doi_bare}: {exc}")
+        return None
+
+    def _europepmc_pdf_url(self, doi: Optional[str]) -> Optional[str]:
+        """resolve a DOI to a PMC ID via Europe PMC search API, then build
+        the direct PDF render URL.
+
+        Common for earth observation papers that are also deposited in PubMed
+        Central (ecology, remote sensing of environment, global change biology).
+        Returns None when the DOI is not in PMC or on any error."""
+        doi_bare = self._doi_clean(doi)
+        if not doi_bare:
+            return None
+        params = {
+            "query": f"DOI:{doi_bare}",
+            "format": "json",
+            "resultType": "core",
+            "pageSize": 1,
+        }
+        try:
+            resp = self.api_session.get(
+                EUROPEPMC_SEARCH, params=params, timeout=self.request_timeout
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            results = (
+                (data.get("resultList") or {}).get("result") or []
+            )
+            if not results:
+                return None
+            hit = results[0]
+            pmc_id = hit.get("pmcid") or hit.get("pmcId")
+            if not pmc_id:
+                return None
+            # strip leading "PMC" if present
+            pmc_num = pmc_id.replace("PMC", "").strip()
+            return f"{EUROPEPMC_PDF}?accid=PMC{pmc_num}&blobtype=pdf"
+        except Exception as exc:
+            logger.debug(f"EuropePMC lookup failed for doi={doi_bare}: {exc}")
+        return None
+
+    def _arxiv_pdf_url(self, doi: Optional[str]) -> Optional[str]:
+        """detect arXiv DOIs (10.48550/arXiv.XXXX.XXXXX) and return a
+        direct PDF URL at export.arxiv.org.
+
+        Also handles the short doi.org/abs redirect pattern used by arXiv.
+        Returns None for non-arXiv DOIs."""
+        doi_bare = self._doi_clean(doi)
+        if not doi_bare:
+            return None
+        # canonical arXiv DOI pattern: 10.48550/arXiv.NNNN.NNNNN
+        m = re.match(r"10\.48550/arXiv\.(.+)", doi_bare, re.IGNORECASE)
+        if m:
+            arxiv_id = m.group(1).strip()
+            return f"{ARXIV_PDF_BASE}{arxiv_id}"
+        # older arXiv DOIs: 10.48550/arxiv.XXXX.XXXXX  (lower-case)
+        m2 = re.match(r"10\.48550/arxiv\.(.+)", doi_bare, re.IGNORECASE)
+        if m2:
+            arxiv_id = m2.group(1).strip()
+            return f"{ARXIV_PDF_BASE}{arxiv_id}"
+        return None
+
+    # ------------------------------------------------------------------
+
     def _resolve_pdf_from_html(self, html_text: str, base_url: str) -> Optional[str]:
         """parse <meta name='citation_pdf_url'> (or alt attribute orders)
         from HTML; fall back to first <a href='*.pdf'> if nothing else."""
@@ -604,7 +748,8 @@ class FullTextIndexer:
     def download_pdf(
         self, work_id: str, candidates: List[str], doi: Optional[str] = None
     ) -> Tuple[Optional[Path], str]:
-        """try every candidate URL; on full failure, ask Unpaywall.
+        """try every candidate URL; on full failure, try Unpaywall, S2,
+        EZproxy, CORE, Europe PMC, arXiv, then Playwright as last resort.
         returns (pdf_path or None, status string)."""
         cache_path = self.pdf_dir / f"{work_id}.pdf"
         fail_marker = self.pdf_dir / f"{work_id}.fail"
@@ -646,6 +791,47 @@ class FullTextIndexer:
             if ok:
                 return cache_path, "ok_s2"
             reasons.append(f"s2:{why}")
+
+        # ------------------------------------------------------------------
+        # NEW fallbacks (ordered: cheapest / most likely first)
+        # ------------------------------------------------------------------
+
+        # 1. arXiv — zero-cost, instant for arXiv-hosted preprints
+        arxiv_url = self._arxiv_pdf_url(doi)
+        if arxiv_url and arxiv_url not in expanded:
+            ok, why = self._try_fetch_pdf(arxiv_url, cache_path)
+            if ok:
+                return cache_path, "ok_arxiv"
+            reasons.append(f"arxiv:{why}")
+
+        # 2. EZproxy — biggest lever for paywalled DOI landing pages;
+        #    the institutional proxy often serves the PDF directly via
+        #    citation_pdf_url meta-tag parsing (_try_fetch_pdf depth 1).
+        ezproxy_url = self._ezproxy_url(doi)
+        if ezproxy_url and ezproxy_url not in expanded:
+            ok, why = self._try_fetch_pdf(ezproxy_url, cache_path)
+            if ok:
+                return cache_path, "ok_ezproxy"
+            reasons.append(f"ezproxy:{why}")
+
+        # 3. CORE.ac.uk — OA aggregator; catches papers OA elsewhere but
+        #    not yet indexed by Unpaywall/S2 (requires CORE_API_KEY).
+        core_url = self._core_pdf_url(doi)
+        if core_url and core_url not in expanded:
+            ok, why = self._try_fetch_pdf(core_url, cache_path)
+            if ok:
+                return cache_path, "ok_core"
+            reasons.append(f"core:{why}")
+
+        # 4. Europe PMC — PMC-ID based PDF; common in earth obs / ecology
+        europepmc_url = self._europepmc_pdf_url(doi)
+        if europepmc_url and europepmc_url not in expanded:
+            ok, why = self._try_fetch_pdf(europepmc_url, cache_path)
+            if ok:
+                return cache_path, "ok_europepmc"
+            reasons.append(f"europepmc:{why}")
+
+        # ------------------------------------------------------------------
 
         # Playwright fallback (Cloudflare-gated hosts: Wiley, MDPI, OUP, IOP,
         # Tandfonline, AnnualReviews, RoyalSociety). Expensive but works.
@@ -704,7 +890,7 @@ class FullTextIndexer:
     def extract_text(self, work_id: str, pdf_path: Path) -> ExtractedDoc:
         """extract text per page + light heading detection.
 
-        heading heuristic: a short line (≤80 chars) in title-case or all-caps
+        heading heuristic: a short line (<=80 chars) in title-case or all-caps
         that looks like a known section keyword, or is font-larger (when pymupdf
         exposes block font sizes); otherwise inherit the previous heading.
         """
@@ -798,7 +984,7 @@ class FullTextIndexer:
             return None
         stripped = line.strip(" .:")
         # numbered sections like "2. Methods" or "3.1 Study area"
-        m = re.match(r"^(?:[0-9IVX]+\.?[0-9\.]*)\s+([A-Z][A-Za-z \-/]{2,60})$", stripped)
+        m = re.match(r"^(?:[0-9IVX]+\.?[0-9\.]*)\\s+([A-Z][A-Za-z \\-/]{2,60})$", stripped)
         candidate = m.group(1) if m else stripped
         low = candidate.lower().strip()
         # exact / prefix matches against known keywords
@@ -1226,7 +1412,7 @@ class FullTextIndexer:
             # authorships may be present if the cache format ever gains them;
             # today the trimmed cache doesn't carry authors, so we simply
             # return what we have -- the citation will read 'Unknown (YEAR).'
-            # which is still materially better than 'Unknown (n.d.).'.
+            # which is still materially better than 'Unknown (n.d.).'
             auths = data.get("authorships") or data.get("authors")
             if isinstance(auths, list) and auths:
                 names: List[str] = []
@@ -1351,6 +1537,12 @@ def _cli():
                     help="use Playwright (headless Chromium) as last-resort fallback for Cloudflare-gated publishers (Wiley, MDPI, OUP, IOP)")
     pb.add_argument("--workers", type=int, default=8,
                     help="parallel worker threads for prebuild (default 8). HTTP fetches run in parallel; Playwright is internally serialized.")
+    pb.add_argument("--ezproxy-prefix", default=DEFAULT_EZPROXY_PREFIX,
+                    help=(
+                        "EZproxy login prefix to prepend to DOI landing pages "
+                        "(default: https://ezproxy.ru.nl/login?url=). "
+                        "Pass empty string to disable."
+                    ))
 
     st = sub.add_parser("status", help="print cache stats")
     st.add_argument("--cache-dir", default=str(DEFAULT_CACHE_DIR))
@@ -1363,6 +1555,7 @@ def _cli():
             cache_dir=Path(args.cache_dir),
             mailto=args.mailto,
             use_browser=getattr(args, "use_browser", False),
+            ezproxy_prefix=getattr(args, "ezproxy_prefix", DEFAULT_EZPROXY_PREFIX),
         )
         if getattr(args, "retry_failed", False):
             fails = list((fti.pdf_dir).glob("*.fail"))
@@ -1371,6 +1564,8 @@ def _cli():
             print(f"cleared {len(fails)} .fail markers — will retry those docs")
         if fti.use_browser:
             print("browser fallback: ENABLED (Playwright Chromium will open lazily)")
+        if fti.ezproxy_prefix:
+            print(f"EZproxy fallback: ENABLED (prefix={fti.ezproxy_prefix})")
         stats = fti.prebuild_from_csv(
             args.input, limit_docs=args.limit,
             workers=getattr(args, "workers", 8),
