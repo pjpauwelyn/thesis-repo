@@ -75,34 +75,6 @@ def _heuristic_profile(q: str) -> QuestionProfile:
     if any(kw in ql for kw in ["validate", "validation", "uncertainty", "error", "calibration"]):
         meth = min(1.0, meth + 0.3)
 
-    # scope
-    if spatial >= 0.5:
-        scope = "regional"
-    elif spatial >= 0.8:
-        scope = "local"
-    else:
-        scope = "global"
-
-    # answer shape driven by question type
-    shape_map = {
-        "definition": "direct_paragraph",
-        "mechanism": "mechanism_walkthrough",
-        "comparison": "comparison_table",
-        "quantitative": "structured_long",
-        "method_eval": "structured_long",
-        "application": "short_explainer",
-        "continuous": "structured_long",
-    }
-    length_map = {
-        "definition": "short",
-        "mechanism": "long",
-        "comparison": "medium",
-        "quantitative": "medium",
-        "method_eval": "long",
-        "application": "medium",
-        "continuous": "long",
-    }
-
     return QuestionProfile(
         identity=q[:80],
         one_line_summary=q[:120],
@@ -112,9 +84,6 @@ def _heuristic_profile(q: str) -> QuestionProfile:
         spatial_specificity=round(spatial, 2),
         temporal_specificity=round(temp, 2),
         methodological_depth=round(meth, 2),
-        scope=scope,
-        expected_length=length_map[qtype],
-        answer_shape=shape_map[qtype],
         confidence=0.85,
     )
 
@@ -171,31 +140,28 @@ def test_varied_profiles_produce_varied_configs():
     scenarios = [
         # simple definition
         dict(identity="d", question_type="definition", complexity=0.2,
-             quantitativity=0.1, confidence=0.9, answer_shape="direct_paragraph"),
+             quantitativity=0.1, confidence=0.9),
         # quantitative global trend
         dict(identity="q", question_type="quantitative", complexity=0.5,
-             quantitativity=0.85, spatial_specificity=0.2, confidence=0.9,
-             answer_shape="structured_long"),
+             quantitativity=0.85, spatial_specificity=0.2, confidence=0.9),
         # quantitative regional
         dict(identity="qr", question_type="quantitative", complexity=0.6,
-             quantitativity=0.8, spatial_specificity=0.7, scope="regional",
-             confidence=0.9, answer_shape="structured_long"),
+             quantitativity=0.8, spatial_specificity=0.7, confidence=0.9),
         # mechanism heavy
         dict(identity="m", question_type="mechanism", complexity=0.85,
-             methodological_depth=0.6, confidence=0.9,
-             answer_shape="mechanism_walkthrough"),
+             methodological_depth=0.6, confidence=0.9),
         # medium conceptual
         dict(identity="c", question_type="definition", complexity=0.55,
-             confidence=0.9, answer_shape="short_explainer"),
+             confidence=0.9),
         # comparison
         dict(identity="cm", question_type="comparison", complexity=0.7,
-             confidence=0.9, answer_shape="comparison_table"),
+             confidence=0.9),
         # low confidence -> safety
         dict(identity="s", question_type="continuous", complexity=0.5,
-             confidence=0.3, answer_shape="structured_long"),
+             confidence=0.3),
         # no confidence (parse fail) -> safety
         dict(identity="n", question_type="continuous", complexity=0.5,
-             confidence=None, answer_shape="structured_long"),
+             confidence=None),
     ]
 
     hits: set[str] = set()
