@@ -19,26 +19,9 @@ _log = logging.getLogger(__name__)
 _CONFIDENCE_FLOOR = 0.6
 
 # 60% of the 128k token window shared by mistral-small-latest and
-# mistral-large-latest. expressed in chars (tokens × 4) so generation_agent
+# mistral-large-latest. expressed in chars (tokens x 4) so generation_agent
 # can compare directly against len(text_context).
-_CONTEXT_CAP_CHARS = 307_200  # 76_800 tokens × 4
-
-# ---------------------------------------------------------------------------
-# deterministic answer_shape mapping
-# ---------------------------------------------------------------------------
-
-def _resolve_answer_shape(profile: QuestionProfile) -> str:
-    qt = profile.question_type
-    c  = profile.complexity
-    if qt in ("definition", "application"):
-        return "direct_paragraph"
-    if qt == "continuous":
-        return "short_explainer"
-    if qt == "comparison":
-        return "comparison_table"
-    if qt == "mechanism":
-        return "mechanism_walkthrough" if c < 0.50 else "structured_long"
-    return "structured_long"
+_CONTEXT_CAP_CHARS = 307_200  # 76_800 tokens x 4
 
 
 class Router:
@@ -47,9 +30,15 @@ class Router:
             self._rules = yaml.safe_load(f)["rules"]
 
     def select(self, profile: QuestionProfile) -> PipelineConfig:
-        profile.answer_shape = _resolve_answer_shape(profile)
-
         if profile.confidence is None or profile.confidence < _CONFIDENCE_FLOOR:
+            _log.warning(
+                "router.select: low/missing confidence (%.2f) -> safety-tier3 "
+                "(type=%s complexity=%.2f quant=%.2f)",
+                profile.confidence or 0.0,
+                profile.question_type,
+                profile.complexity,
+                profile.quantitativity,
+            )
             return PipelineConfig(
                 model_name="mistral-large-latest",
                 evidence_mode="excerpts_full",
@@ -68,12 +57,13 @@ class Router:
 
         _log.info(
             "router.select: type=%s complexity=%.2f quant=%.2f spatial=%.2f "
-            "temporal=%.2f conf=%.2f",
+            "temporal=%.2f meth=%.2f conf=%.2f",
             profile.question_type,
             profile.complexity,
             profile.quantitativity,
             profile.spatial_specificity,
             profile.temporal_specificity,
+            profile.methodological_depth,
             profile.confidence or 0.0,
         )
 
@@ -82,7 +72,33 @@ class Router:
                 _log.info("router.select: matched rule '%s'", rule["name"])
                 return PipelineConfig(**rule["config"])
 
-        raise RuntimeError("router: no rule matched and no fallback found in rules.yaml")
+        # no rule matched -- return the conservative fallback and warn loudly
+        _log.warning(
+            "router.select: NO rule matched for profile "
+            "(type=%s complexity=%.2f quant=%.2f spatial=%.2f temporal=%.2f meth=%.2f) "
+            "-- returning fallback. check rules.yaml for coverage gaps.",
+            profile.question_type,
+            profile.complexity,
+            profile.quantitativity,
+            profile.spatial_specificity,
+            profile.temporal_specificity,
+            profile.methodological_depth,
+        )
+        return PipelineConfig(
+            model_name="mistral-small-latest",
+            evidence_mode="abstracts",
+            top_k_per_doc=0,
+            per_doc_budget=0,
+            global_budget=0,
+            refinement_prompt="refinement_1pass_refined_exp4.txt",
+            generation_prompt="generation_prompt_exp4.txt",
+            gen_context_cap=_CONTEXT_CAP_CHARS,
+            max_output_tokens=700,
+            system_prompt_modifier="",
+            doc_filter_min_keep=4,
+            rule_hit="fallback",
+            reason="no rule matched -- conservative set2 default",
+        )
 
     def _matches(self, when: Dict[str, Any], p: QuestionProfile) -> bool:
         for key, cond in when.items():
