@@ -101,6 +101,13 @@ class MistralLLMWrapper:
                     or "gateway timeout" in msg_l
                     or "overloaded" in msg_l
                     or "capacity" in msg_l
+                    # transient response-parsing crashes (None/empty body from server)
+                    or "nonetype" in msg_l
+                    or "subscriptable" in msg_l
+                    or "object has no attribute" in msg_l
+                    or "server error" in msg_l
+                    or "internal error" in msg_l
+                    or "empty stream" in msg_l
                 )
                 if not retryable or attempt == max_attempts - 1:
                     logging.error(f"llm call failed (attempt {attempt+1}/{max_attempts}): {e}")
@@ -135,7 +142,7 @@ class MistralLLMWrapper:
 
 
 class OpenRouterLLMWrapper:
-    """wrapper for openrouter-hosted models (qwen, etc.) via openai-compatible api."""
+    """wrapper for openrouter-hosted models (mistral-large, qwen, etc.) via openai-compatible api."""
 
     def __init__(
         self,
@@ -187,6 +194,23 @@ class OpenRouterLLMWrapper:
                     or "overloaded" in msg_l
                     or "bad gateway" in msg_l
                     or "gateway timeout" in msg_l
+                    # parity with MistralLLMWrapper:
+                    or "disconnected" in msg_l
+                    or "server disconnected" in msg_l
+                    or "remote protocol" in msg_l
+                    or "read error" in msg_l
+                    or "broken pipe" in msg_l
+                    or "reset by peer" in msg_l
+                    or "eof" in msg_l
+                    or "incomplete read" in msg_l
+                    or "capacity" in msg_l
+                    or "server error" in msg_l
+                    or "internal error" in msg_l
+                    # transient None/empty body from server causes these crashes:
+                    or "nonetype" in msg_l
+                    or "subscriptable" in msg_l
+                    or "object has no attribute" in msg_l
+                    or "empty stream" in msg_l
                 )
                 if not retryable or attempt == max_attempts - 1:
                     logging.error(f"openrouter llm call failed (attempt {attempt+1}/{max_attempts}): {e}")
@@ -226,7 +250,7 @@ def get_llm_model(
 ) -> Union[MistralLLMWrapper, OpenRouterLLMWrapper]:
     """create an llm wrapper -- routes to openrouter for qwen/openrouter models,
     mistral direct api otherwise."""
-    if model.startswith("qwen/") or model.startswith("openrouter/") or model.startswith("mistralai/") or model.startswith("mistralai/"):
+    if model.startswith("qwen/") or model.startswith("openrouter/") or model.startswith("mistralai/"):
         from openai import OpenAI
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
