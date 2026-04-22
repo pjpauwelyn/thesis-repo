@@ -30,6 +30,9 @@ Usage:
     # specific question indices (1-based into deduped DLR rows)
     python scripts/phase3_parallel.py --indices 1 5 12 27
 
+    # same as --indices but comma-separated (alias)
+    python scripts/phase3_parallel.py --questions 1,5,12,27
+
     # cap mistral-large concurrency because it's the scarce tier
     python scripts/phase3_parallel.py --large-concurrency 1
 """
@@ -409,17 +412,31 @@ def main() -> int:
                          "(default: 300). A stuck request is abandoned and "
                          "recorded as an error, so one bad call does not "
                          "block the whole run.")
+    ap.add_argument("--large-timeout-s", type=int, default=600,
+                    help="per-job wall-clock timeout for mistral-large-latest jobs "
+                         "(default: 600). tier-3 jobs can take 300-400s due to "
+                         "PDF fetches + large-model generation; this overrides "
+                         "--job-timeout-s for those jobs only.")
     ap.add_argument("--tier-mix", type=_parse_tier_mix, default="2,2,1",
                     help="'t1,t2,t3' count of questions per tier (default: 2,2,1)")
     ap.add_argument("--n", type=int, default=None,
                     help="override total question count (uniform-ish spread across tiers)")
     ap.add_argument("--indices", type=int, nargs="+", default=None,
                     help="1-based question indices into deduped DLR rows; overrides tier-mix")
+    ap.add_argument("--questions", type=lambda s: [int(x) for x in s.split(",")],
+                    default=None,
+                    help="comma-separated 1-based question indices (alias for --indices, "
+                         "e.g. --questions 1,3). Mutually exclusive with --indices.")
     ap.add_argument("--max-retries", type=int, default=3)
     ap.add_argument("--output-dir", default="tests/output")
     ap.add_argument("--csv", default=None, help="explicit DLR CSV path")
     ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args()
+
+    # Merge --questions into --indices; both flags are mutually exclusive.
+    if args.indices is not None and args.questions is not None:
+        ap.error("--indices and --questions are mutually exclusive; use one or the other.")
+    args.indices = args.indices or args.questions
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -491,7 +508,14 @@ def main() -> int:
         }
 
         pending = set(futures.keys())
-        deadline_per_job: Dict[Any, float] = {f: time.time() + args.job_timeout_s for f in futures}
+        # Per-tier timeout: tier-3 (mistral-large-latest) gets --large-timeout-s;
+        # all other tiers get --job-timeout-s.
+        deadline_per_job: Dict[Any, float] = {
+            f: time.time() + (
+                args.large_timeout_s if futures[f][3] == "tier-3" else args.job_timeout_s
+            )
+            for f in futures
+        }
 
         while pending:
             # next soonest deadline
@@ -523,20 +547,21 @@ def main() -> int:
             for fut in list(pending):
                 if now >= deadline_per_job[fut]:
                     ji, display_idx, q, tier = futures[fut]
+                    timed_out_s = args.large_timeout_s if tier == "tier-3" else args.job_timeout_s
                     log.error(
-                        "job %d (q=%d tier=%s) exceeded --job-timeout-s=%ds; abandoning",
-                        ji, display_idx, tier, args.job_timeout_s,
+                        "job %d (q=%d tier=%s) exceeded timeout of %ds; abandoning",
+                        ji, display_idx, tier, timed_out_s,
                     )
                     fut.cancel()  # no-op if already running; best-effort
                     pending.discard(fut)
                     records.append({
                         "job_idx": ji, "q_index": display_idx,
                         "question": q, "expected_tier": tier, "actual_tier": "TIMEOUT",
-                        "answer": f"ERROR: exceeded job timeout of {args.job_timeout_s}s",
+                        "answer": f"ERROR: exceeded job timeout of {timed_out_s}s",
                         "enriched_context": "", "enriched_context_chars": 0,
                         "excerpt_stats": {}, "references": [], "formatted_references": [],
-                        "elapsed_s": float(args.job_timeout_s),
-                        "error": f"timeout_{args.job_timeout_s}s",
+                        "elapsed_s": float(timed_out_s),
+                        "error": f"timeout_{timed_out_s}s",
                     })
     finally:
         # don't block shutdown on a stuck worker. cancel_futures was added in
