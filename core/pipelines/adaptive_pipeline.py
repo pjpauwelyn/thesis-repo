@@ -9,20 +9,19 @@ flow per question:
   3. retrieve    -- live ArangoDB KG (graph expansion) if available,
                     else fall back to pre-baked aql_results_str from CSV
   4. filter      -- second LLM pass classifies docs as full/abstract/drop
-                    (skipped when doc count <= doc_filter_min_keep)
+                    (always mistral-small-latest; skipped when count <=
+                    doc_filter_min_keep)
   5. evidence    -- abstracts (no extra work) | excerpts via FullTextIndexer
                     only full_docs get PDF fetch; abstract_docs contribute
                     abstracts only; drop_docs are excluded entirely
-  6. refinement  -- v2 unified documents_block (abstracts + excerpts) when
-                    evidence_mode != abstracts; plain aql_results_str for
-                    tier-1/abstracts mode
-  7. generation  -- prompt template selected per tier; no per-question
-                    shape directives injected (generation_structured.txt
-                    provides its own complete output structure guidance)
+  6. refinement  -- cfg.refinement_model_name (falls back to cfg.model_name)
+                    with cfg.timeout_refine_s socket deadline
+  7. generation  -- cfg.model_name with cfg.timeout_generate_s socket deadline;
+                    prompt template selected per tier
 
-KG retrieval is activated automatically when ARANGO_URL + ARANGO_ROOT_PASSWORD
-are present in the environment.  when they are absent the pipeline falls back
-to the existing CSV-based aql_results_str path unchanged.
+KG retrieval activates automatically when ARANGO_URL + ARANGO_ROOT_PASSWORD
+are present in the environment. When absent the pipeline falls back to the
+existing CSV-based aql_results_str path unchanged.
 
 Hard-fail policy
 ----------------
@@ -77,7 +76,7 @@ class AdaptivePipeline:
         self.router = Router(rules_path)
         self._cache_dir = Path(cache_dir)
         self._prompts_root = Path(prompts_root)
-        self._llm_cache: Dict[Tuple[str, float], Any] = {}
+        self._llm_cache: Dict[Tuple[str, float, int, int], Any] = {}
         self._indexer = None  # lazy
 
     # ------------------------------------------------------------------
@@ -88,7 +87,6 @@ class AdaptivePipeline:
         self, question: str
     ) -> Tuple[DynamicOntology, QuestionProfile, PipelineConfig]:
         from core.agents.ontology_agent import OntologyConstructionAgent
-
         ont_agent = OntologyConstructionAgent(
             self._llm("mistral-small-latest", 0.0),
             prompt_dir=str(self._prompts_root / "ontology"),
@@ -149,14 +147,18 @@ class AdaptivePipeline:
         if precomputed_route is not None:
             ontology, profile, cfg = precomputed_route
             log.info(
-                "q=%s... -> rule=%s model=%s evidence=%s (precomputed route)",
-                question[:60], cfg.rule_hit, cfg.model_name, cfg.evidence_mode,
+                "q=%s... -> rule=%s refine=%s gen=%s evidence=%s (precomputed route)",
+                question[:60], cfg.rule_hit,
+                cfg.refinement_model_name or cfg.model_name,
+                cfg.model_name, cfg.evidence_mode,
             )
         else:
             ontology, profile, cfg = self.profile_and_route(question)
             log.info(
-                "q=%s... -> rule=%s model=%s evidence=%s",
-                question[:60], cfg.rule_hit, cfg.model_name, cfg.evidence_mode,
+                "q=%s... -> rule=%s refine=%s gen=%s evidence=%s",
+                question[:60], cfg.rule_hit,
+                cfg.refinement_model_name or cfg.model_name,
+                cfg.model_name, cfg.evidence_mode,
             )
 
         # ----------------------------------------------------------
@@ -201,14 +203,14 @@ class AdaptivePipeline:
             )
 
         # ----------------------------------------------------------
-        # document filter (second LLM pass)
+        # document filter (always mistral-small-latest, fast)
         # ----------------------------------------------------------
-        full_docs: List[Dict] = list(docs) if docs else []
+        full_docs: List[Dict] = list(docs)
         abstract_docs: List[Dict] = []
         drop_docs: List[Dict] = []
         filter_ran = False
 
-        if docs and len(docs) > cfg.doc_filter_min_keep:
+        if len(docs) > cfg.doc_filter_min_keep:
             full_docs, abstract_docs, drop_docs = self._filter_documents(
                 docs, ontology, profile, question, cfg
             )
@@ -226,25 +228,30 @@ class AdaptivePipeline:
             )
 
         if filter_ran and (abstract_docs or drop_docs):
-            aql_results_str = self._build_filtered_aql_str(
-                full_docs, abstract_docs
-            )
+            aql_results_str = self._build_filtered_aql_str(full_docs, abstract_docs)
 
         # ----------------------------------------------------------
         # evidence
         # ----------------------------------------------------------
-        excerpts, excerpt_stats = self._build_evidence(
-            cfg, question, ontology, full_docs
-        )
+        excerpts, excerpt_stats = self._build_evidence(cfg, question, ontology, full_docs)
         excerpt_stats["n_full_docs"]     = len(full_docs)
         excerpt_stats["n_abstract_docs"] = len(abstract_docs)
         excerpt_stats["n_dropped_docs"]  = len(drop_docs)
         excerpt_stats["filter_ran"]      = filter_ran
 
         # ----------------------------------------------------------
-        # refinement
+        # refinement  (cfg.refinement_model_name or cfg.model_name)
         # ----------------------------------------------------------
-        ref_llm = self._llm(cfg.model_name, cfg.temperature_refine)
+        refine_model = cfg.refinement_model_name or cfg.model_name
+        ref_llm = self._llm(
+            refine_model,
+            cfg.temperature_refine,
+            timeout_s=cfg.timeout_refine_s,
+        )
+        log.info(
+            "refinement: model=%s timeout=%ds",
+            refine_model, cfg.timeout_refine_s,
+        )
 
         if cfg.evidence_mode == "abstracts":
             ref_agent = RefinementAgent1PassRefined(
@@ -266,11 +273,8 @@ class AdaptivePipeline:
             ref_agent.set_documents_block(documents_block)
 
         query_hint = self._build_query_hint(question, profile)
-
         context_for_refinement = (
-            aql_results_str
-            if cfg.evidence_mode == "abstracts"
-            else None
+            aql_results_str if cfg.evidence_mode == "abstracts" else None
         )
         if kg_source == "live" and cfg.evidence_mode == "abstracts":
             context_for_refinement = aql_results_str
@@ -299,17 +303,19 @@ class AdaptivePipeline:
             )
 
         # ----------------------------------------------------------
-        # generation
-        # The generation template is selected per tier (cfg.generation_prompt).
-        # We do NOT inject per-question shape or synthesis directives:
-        # - answer_shape has been removed from QuestionProfile; the template's
-        #   own STRUCTURE section provides all the output shaping needed.
-        # - synthesis_mode_directives are rendered as empty string for all
-        #   tiers; the {synthesis_mode_directives} placeholder is retained in
-        #   the template for backwards compatibility but carries no content.
+        # generation  (cfg.model_name)
         # ----------------------------------------------------------
+        log.info(
+            "generation: model=%s timeout=%ds max_tokens=%d",
+            cfg.model_name, cfg.timeout_generate_s, cfg.max_output_tokens,
+        )
         gen_agent = GenerationAgent(
-            self._llm(cfg.model_name, cfg.temperature_generate, cfg.max_output_tokens),
+            self._llm(
+                cfg.model_name,
+                cfg.temperature_generate,
+                cfg.max_output_tokens,
+                timeout_s=cfg.timeout_generate_s,
+            ),
             prompt_dir=str(self._prompts_root / "generation"),
         )
         template = gen_agent._load_template(cfg.generation_prompt)
@@ -337,9 +343,7 @@ class AdaptivePipeline:
         final_answer = ans.answer or ""
         final_answer = AdaptivePipeline._strip_self_written_refs(final_answer)
         max_ref_id = len(ans.formatted_references or [])
-        final_answer = AdaptivePipeline._strip_out_of_range_citations(
-            final_answer, max_ref_id
-        )
+        final_answer = AdaptivePipeline._strip_out_of_range_citations(final_answer, max_ref_id)
         cited_ids = AdaptivePipeline._extract_cited_ids(final_answer)
         filtered_refs: List[str] = []
         if ans.formatted_references and cited_ids:
@@ -452,12 +456,21 @@ class AdaptivePipeline:
             pass
         return []
 
-    def _llm(self, model: str, temperature: float, max_tokens: int = 1400):
-        key = (model, temperature, max_tokens)
+    def _llm(self, model: str, temperature: float, max_tokens: int = 1400, timeout_s: Optional[int] = None):
+        """cached LLM wrapper factory.
+
+        The cache key includes timeout_s so that a cached small-model wrapper
+        created with a 60s timeout is never reused for a large-model call that
+        needs a 360s timeout.
+        """
+        key = (model, temperature, max_tokens, timeout_s)
         if key not in self._llm_cache:
             from core.utils.helpers import get_llm_model
             self._llm_cache[key] = get_llm_model(
-                model=model, temperature=temperature, max_tokens=max_tokens
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout_s=timeout_s,
             )
         return self._llm_cache[key]
 
@@ -474,11 +487,7 @@ class AdaptivePipeline:
         docs: List[Dict[str, Any]],
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         if cfg.evidence_mode == "abstracts" or not docs:
-            return [], {
-                "mode":       cfg.evidence_mode,
-                "n_excerpts": 0,
-                "n_docs":     len(docs),
-            }
+            return [], {"mode": cfg.evidence_mode, "n_excerpts": 0, "n_docs": len(docs)}
         self._ensure_indexer()
         excerpts, stats = self._indexer.select_excerpts_for_question(
             question=question,
@@ -510,23 +519,6 @@ class AdaptivePipeline:
             excerpts=excerpts,
             aql_lookup=aql_lookup,
         )
-
-    @staticmethod
-    def _render_excerpts_block(excerpts: List[Dict[str, Any]]) -> str:
-        if not excerpts:
-            return ""
-        parts: List[str] = []
-        for ex in excerpts:
-            header = (
-                f"[Doc {ex.get('doc_index', '?')}] "
-                f"{ex.get('title', 'Unknown')} | "
-                f"Section: {ex.get('section', 'unknown')} | "
-                f"p. {ex.get('page', '?')}"
-            )
-            parts.append(header)
-            parts.append(ex.get("text", ""))
-            parts.append("")
-        return "\n".join(parts).strip()
 
     @staticmethod
     def _build_filtered_aql_str(
@@ -575,8 +567,7 @@ class AdaptivePipeline:
             if uri:
                 lookup[uri] = d
         if aql_results_str:
-            parsed_docs = AdaptivePipeline._parse_docs_from_str(aql_results_str)
-            for item in parsed_docs:
+            for item in AdaptivePipeline._parse_docs_from_str(aql_results_str):
                 uri = item.get("uri", "")
                 if uri and uri not in lookup:
                     lookup[uri] = item
@@ -609,18 +600,13 @@ class AdaptivePipeline:
         body = "\n".join(lines[:body_end])
         tail = "\n".join(lines[body_end:]) if refs_start is not None else ""
 
-        def _sub(m: "re.Match") -> str:
+        def _sub(m: re.Match) -> str:
             inner = m.group(1)
-            tokens = re.split(r"([,;\s]+)", inner)
-            kept_digits: List[str] = []
-            for tok in tokens:
-                if tok.isdigit():
-                    n = int(tok)
-                    if 1 <= n <= max_id:
-                        kept_digits.append(tok)
-            if not kept_digits:
-                return ""
-            return "[" + ", ".join(kept_digits) + "]"
+            kept = [
+                tok for tok in re.split(r"[,;\s]+", inner)
+                if tok.isdigit() and 1 <= int(tok) <= max_id
+            ]
+            return ("[" + ", ".join(kept) + "]") if kept else ""
 
         body = re.sub(r"\[([0-9][0-9,;\s]*)\]", _sub, body)
         body = re.sub(r"[ \t]+([,.;:])", r"\1", body)
@@ -641,20 +627,17 @@ class AdaptivePipeline:
         formatted_refs: List[str], cited_ids: List[int]
     ) -> List[str]:
         cited = set(cited_ids)
-        out: List[str] = []
-        for line in formatted_refs:
-            m = re.match(r"\s*\[(\d+)\]", line)
-            if m and int(m.group(1)) in cited:
-                out.append(line)
-        return out
+        return [
+            line for line in formatted_refs
+            if (m := re.match(r"\s*\[(\d+)\]", line)) and int(m.group(1)) in cited
+        ]
 
     @staticmethod
     def _build_query_hint(question: str, profile: QuestionProfile) -> str:
         """Prepend lightweight routing-derived hints to the question string.
 
-        Deliberately narrow: only complexity depth and numeric emphasis.
-        No shape or synthesis directives -- those are handled by the tier's
-        prompt template, not by per-question injection.
+        Only complexity depth and numeric emphasis — no shape or synthesis
+        directives (those are handled by the tier's prompt template).
         """
         hints = []
         if profile.complexity is not None:

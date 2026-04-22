@@ -13,7 +13,7 @@ class AttributeValuePair(BaseModel):
     constraints: List[str] = Field(default_factory=list)
     centrality: float = Field(..., ge=0.0, le=1.0, description="importance score 0-1")
 
-# not used in latest version
+
 class LogicalRelationship(BaseModel):
     source_attribute: str
     source_value: str
@@ -37,8 +37,9 @@ class DynamicOntology(BaseModel):
     def get_contextual_attributes(self, threshold: float = 0.4) -> List[AttributeValuePair]:
         return [av for av in self.attribute_value_pairs if av.centrality >= threshold]
 
-# not used in latest version
+
 class DocumentAssessment(BaseModel):
+    """per-document assessment produced by the refinement agent."""
     id: Optional[str] = None
     title_or_name: str
     position: int
@@ -118,26 +119,63 @@ class QuestionProfile(BaseModel):
     temporal_specificity: float = Field(0.1, ge=0.0, le=1.0)
     methodological_depth: float = Field(0.1, ge=0.0, le=1.0)
     needs_numeric_emphasis: bool = False
-    # none = parse failure -> safety net triggers in router
+    # None = parse failure -> safety net triggers in router
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class PipelineConfig(BaseModel):
-    """resolved routing decision for one question."""
+    """resolved routing decision for one question.
+
+    Per-agent model split
+    ---------------------
+    model_name         : generation model (and refinement fallback if
+                         refinement_model_name is not set)
+    refinement_model_name: explicit refinement model; when None the pipeline
+                         falls back to model_name so existing rules that only
+                         set model_name keep working unchanged.
+
+    Per-call timeouts
+    -----------------
+    timeout_refine_s   : hard ceiling for the refinement LLM call (seconds).
+    timeout_generate_s : hard ceiling for the generation LLM call (seconds).
+    Both are passed to get_llm_model() so the Mistral client socket is closed
+    after this deadline rather than hanging indefinitely.
+    Values are model-specific (large needs 360s, small needs 60s) and are set
+    in rules.yaml so the ceiling always matches the assigned model.
+    """
+    # --- generation / fallback model ---
     model_name: str = "mistral-small-latest"
+    # --- refinement model (None -> use model_name) ---
+    refinement_model_name: Optional[str] = None
+
+    # --- evidence ---
     evidence_mode: Literal["abstracts", "excerpts_narrow", "excerpts_full"] = "abstracts"
     top_k_per_doc: int = 6
     per_doc_budget: int = 6000
     global_budget: int = 30000
+
+    # --- prompts ---
     refinement_prompt: str = "refinement_1pass_refined_exp4.txt"
     generation_prompt: str = "generation_prompt_exp4.txt"
+
+    # --- filters / synthesis ---
     scope_filter: bool = False
     synthesis_mode: Literal["homogeneous", "focused"] = "homogeneous"
+    doc_filter_min_keep: int = 6
+
+    # --- temperatures ---
     temperature_refine: float = 0.1
     temperature_generate: float = 0.2
-    rule_hit: str = "fallback"
-    reason: str = ""
+
+    # --- per-call timeouts (seconds, model-aware) ---
+    timeout_refine_s: int = 120
+    timeout_generate_s: int = 120
+
+    # --- generation caps ---
     gen_context_cap: int = 60_000
     max_output_tokens: int = 700
     system_prompt_modifier: str = ""
-    doc_filter_min_keep: int = 6
+
+    # --- routing metadata ---
+    rule_hit: str = "fallback"
+    reason: str = ""

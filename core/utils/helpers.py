@@ -6,14 +6,23 @@ import re
 import time
 import random
 import logging
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Union
 from dotenv import load_dotenv
 from mistralai import Mistral
 
 load_dotenv()
 
-# default model used across the pipeline; experiments can override via env or config
 DEFAULT_MODEL = os.getenv("PIPELINE_MODEL", "mistral-small-latest")
+
+# Per-model Mistral client timeout defaults (milliseconds).
+# The Mistral client timeout_ms applies to the full HTTP call including
+# streaming. Large has a 30s TTFT so it needs a much wider window than small.
+_MODEL_TIMEOUT_MS: dict = {
+    "mistral-small-latest":  90_000,   #  90 s — small is fast, 90s is generous
+    "mistral-medium-latest": 180_000,  # 180 s — medium TTFT ~1.3s, 1400 tok ~30s
+    "mistral-large-latest":  420_000,  # 420 s — large TTFT ~30s, 1400 tok ~60s
+}
+_DEFAULT_TIMEOUT_MS = int(os.getenv("MISTRAL_TIMEOUT_MS", "300000"))
 
 
 class MistralLLMWrapper:
@@ -33,29 +42,23 @@ class MistralLLMWrapper:
 
     def invoke(self, prompt_text: str, force_json: bool = False) -> Optional[Union[dict, str]]:
         """send a prompt and return parsed json (force_json=True) or raw text."""
-        if force_json:
-            full_prompt = (
-                "You MUST respond with ONLY valid JSON when instructed to do so.\n"
-                + prompt_text
-            )
-        else:
-            full_prompt = prompt_text
-
+        full_prompt = (
+            "You MUST respond with ONLY valid JSON when instructed to do so.\n" + prompt_text
+            if force_json else prompt_text
+        )
         messages = [{"role": "user", "content": full_prompt}]
-
-        max_attempts = 8
         use_stream = os.getenv("MISTRAL_STREAM", "1") not in ("0", "false", "False", "")
-        for attempt in range(max_attempts):
+
+        for attempt in range(8):
             try:
                 if use_stream:
                     parts: list = []
-                    stream = self.client.chat.stream(
+                    for ev in self.client.chat.stream(
                         model=self.model,
                         messages=messages,
                         temperature=self.temperature,
                         max_tokens=self.max_tokens,
-                    )
-                    for ev in stream:
+                    ):
                         data = getattr(ev, "data", ev)
                         choices = getattr(data, "choices", None) or []
                         if not choices:
@@ -67,70 +70,50 @@ class MistralLLMWrapper:
                     content = "".join(parts)
                     if not content:
                         raise RuntimeError("empty stream response")
-                    return self._parse_output(content, force_json=force_json)
-                response = self.client.chat.complete(
-                    model=self.model,
-                    messages=messages,
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens,
-                )
-                content = response.choices[0].message.content
+                else:
+                    resp = self.client.chat.complete(
+                        model=self.model,
+                        messages=messages,
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens,
+                    )
+                    content = resp.choices[0].message.content
                 return self._parse_output(content, force_json=force_json)
+
             except Exception as e:
-                msg = str(e)
+                msg = str(e).lower()
                 status = getattr(e, "status_code", None) or getattr(e, "http_status", None)
-                msg_l = msg.lower()
                 retryable = (
                     status == 429
                     or (isinstance(status, int) and 500 <= status < 600)
-                    or "429" in msg
-                    or "rate limit" in msg_l
-                    or "too many requests" in msg_l
-                    or "timeout" in msg_l
-                    or "connection" in msg_l
-                    or "service unavailable" in msg_l
-                    or "disconnected" in msg_l
-                    or "server disconnected" in msg_l
-                    or "remote protocol" in msg_l
-                    or "read error" in msg_l
-                    or "broken pipe" in msg_l
-                    or "reset by peer" in msg_l
-                    or "eof" in msg_l
-                    or "incomplete read" in msg_l
-                    or "bad gateway" in msg_l
-                    or "gateway timeout" in msg_l
-                    or "overloaded" in msg_l
-                    or "capacity" in msg_l
-                    # transient response-parsing crashes (None/empty body from server)
-                    or "nonetype" in msg_l
-                    or "subscriptable" in msg_l
-                    or "object has no attribute" in msg_l
-                    or "server error" in msg_l
-                    or "internal error" in msg_l
-                    or "empty stream" in msg_l
+                    or any(tok in msg for tok in (
+                        "429", "rate limit", "too many requests", "timeout",
+                        "connection", "service unavailable", "disconnected",
+                        "server disconnected", "remote protocol", "read error",
+                        "broken pipe", "reset by peer", "eof", "incomplete read",
+                        "bad gateway", "gateway timeout", "overloaded", "capacity",
+                        "nonetype", "subscriptable", "object has no attribute",
+                        "server error", "internal error", "empty stream",
+                    ))
                 )
-                if not retryable or attempt == max_attempts - 1:
-                    logging.error(f"llm call failed (attempt {attempt+1}/{max_attempts}): {e}")
+                if not retryable or attempt == 7:
+                    logging.error("llm call failed (attempt %d/8): %s", attempt + 1, e)
                     return None
-                delay = min(60.0, (2 ** attempt)) + random.uniform(0, 1.5)
+                delay = min(60.0, 2 ** attempt) + random.uniform(0, 1.5)
                 logging.warning(
-                    f"llm call retryable error (attempt {attempt+1}/{max_attempts}): {e} - sleeping {delay:.1f}s"
+                    "llm retryable error (attempt %d/8): %s — sleeping %.1fs", attempt + 1, e, delay
                 )
                 time.sleep(delay)
         return None
 
     def _parse_output(self, content: str, force_json: bool = False) -> Optional[Union[dict, str]]:
-        """strip markdown fences, then either parse json or return raw text."""
         content = re.sub(r"```json\n?", "", content)
         content = re.sub(r"```\n?", "", content).strip()
-
         if not content:
             logging.error("empty content from llm")
             return None
-
         if not force_json:
             return content
-
         try:
             data = json.loads(content)
             if isinstance(data, list):
@@ -142,82 +125,53 @@ class MistralLLMWrapper:
 
 
 class OpenRouterLLMWrapper:
-    """wrapper for openrouter-hosted models (mistral-large, qwen, etc.) via openai-compatible api."""
+    """wrapper for openrouter-hosted models via openai-compatible api."""
 
-    def __init__(
-        self,
-        client,  # openai.OpenAI instance
-        model: str,
-        temperature: float = 0.3,
-        max_tokens: int = 1400,
-    ):
+    def __init__(self, client, model: str, temperature: float = 0.3, max_tokens: int = 1400):
         self.client = client
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
 
     def invoke(self, prompt_text: str, force_json: bool = False) -> Optional[Union[dict, str]]:
-        if force_json:
-            full_prompt = (
-                "You MUST respond with ONLY valid JSON when instructed to do so.\n"
-                + prompt_text
-            )
-        else:
-            full_prompt = prompt_text
-
+        full_prompt = (
+            "You MUST respond with ONLY valid JSON when instructed to do so.\n" + prompt_text
+            if force_json else prompt_text
+        )
         messages = [{"role": "user", "content": full_prompt}]
 
-        max_attempts = 8
-        for attempt in range(max_attempts):
+        for attempt in range(8):
             try:
-                response = self.client.chat.completions.create(
+                resp = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
                 )
-                content = response.choices[0].message.content or ""
+                content = resp.choices[0].message.content or ""
                 return self._parse_output(content, force_json=force_json)
             except Exception as e:
-                msg = str(e)
+                msg = str(e).lower()
                 status = getattr(e, "status_code", None)
-                msg_l = msg.lower()
                 retryable = (
                     status == 429
                     or (isinstance(status, int) and 500 <= status < 600)
-                    or "429" in msg
-                    or "rate limit" in msg_l
-                    or "too many requests" in msg_l
-                    or "timeout" in msg_l
-                    or "connection" in msg_l
-                    or "service unavailable" in msg_l
-                    or "overloaded" in msg_l
-                    or "bad gateway" in msg_l
-                    or "gateway timeout" in msg_l
-                    # parity with MistralLLMWrapper:
-                    or "disconnected" in msg_l
-                    or "server disconnected" in msg_l
-                    or "remote protocol" in msg_l
-                    or "read error" in msg_l
-                    or "broken pipe" in msg_l
-                    or "reset by peer" in msg_l
-                    or "eof" in msg_l
-                    or "incomplete read" in msg_l
-                    or "capacity" in msg_l
-                    or "server error" in msg_l
-                    or "internal error" in msg_l
-                    # transient None/empty body from server causes these crashes:
-                    or "nonetype" in msg_l
-                    or "subscriptable" in msg_l
-                    or "object has no attribute" in msg_l
-                    or "empty stream" in msg_l
+                    or any(tok in msg for tok in (
+                        "429", "rate limit", "too many requests", "timeout",
+                        "connection", "service unavailable", "disconnected",
+                        "server disconnected", "remote protocol", "read error",
+                        "broken pipe", "reset by peer", "eof", "incomplete read",
+                        "bad gateway", "gateway timeout", "overloaded", "capacity",
+                        "nonetype", "subscriptable", "object has no attribute",
+                        "server error", "internal error", "empty stream",
+                    ))
                 )
-                if not retryable or attempt == max_attempts - 1:
-                    logging.error(f"openrouter llm call failed (attempt {attempt+1}/{max_attempts}): {e}")
+                if not retryable or attempt == 7:
+                    logging.error("openrouter call failed (attempt %d/8): %s", attempt + 1, e)
                     return None
-                delay = min(60.0, (2 ** attempt)) + random.uniform(0, 1.5)
+                delay = min(60.0, 2 ** attempt) + random.uniform(0, 1.5)
                 logging.warning(
-                    f"openrouter retryable error (attempt {attempt+1}/{max_attempts}): {e} - sleeping {delay:.1f}s"
+                    "openrouter retryable (attempt %d/8): %s — sleeping %.1fs", attempt + 1, e, delay
                 )
                 time.sleep(delay)
         return None
@@ -225,14 +179,11 @@ class OpenRouterLLMWrapper:
     def _parse_output(self, content: str, force_json: bool = False) -> Optional[Union[dict, str]]:
         content = re.sub(r"```json\n?", "", content)
         content = re.sub(r"```\n?", "", content).strip()
-
         if not content:
-            logging.error("empty content from openrouter llm")
+            logging.error("empty content from openrouter")
             return None
-
         if not force_json:
             return content
-
         try:
             data = json.loads(content)
             if isinstance(data, list):
@@ -247,10 +198,16 @@ def get_llm_model(
     model: str = DEFAULT_MODEL,
     temperature: float = 0.3,
     max_tokens: int = 1400,
+    timeout_s: Optional[int] = None,
 ) -> Union[MistralLLMWrapper, OpenRouterLLMWrapper]:
-    """create an llm wrapper -- routes to openrouter for qwen/openrouter models,
-    mistral direct api otherwise."""
-    if model.startswith("qwen/") or model.startswith("openrouter/") or model.startswith("mistralai/"):
+    """create an llm wrapper.
+
+    timeout_s  — per-call socket timeout in seconds.  When None the model-
+                 specific default from _MODEL_TIMEOUT_MS is used, which is
+                 always safer than the old single global MISTRAL_TIMEOUT_MS.
+                 Pass cfg.timeout_refine_s / cfg.timeout_generate_s here.
+    """
+    if model.startswith(("qwen/", "openrouter/", "mistralai/")):
         from openai import OpenAI
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
@@ -258,27 +215,31 @@ def get_llm_model(
         base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
         client = OpenAI(api_key=api_key, base_url=base_url)
         return OpenRouterLLMWrapper(client, model=model, temperature=temperature, max_tokens=max_tokens)
+
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if not api_key:
+        raise ValueError("MISTRAL_API_KEY not found in .env")
+
+    # Resolve timeout: explicit arg > model-specific default > env-var global
+    if timeout_s is not None:
+        timeout_ms = timeout_s * 1000
     else:
-        api_key = os.getenv("MISTRAL_API_KEY")
-        if not api_key:
-            raise ValueError("MISTRAL_API_KEY not found in .env")
-        timeout_ms = int(os.getenv("MISTRAL_TIMEOUT_MS", "300000"))
-        try:
-            client = Mistral(api_key=api_key, timeout_ms=timeout_ms)
-        except TypeError:
-            client = Mistral(api_key=api_key)
-        return MistralLLMWrapper(client, model=model, temperature=temperature, max_tokens=max_tokens)
+        timeout_ms = _MODEL_TIMEOUT_MS.get(model, _DEFAULT_TIMEOUT_MS)
+
+    try:
+        client = Mistral(api_key=api_key, timeout_ms=timeout_ms)
+    except TypeError:
+        client = Mistral(api_key=api_key)
+    return MistralLLMWrapper(client, model=model, temperature=temperature, max_tokens=max_tokens)
 
 
 def setup_logging(name: str, level: str = "INFO") -> logging.Logger:
-    """return a logger with a stream handler; avoids duplicate handlers."""
     logger = logging.getLogger(name)
     logger.setLevel(level)
     if not logger.handlers:
         handler = logging.StreamHandler()
-        formatter = logging.Formatter(
+        handler.setFormatter(logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        handler.setFormatter(formatter)
+        ))
         logger.addHandler(handler)
     return logger

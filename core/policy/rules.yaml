@@ -1,30 +1,45 @@
-# adaptive routing rules (set5 → v3)
+# adaptive routing rules (set5 → v4)
 #
-# evaluated top-to-bottom, first match wins.
-# the final rule is the conservative set2 (ontology-enhanced rag) fallback.
+# evaluated top-to-bottom; first match wins.
+# the final fallback rule is always reached if nothing else matches.
 #
-# NOTE: safety-tier3 is handled directly in router.py (confidence floor < 0.60),
-# it does NOT appear here. the yaml rules only fire when confidence >= 0.60.
+# Per-agent model split
+# --------------------
+# model_name          : generation model
+# refinement_model_name: refinement model (omit = use model_name)
 #
-# tier ordering (important):
-#   tier-2b before tier-3: a high-quant focal question is cheaper to serve
-#   with small+narrow than large+full even if complexity+type also satisfy
-#   tier-3. the cheaper route wins intentionally.
+# The profiler (OntologyConstructionAgent) and doc-filter are always
+# mistral-small-latest regardless of tier — they are hardcoded in
+# adaptive_pipeline.py because they are fast structured-output tasks.
 #
-# context window: both mistral-small-latest and mistral-large-latest have
-# 128k token windows. gen_context_cap is set to 307200 chars (60% of 128k
-# tokens, i.e. 76800 tokens x4). this is a hard error ceiling -- if the
-# pipeline hits it, generation raises and the run is flagged as an error
-# rather than silently truncating evidence.
+# Model escalation rationale
+# --------------------------
+# tier-1 / tier-m / tier-2a  : small everywhere — low/medium complexity,
+#   output is short, structured context is enough for coherent answers.
+# tier-2b : medium refinement — quant-focal questions need a more reliable
+#   extractor for numeric values from full-text excerpts; small sometimes
+#   paraphrases numbers. generation stays small (focused output, short).
+# tier-3  : medium refinement + large generation — complex mechanism /
+#   comparison questions need coherent 1400-token synthesis. refinement
+#   is still extraction+structuring so medium is sufficient there.
 #
-# yaml condition syntax:
-#   {ge: x}, {gt: x}, {le: x}, {lt: x}  numeric inequality on a profile field
-#   {in: [a, b, c]}                      categorical membership
-#   any: { f1: cond, f2: cond }          ANY sub-condition must match
-#   always: true                         unconditional match
-#   complexity_lt                        router alias for a second inequality
-#                                        on complexity (avoids repeating the
-#                                        field name in a single-key yaml map)
+# Per-call timeouts (model-aware)
+# --------------------------------
+# timeout_refine_s / timeout_generate_s set the Mistral client socket
+# deadline for each individual LLM call. They must match the assigned
+# model — never apply a small-model timeout to a large-model call.
+#
+# Measured baselines (Mistral API, Apr 2026):
+#   small  : TTFT ~0.3s,  ~130 tok/s  → 700 tok ≈ 6s   → 60s ceiling
+#   medium : TTFT ~1.3s,  ~53 tok/s   → 700 tok ≈ 15s  → 150s ceiling
+#   large  : TTFT ~30s,   ~47 tok/s   → 1400 tok ≈ 60s → 360s ceiling
+#
+# NOTE: safety-tier3 (confidence < 0.60) is handled directly in router.py
+# and does NOT appear here. Its timeouts match tier-3 (large generation).
+#
+# tier ordering: tier-2b before tier-3 so a high-quant focal question is
+# served with medium+narrow rather than medium+large even if complexity
+# also satisfies tier-3. cheaper route wins intentionally.
 
 rules:
 
@@ -36,125 +51,140 @@ rules:
         spatial_specificity:  {ge: 0.60}
         temporal_specificity: {ge: 0.60}
     config:
-      model_name: mistral-small-latest
-      evidence_mode: excerpts_narrow
-      top_k_per_doc: 6
-      per_doc_budget: 6000
-      global_budget: 30000
-      refinement_prompt: refinement_1pass_refined_fulltext.txt
-      generation_prompt: generation_structured.txt
-      gen_context_cap: 307200
-      max_output_tokens: 700
-      system_prompt_modifier: "Focus your synthesis strictly on the specific region and/or time period named in the question. Do not extrapolate findings to other regions or periods."
-      doc_filter_min_keep: 5
-      scope_filter: true
-      synthesis_mode: focused
-      rule_hit: tier-2b
-      reason: "quantitative focal -- narrow excerpts + scope filter, focused synthesis"
+      model_name:               mistral-small-latest
+      refinement_model_name:    mistral-medium-latest
+      evidence_mode:            excerpts_narrow
+      top_k_per_doc:            6
+      per_doc_budget:           6000
+      global_budget:            30000
+      refinement_prompt:        refinement_1pass_refined_fulltext.txt
+      generation_prompt:        generation_structured.txt
+      gen_context_cap:          307200
+      max_output_tokens:        700
+      system_prompt_modifier:   "Focus your synthesis strictly on the specific region and/or time period named in the question. Do not extrapolate findings to other regions or periods."
+      doc_filter_min_keep:      5
+      scope_filter:             true
+      synthesis_mode:           focused
+      timeout_refine_s:         150
+      timeout_generate_s:       60
+      rule_hit:                 tier-2b
+      reason:                   "quantitative focal -- medium refinement for numeric fidelity, small generation"
 
-# tier-3: complex mechanism / method-eval / comparison -- mistral-large-latest (128k)
+# tier-3: complex mechanism / method-eval / comparison
   - name: tier_3
     when:
       complexity: {ge: 0.60}
       question_type: {in: [mechanism, method_eval, comparison]}
     config:
-      model_name: mistral-large-latest
-      evidence_mode: excerpts_full
-      top_k_per_doc: 8
-      per_doc_budget: 7000
-      global_budget: 50000
-      refinement_prompt: refinement_1pass_refined_fulltext.txt
-      generation_prompt: generation_structured.txt
-      gen_context_cap: 307200
-      max_output_tokens: 1400
-      system_prompt_modifier: "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' — do not present it as a cited fact."
-      doc_filter_min_keep: 5
-      scope_filter: false
-      synthesis_mode: homogeneous
-      rule_hit: tier-3
-      reason: "complex mechanism / comparison -- mistral-large-latest (128k) + full excerpts"
+      model_name:               mistral-large-latest
+      refinement_model_name:    mistral-medium-latest
+      evidence_mode:            excerpts_full
+      top_k_per_doc:            6
+      per_doc_budget:           6000
+      global_budget:            35000
+      refinement_prompt:        refinement_1pass_refined_fulltext.txt
+      generation_prompt:        generation_structured.txt
+      gen_context_cap:          307200
+      max_output_tokens:        1400
+      system_prompt_modifier:   "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' — do not present it as a cited fact."
+      doc_filter_min_keep:      5
+      scope_filter:             false
+      synthesis_mode:           homogeneous
+      timeout_refine_s:         150
+      timeout_generate_s:       360
+      rule_hit:                 tier-3
+      reason:                   "complex mechanism/comparison -- medium refinement + large generation"
 
 # tier-2a: standalone high quantitativity
   - name: tier_2a
     when:
       quantitativity: {ge: 0.55}
     config:
-      model_name: mistral-small-latest
-      evidence_mode: excerpts_narrow
-      top_k_per_doc: 5
-      per_doc_budget: 4500
-      global_budget: 25000
-      refinement_prompt: refinement_1pass_refined_fulltext.txt
-      generation_prompt: generation_structured.txt
-      gen_context_cap: 307200
-      max_output_tokens: 700
-      system_prompt_modifier: "Answer concisely and directly. Lead with the core finding in the first sentence. Use at most 2 short sections after the opening paragraph. Do not add an Implications section unless the question explicitly asks for one."
-      doc_filter_min_keep: 4
-      scope_filter: false
-      synthesis_mode: homogeneous
-      rule_hit: tier-2a
-      reason: "high quantitativity -- narrow excerpts, numeric focus"
+      model_name:               mistral-small-latest
+      refinement_model_name:    mistral-medium-latest
+      evidence_mode:            excerpts_narrow
+      top_k_per_doc:            5
+      per_doc_budget:           4500
+      global_budget:            25000
+      refinement_prompt:        refinement_1pass_refined_fulltext.txt
+      generation_prompt:        generation_structured.txt
+      gen_context_cap:          307200
+      max_output_tokens:        700
+      system_prompt_modifier:   "Answer concisely and directly. Lead with the core finding in the first sentence. Use at most 2 short sections after the opening paragraph. Do not add an Implications section unless the question explicitly asks for one."
+      doc_filter_min_keep:      4
+      scope_filter:             false
+      synthesis_mode:           homogeneous
+      timeout_refine_s:         150
+      timeout_generate_s:       60
+      rule_hit:                 tier-2a
+      reason:                   "high quantitativity -- medium refinement for numeric extraction, small generation"
 
-# tier-m: mid-complexity catch-all [0.35, 0.70)
+# tier-m: mid-complexity catch-all [0.35, 0.60)
   - name: tier_m
     when:
       complexity: {ge: 0.35}
-      complexity_lt: {lt: 0.70}
+      complexity_lt: {lt: 0.60}
     config:
-      model_name: mistral-small-latest
-      evidence_mode: excerpts_narrow
-      top_k_per_doc: 6
-      per_doc_budget: 6000
-      global_budget: 30000
-      refinement_prompt: refinement_1pass_refined_fulltext.txt
-      generation_prompt: generation_structured.txt
-      gen_context_cap: 307200
-      max_output_tokens: 700
-      system_prompt_modifier: ""
-      doc_filter_min_keep: 5
-      scope_filter: false
-      synthesis_mode: homogeneous
-      rule_hit: tier-m
-      reason: "mid-complexity [0.35, 0.70) -- narrow excerpts bridge tier"
+      model_name:               mistral-medium-latest
+      evidence_mode:            excerpts_narrow
+      top_k_per_doc:            6
+      per_doc_budget:           6000
+      global_budget:            30000
+      refinement_prompt:        refinement_1pass_refined_fulltext.txt
+      generation_prompt:        generation_structured.txt
+      gen_context_cap:          307200
+      max_output_tokens:        700
+      system_prompt_modifier:   ""
+      doc_filter_min_keep:      5
+      scope_filter:             false
+      synthesis_mode:           homogeneous
+      timeout_refine_s:         150
+      timeout_generate_s:       150
+      rule_hit:                 tier-m
+      reason:                   "mid-complexity [0.35, 0.60) -- medium for both agents"
 
 # tier-1: simple / low-complexity -- abstracts only, no PDF fetch
   - name: tier_1
     when:
       complexity: {lt: 0.35}
     config:
-      model_name: mistral-small-latest
-      evidence_mode: abstracts
-      top_k_per_doc: 0
-      per_doc_budget: 0
-      global_budget: 0
-      refinement_prompt: refinement_1pass_refined_exp4.txt
-      generation_prompt: generation_direct.txt
-      gen_context_cap: 307200
-      max_output_tokens: 450
-      system_prompt_modifier: ""
-      doc_filter_min_keep: 6
-      scope_filter: false
-      synthesis_mode: homogeneous
-      rule_hit: tier-1
-      reason: "simple / low-complexity -- abstracts + direct prompt"
+      model_name:               mistral-small-latest
+      evidence_mode:            abstracts
+      top_k_per_doc:            0
+      per_doc_budget:           0
+      global_budget:            0
+      refinement_prompt:        refinement_1pass_refined_exp4.txt
+      generation_prompt:        generation_direct.txt
+      gen_context_cap:          307200
+      max_output_tokens:        450
+      system_prompt_modifier:   ""
+      doc_filter_min_keep:      6
+      scope_filter:             false
+      synthesis_mode:           homogeneous
+      timeout_refine_s:         60
+      timeout_generate_s:       45
+      rule_hit:                 tier-1
+      reason:                   "simple/low-complexity -- abstracts + small everywhere"
 
-# fallback: set2-equivalent conservative fallback (abstracts)
+# fallback: conservative default (no rule matched)
   - name: fallback
     when:
       always: true
     config:
-      model_name: mistral-small-latest
-      evidence_mode: abstracts
-      top_k_per_doc: 0
-      per_doc_budget: 0
-      global_budget: 0
-      refinement_prompt: refinement_1pass_refined_exp4.txt
-      generation_prompt: generation_prompt_exp4.txt
-      gen_context_cap: 307200
-      max_output_tokens: 700
-      system_prompt_modifier: ""
-      doc_filter_min_keep: 4
-      scope_filter: false
-      synthesis_mode: homogeneous
-      rule_hit: fallback
-      reason: "no rule matched -- conservative set2 default"
+      model_name:               mistral-small-latest
+      evidence_mode:            abstracts
+      top_k_per_doc:            0
+      per_doc_budget:           0
+      global_budget:            0
+      refinement_prompt:        refinement_1pass_refined_exp4.txt
+      generation_prompt:        generation_prompt_exp4.txt
+      gen_context_cap:          307200
+      max_output_tokens:        700
+      system_prompt_modifier:   ""
+      doc_filter_min_keep:      4
+      scope_filter:             false
+      synthesis_mode:           homogeneous
+      timeout_refine_s:         60
+      timeout_generate_s:       60
+      rule_hit:                 fallback
+      reason:                   "no rule matched -- conservative fallback"

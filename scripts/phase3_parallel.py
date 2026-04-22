@@ -13,28 +13,22 @@ and are I/O-bound, so threads are sufficient (no GIL contention on network).
 
 Rate-limit safety:
     * global concurrency cap via --workers (default: 4)
-    * per-model concurrency cap via semaphores (default: 4 small + 2 large)
+    * per-model concurrency caps: --small-concurrency / --medium-concurrency /
+      --large-concurrency (serialise large to avoid server disconnects)
     * optional minimum spacing between request starts via --min-gap-ms
     * exponential backoff + retry on any exception from AdaptivePipeline.run()
 
+Per-job timeouts are derived from the routed tier so that small-model jobs
+never receive a large-model ceiling and vice versa:
+    tier-1/fallback : --small-timeout-s   (default  90s)
+    tier-m/2a/2b    : --medium-timeout-s  (default 300s)
+    tier-3/safety   : --large-timeout-s   (default 600s)
+
 Usage:
-    # default: 5 phase-3-style questions (2 tier-1 + 2 tier-2 + 1 tier-3)
     python scripts/phase3_parallel.py
-
-    # faster: 6 workers, tighter spacing
-    python scripts/phase3_parallel.py --workers 6 --min-gap-ms 150
-
-    # different mix / more questions
-    python scripts/phase3_parallel.py --tier-mix 3,3,2 --n 8
-
-    # specific question indices (1-based into deduped DLR rows)
-    python scripts/phase3_parallel.py --indices 1 5 12 27
-
-    # same as --indices but comma-separated (alias)
+    python scripts/phase3_parallel.py --workers 4 --indices 1 8 13 18 28
     python scripts/phase3_parallel.py --questions 1,5,12,27
-
-    # cap mistral-large concurrency because it's the scarce tier
-    python scripts/phase3_parallel.py --large-concurrency 1
+    python scripts/phase3_parallel.py --tier-mix 2,2,2 --n 6
 """
 
 from __future__ import annotations
@@ -54,18 +48,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# make "core.*" importable when run from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.pipelines.adaptive_pipeline import AdaptivePipeline
 
 csv.field_size_limit(int(1e8))
-
 log = logging.getLogger("phase3_parallel")
 
 
 # ---------------------------------------------------------------------------
-# data loading — mirrors tests/test_adaptive_v2.py so selection is identical
+# data loading
 # ---------------------------------------------------------------------------
 
 _CSV_CANDIDATES = [
@@ -125,7 +117,7 @@ def _load_rows(csv_path: str) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# question selection — reuse phase1 output if present, otherwise inline profile
+# question selection
 # ---------------------------------------------------------------------------
 
 def _select_questions(
@@ -164,7 +156,6 @@ def _select_questions(
         q = _get_question(row)
         if not q:
             continue
-
         tier = tier_map.get(q)
         if tier is None:
             try:
@@ -173,7 +164,6 @@ def _select_questions(
             except Exception as exc:
                 log.warning("inline profile failed for q%d: %s", i, exc)
                 continue
-
         need = target_counts.get(tier, 0)
         if need and counts.get(tier, 0) < need:
             selected.append((i, q, row.get("aql_results", "") or "", tier, _parse_docs(row)))
@@ -189,8 +179,6 @@ def _select_questions(
 # ---------------------------------------------------------------------------
 
 class _StartSpacer:
-    """enforce a minimum gap between successive call starts across all threads."""
-
     def __init__(self, min_gap_s: float):
         self._gap = max(0.0, min_gap_s)
         self._next_allowed = 0.0
@@ -216,20 +204,28 @@ def _acquire(sem: threading.Semaphore):
         sem.release()
 
 
-def _infer_model(tier: str) -> str:
-    return "mistral-large-latest" if tier == "tier-3" else "mistral-small-latest"
+# Map tier names to semaphore bucket and job-timeout bucket.
+# tier-m / tier-2a / tier-2b all have medium refinement so they use the
+# medium semaphore for back-pressure; their generation is small or medium
+# but medium is the bottleneck slot.
+_TIER_TO_BUCKET: Dict[str, str] = {
+    "tier-1":     "small",
+    "fallback":   "small",
+    "tier-m":     "medium",
+    "tier-2a":    "medium",
+    "tier-2b":    "medium",
+    "tier-3":     "large",
+    "safety-tier3": "large",
+}
+
+
+def _tier_bucket(tier: str) -> str:
+    return _TIER_TO_BUCKET.get(tier, "medium")
 
 
 # ---------------------------------------------------------------------------
 # per-question worker
 # ---------------------------------------------------------------------------
-
-def _wait_any(futures, timeout: float):
-    """Wait for at least one future to complete or for the timeout to elapse.
-    Returns (done, not_done) sets. Thin wrapper so the main loop reads clean.
-    """
-    return _futures_wait(list(futures), timeout=timeout, return_when=FIRST_COMPLETED)
-
 
 def _run_one(
     job_idx: int,
@@ -240,30 +236,28 @@ def _run_one(
     docs: List[Dict[str, Any]],
     pipeline: AdaptivePipeline,
     small_sem: threading.Semaphore,
+    medium_sem: threading.Semaphore,
     large_sem: threading.Semaphore,
     spacer: _StartSpacer,
     max_retries: int,
 ) -> Dict[str, Any]:
-
-    # Pre-profile (cheap mistral-small call) so we know the ACTUAL model the
-    # pipeline will use for this question, and PASS the resulting route into
-    # pipeline.run() so the semaphore decision and the actual model used are
-    # guaranteed to agree. Without this, LLM nondeterminism in the profile
-    # step can let a second mistral-large call slip under the 'small'
-    # semaphore and trigger server disconnects.
+    # Pre-profile so the semaphore choice and the pipeline's internal route
+    # are guaranteed to agree. Without this, LLM nondeterminism can let a
+    # large call slip under the small semaphore.
     precomputed_route = None
+    actual_tier = expected_tier
     try:
         precomputed_route = pipeline.profile_and_route(question)
         _, _, cfg = precomputed_route
-        actual_model = cfg.model_name
         actual_tier = cfg.rule_hit
     except Exception as exc:
-        log.warning("[job=%d q=%d] pre-profile failed (%s); falling back to expected_tier=%s",
-                    job_idx, display_idx, exc, expected_tier)
-        actual_model = _infer_model(expected_tier)
-        actual_tier = expected_tier
+        log.warning(
+            "[job=%d q=%d] pre-profile failed (%s); using expected_tier=%s",
+            job_idx, display_idx, exc, expected_tier,
+        )
 
-    sem = large_sem if actual_model == "mistral-large-latest" else small_sem
+    bucket = _tier_bucket(actual_tier)
+    sem = {"small": small_sem, "medium": medium_sem, "large": large_sem}[bucket]
 
     last_exc: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
@@ -272,8 +266,8 @@ def _run_one(
             t0 = time.time()
             try:
                 log.info(
-                    "[job=%d q=%d expected=%s actual=%s model=%s attempt=%d] starting",
-                    job_idx, display_idx, expected_tier, actual_tier, actual_model, attempt,
+                    "[job=%d q=%d expected=%s actual=%s bucket=%s attempt=%d] starting",
+                    job_idx, display_idx, expected_tier, actual_tier, bucket, attempt,
                 )
                 ans = pipeline.run(
                     question,
@@ -284,8 +278,8 @@ def _run_one(
                 elapsed = time.time() - t0
                 log.info(
                     "[job=%d q=%d] done tier=%s chars=%d refs=%d elapsed=%.1fs",
-                    job_idx, display_idx, ans.rule_hit, len(ans.answer),
-                    len(ans.formatted_references), elapsed,
+                    job_idx, display_idx, ans.rule_hit,
+                    len(ans.answer), len(ans.formatted_references), elapsed,
                 )
                 return {
                     "job_idx": job_idx,
@@ -307,12 +301,11 @@ def _run_one(
                 msg = str(exc).lower()
                 is_rate = any(tok in msg for tok in ("429", "rate limit", "too many requests", "rate_limit"))
                 backoff = (2 ** (attempt - 1)) * (3.0 if is_rate else 1.0)
-                backoff += random.uniform(0, 0.5)  # jitter
+                backoff += random.uniform(0, 0.5)
                 log.warning(
                     "[job=%d q=%d attempt=%d] %s: %s — sleeping %.1fs",
                     job_idx, display_idx, attempt,
-                    "RATE LIMIT" if is_rate else "ERROR",
-                    exc, backoff,
+                    "RATE LIMIT" if is_rate else "ERROR", exc, backoff,
                 )
         if attempt < max_retries:
             time.sleep(backoff)
@@ -335,14 +328,13 @@ def _run_one(
 
 
 # ---------------------------------------------------------------------------
-# output writers — match tests/test_adaptive_v2.py format
+# output writers
 # ---------------------------------------------------------------------------
 
 def _write_outputs(records: List[Dict[str, Any]], output_dir: Path) -> Tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    txt_path = output_dir / "phase3_answers_readable.txt"
+    txt_path  = output_dir / "phase3_answers_readable.txt"
     jsonl_path = output_dir / "phase3_answers.jsonl"
-
     records = sorted(records, key=lambda r: r["job_idx"])
 
     with jsonl_path.open("w", encoding="utf-8") as jf, \
@@ -361,20 +353,20 @@ def _write_outputs(records: List[Dict[str, Any]], output_dir: Path) -> Tuple[Pat
                 "elapsed_s": rec["elapsed_s"],
                 "error": rec["error"],
             }) + "\n")
-
+            n_excerpts = (
+                rec["excerpt_stats"].get("n_excerpts", 0)
+                if isinstance(rec["excerpt_stats"], dict) else 0
+            )
             tf.write("=" * 60 + "\n")
             tf.write(
                 f"Q{i} [expected={rec['expected_tier']} actual={rec['actual_tier']}]: "
                 f"{rec['question']}\n"
             )
             tf.write("-" * 60 + "\n")
-            tf.write("ANSWER:\n")
-            tf.write(rec["answer"] + "\n")
+            tf.write("ANSWER:\n" + rec["answer"] + "\n")
             tf.write("-" * 60 + "\n")
-            tf.write("FORMATTED REFERENCES:\n")
-            tf.write("\n".join(rec["formatted_references"]) + "\n")
+            tf.write("FORMATTED REFERENCES:\n" + "\n".join(rec["formatted_references"]) + "\n")
             tf.write("-" * 60 + "\n")
-            n_excerpts = rec["excerpt_stats"].get("n_excerpts", 0) if isinstance(rec["excerpt_stats"], dict) else 0
             tf.write(
                 f"context={rec['enriched_context_chars']} chars | "
                 f"excerpts={n_excerpts} | elapsed={rec['elapsed_s']}s\n"
@@ -389,7 +381,6 @@ def _write_outputs(records: List[Dict[str, Any]], output_dir: Path) -> Tuple[Pat
 # ---------------------------------------------------------------------------
 
 def _parse_tier_mix(s: str) -> Dict[str, int]:
-    """'2,2,1' -> {tier-1:2, tier-2:2, tier-3:1}"""
     parts = [p.strip() for p in s.split(",")]
     if len(parts) != 3:
         raise argparse.ArgumentTypeError("tier-mix must be 3 ints: t1,t2,t3")
@@ -398,44 +389,35 @@ def _parse_tier_mix(s: str) -> Dict[str, int]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="parallel phase-3 adaptive pipeline runner")
-    ap.add_argument("--workers", "-w", type=int, default=4,
-                    help="global concurrency cap (default: 4)")
-    ap.add_argument("--small-concurrency", type=int, default=4,
-                    help="max concurrent mistral-small calls (default: 4)")
-    ap.add_argument("--large-concurrency", type=int, default=1,
-                    help="max concurrent mistral-large calls (default: 1 — "
-                         "serialise large-model work to avoid server disconnects)")
-    ap.add_argument("--min-gap-ms", type=int, default=0,
-                    help="minimum milliseconds between call starts (default: 0)")
-    ap.add_argument("--job-timeout-s", type=int, default=300,
-                    help="per-question wall-clock timeout in seconds "
-                         "(default: 300). A stuck request is abandoned and "
-                         "recorded as an error, so one bad call does not "
-                         "block the whole run.")
-    ap.add_argument("--large-timeout-s", type=int, default=600,
-                    help="per-job wall-clock timeout for mistral-large-latest jobs "
-                         "(default: 600). tier-3 jobs can take 300-400s due to "
-                         "PDF fetches + large-model generation; this overrides "
-                         "--job-timeout-s for those jobs only.")
-    ap.add_argument("--tier-mix", type=_parse_tier_mix, default="2,2,1",
-                    help="'t1,t2,t3' count of questions per tier (default: 2,2,1)")
-    ap.add_argument("--n", type=int, default=None,
-                    help="override total question count (uniform-ish spread across tiers)")
-    ap.add_argument("--indices", type=int, nargs="+", default=None,
-                    help="1-based question indices into deduped DLR rows; overrides tier-mix")
-    ap.add_argument("--questions", type=lambda s: [int(x) for x in s.split(",")],
-                    default=None,
-                    help="comma-separated 1-based question indices (alias for --indices, "
-                         "e.g. --questions 1,3). Mutually exclusive with --indices.")
+    ap.add_argument("--workers", "-w", type=int, default=4)
+    ap.add_argument("--small-concurrency",  type=int, default=4,
+                    help="max concurrent small-model jobs (default: 4)")
+    ap.add_argument("--medium-concurrency", type=int, default=2,
+                    help="max concurrent medium-model jobs (default: 2)")
+    ap.add_argument("--large-concurrency",  type=int, default=1,
+                    help="max concurrent large-model jobs (default: 1)")
+    ap.add_argument("--min-gap-ms", type=int, default=0)
+    # Per-bucket job-level timeouts. These gate the outer deadline loop in
+    # main(); the per-call socket timeouts are set inside PipelineConfig and
+    # are always tighter than these job ceilings.
+    ap.add_argument("--small-timeout-s",  type=int, default=90,
+                    help="job ceiling for tier-1/fallback jobs (default: 90s)")
+    ap.add_argument("--medium-timeout-s", type=int, default=300,
+                    help="job ceiling for tier-m/2a/2b jobs (default: 300s)")
+    ap.add_argument("--large-timeout-s",  type=int, default=600,
+                    help="job ceiling for tier-3/safety jobs (default: 600s)")
+    ap.add_argument("--tier-mix", type=_parse_tier_mix, default="2,2,1")
+    ap.add_argument("--n", type=int, default=None)
+    ap.add_argument("--indices",   type=int, nargs="+", default=None)
+    ap.add_argument("--questions", type=lambda s: [int(x) for x in s.split(",")], default=None)
     ap.add_argument("--max-retries", type=int, default=3)
     ap.add_argument("--output-dir", default="tests/output")
-    ap.add_argument("--csv", default=None, help="explicit DLR CSV path")
+    ap.add_argument("--csv", default=None)
     ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args()
 
-    # Merge --questions into --indices; both flags are mutually exclusive.
     if args.indices is not None and args.questions is not None:
-        ap.error("--indices and --questions are mutually exclusive; use one or the other.")
+        ap.error("--indices and --questions are mutually exclusive")
     args.indices = args.indices or args.questions
 
     logging.basicConfig(
@@ -458,11 +440,10 @@ def main() -> int:
 
     target_counts = args.tier_mix
     if args.n is not None:
-        # redistribute args.n across tiers, weighted by tier-mix proportions
         total_mix = sum(target_counts.values()) or 1
         scaled = {t: max(0, round(args.n * target_counts[t] / total_mix)) for t in target_counts}
         diff = args.n - sum(scaled.values())
-        scaled["tier-2"] = scaled.get("tier-2", 0) + diff  # absorb rounding into tier-2
+        scaled["tier-2"] = scaled.get("tier-2", 0) + diff
         target_counts = scaled
         log.info("scaled tier mix for n=%d: %s", args.n, target_counts)
 
@@ -476,14 +457,21 @@ def main() -> int:
     for display_idx, q, _aql, tier, _docs in selected:
         log.info("  q%d [%s]: %s", display_idx, tier, q[:70])
 
-    small_sem = threading.Semaphore(max(1, args.small_concurrency))
-    large_sem = threading.Semaphore(max(1, args.large_concurrency))
+    small_sem  = threading.Semaphore(max(1, args.small_concurrency))
+    medium_sem = threading.Semaphore(max(1, args.medium_concurrency))
+    large_sem  = threading.Semaphore(max(1, args.large_concurrency))
     spacer = _StartSpacer(args.min_gap_ms / 1000.0)
+
+    # Per-bucket job-level timeout in seconds.
+    bucket_timeout: Dict[str, int] = {
+        "small":  args.small_timeout_s,
+        "medium": args.medium_timeout_s,
+        "large":  args.large_timeout_s,
+    }
 
     t_start = time.time()
     records: List[Dict[str, Any]] = []
 
-    # daemon threads so a stuck one doesn't keep the process alive
     pool = ThreadPoolExecutor(
         max_workers=max(1, args.workers),
         thread_name_prefix="phase3",
@@ -500,6 +488,7 @@ def main() -> int:
                 docs=docs,
                 pipeline=pipeline,
                 small_sem=small_sem,
+                medium_sem=medium_sem,
                 large_sem=large_sem,
                 spacer=spacer,
                 max_retries=args.max_retries,
@@ -508,21 +497,16 @@ def main() -> int:
         }
 
         pending = set(futures.keys())
-        # Per-tier timeout: tier-3 (mistral-large-latest) gets --large-timeout-s;
-        # all other tiers get --job-timeout-s.
         deadline_per_job: Dict[Any, float] = {
-            f: time.time() + (
-                args.large_timeout_s if futures[f][3] == "tier-3" else args.job_timeout_s
-            )
+            f: time.time() + bucket_timeout[_tier_bucket(futures[f][3])]
             for f in futures
         }
 
         while pending:
-            # next soonest deadline
             now = time.time()
             next_deadline = min(deadline_per_job[f] for f in pending)
             wait_s = max(0.1, next_deadline - now)
-            done, _ = _wait_any(pending, timeout=wait_s)
+            done, _ = _futures_wait(list(pending), timeout=wait_s, return_when=FIRST_COMPLETED)
 
             if done:
                 for fut in done:
@@ -542,30 +526,27 @@ def main() -> int:
                         })
                 continue
 
-            # no future completed within wait_s; check for timeouts
             now = time.time()
             for fut in list(pending):
                 if now >= deadline_per_job[fut]:
                     ji, display_idx, q, tier = futures[fut]
-                    timed_out_s = args.large_timeout_s if tier == "tier-3" else args.job_timeout_s
+                    timed_out_s = bucket_timeout[_tier_bucket(tier)]
                     log.error(
-                        "job %d (q=%d tier=%s) exceeded timeout of %ds; abandoning",
-                        ji, display_idx, tier, timed_out_s,
+                        "job %d (q=%d tier=%s bucket=%s) exceeded timeout of %ds; abandoning",
+                        ji, display_idx, tier, _tier_bucket(tier), timed_out_s,
                     )
-                    fut.cancel()  # no-op if already running; best-effort
+                    fut.cancel()
                     pending.discard(fut)
                     records.append({
                         "job_idx": ji, "q_index": display_idx,
                         "question": q, "expected_tier": tier, "actual_tier": "TIMEOUT",
-                        "answer": f"ERROR: exceeded job timeout of {timed_out_s}s",
+                        "answer": f"ERROR: exceeded {_tier_bucket(tier)}-bucket timeout of {timed_out_s}s",
                         "enriched_context": "", "enriched_context_chars": 0,
                         "excerpt_stats": {}, "references": [], "formatted_references": [],
                         "elapsed_s": float(timed_out_s),
-                        "error": f"timeout_{timed_out_s}s",
+                        "error": f"timeout_{timed_out_s}s_{_tier_bucket(tier)}",
                     })
     finally:
-        # don't block shutdown on a stuck worker. cancel_futures was added in
-        # py3.9; fall back gracefully on older interpreters.
         try:
             pool.shutdown(wait=False, cancel_futures=True)
         except TypeError:
@@ -574,7 +555,7 @@ def main() -> int:
     elapsed = time.time() - t_start
     txt_path, jsonl_path = _write_outputs(records, Path(args.output_dir))
 
-    ok = sum(1 for r in records if r["error"] is None)
+    ok  = sum(1 for r in records if r["error"] is None)
     err = len(records) - ok
     print("\n" + "=" * 72)
     print(f"parallel phase 3 complete: ok={ok}, err={err}, total_elapsed={elapsed:.1f}s")
