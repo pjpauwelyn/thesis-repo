@@ -67,10 +67,11 @@ DEFAULT_WORKERS = 4  # parallel workers; stays within Mistral rate limits
 # telemetry columns added beyond the run_judge.py-required triple.
 # run_judge.py reads only {question_id, question, answer} via row.get(), so
 # extra telemetry columns are always safe to append.
+# NOTE: expected_length removed — QuestionProfile has no such field.
 _FIELDNAMES = [
     "question_id", "question", "answer",
     "rule_hit", "model_name", "evidence_mode",
-    "expected_length", "answer_shape",
+    "answer_shape",
     "complexity", "quantitativity",
     "spatial_specificity", "temporal_specificity",
     "profile_confidence", "profile_json",
@@ -368,7 +369,7 @@ def _run_one(
         _write_row(out_path, {
             "question_id": qid, "question": question, "answer": "(dry-run)",
             "rule_hit": cfg.rule_hit, "model_name": cfg.model_name,
-            "evidence_mode": cfg.evidence_mode, "expected_length": profile.expected_length,
+            "evidence_mode": cfg.evidence_mode,
             "answer_shape": profile.answer_shape, "complexity": profile.complexity,
             "quantitativity": profile.quantitativity,
             "spatial_specificity": profile.spatial_specificity,
@@ -399,7 +400,6 @@ def _run_one(
             "question_id": qid, "question": question, "answer": f"ERROR: {exc}",
             "rule_hit": cfg.rule_hit, "model_name": cfg.model_name,
             "evidence_mode": cfg.evidence_mode,
-            "expected_length": profile.expected_length if profile else "",
             "answer_shape": profile.answer_shape if profile else "",
             "complexity": profile.complexity if profile else "",
             "quantitativity": profile.quantitativity if profile else "",
@@ -423,7 +423,6 @@ def _run_one(
         "rule_hit": cfg.rule_hit if cfg else "",
         "model_name": cfg.model_name if cfg else "",
         "evidence_mode": cfg.evidence_mode if cfg else "",
-        "expected_length": prof.expected_length if prof else "",
         "answer_shape": prof.answer_shape if prof else "",
         "complexity": prof.complexity if prof else "",
         "quantitativity": prof.quantitativity if prof else "",
@@ -665,7 +664,6 @@ def main():
                             "answer": f"ERROR: job watchdog timeout after {args.job_timeout_s}s",
                             "rule_hit": job["rule_hit"], "model_name": job["model_name"],
                             "evidence_mode": job["evidence_mode"],
-                            "expected_length": job["profile"].expected_length,
                             "answer_shape": job["profile"].answer_shape,
                             "complexity": job["profile"].complexity,
                             "quantitativity": job["profile"].quantitativity,
