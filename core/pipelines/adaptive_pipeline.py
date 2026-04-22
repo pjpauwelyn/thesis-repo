@@ -8,9 +8,15 @@ flow per question:
   2. route       -- pure-python policy router selects PipelineConfig
   3. retrieve    -- live ArangoDB KG (graph expansion) if available,
                     else fall back to pre-baked aql_results_str from CSV
-  4. evidence    -- abstracts (no extra work) | excerpts via FullTextIndexer
-  5. refinement  -- 1pass-refined or 1pass-fulltext, depending on evidence
-  6. generation  -- direct or structured prompt, with shape + synthesis directives
+  4. filter      -- second LLM pass classifies docs as full/abstract/drop
+                    (skipped when doc count <= doc_filter_min_keep)
+  5. evidence    -- abstracts (no extra work) | excerpts via FullTextIndexer
+                    only full_docs get PDF fetch; abstract_docs contribute
+                    abstracts only; drop_docs are excluded entirely
+  6. refinement  -- v2 unified documents_block (abstracts + excerpts) when
+                    evidence_mode != abstracts; plain aql_results_str for
+                    tier-1/abstracts mode
+  7. generation  -- direct or structured prompt, with shape + synthesis
 
 KG retrieval is activated automatically when ARANGO_URL + ARANGO_ROOT_PASSWORD
 are present in the environment.  when they are absent the pipeline falls back
@@ -76,8 +82,8 @@ class AdaptiveResult:
     enriched_context: str = ""
     rule_hit: str = ""
     excerpt_stats: Dict[str, Any] = field(default_factory=dict)
-    kg_docs_used: int = 0           # how many primary KG docs were retrieved
-    kg_source: str = "csv"          # "live" | "csv" | "narrow_csv" | "none"
+    kg_docs_used: int = 0
+    kg_source: str = "csv"         # "live" | "csv" | "narrow_csv" | "none"
 
 
 class AdaptivePipeline:
@@ -168,17 +174,17 @@ class AdaptivePipeline:
             kg_source = "live"
             docs = live_docs
             aql_results_str = self._format_kg_context(live_docs)
-            log.info("KG live: %d primary docs, %d total nodes",
-                     len(live_docs),
-                     sum(1 + len(d.get("science_keywords", [])) +
-                         sum(len(sk.get("secondary_nodes", []))
-                             for sk in d.get("science_keywords", []))
-                         for d in live_docs))
+            log.info(
+                "KG live: %d primary docs, %d total nodes",
+                len(live_docs),
+                sum(1 + len(d.get("science_keywords", [])) +
+                    sum(len(sk.get("secondary_nodes", []))
+                        for sk in d.get("science_keywords", []))
+                    for d in live_docs),
+            )
         elif docs:
             kg_source = "csv"
         else:
-            # CSV fallback: try JSON first, then ast.literal_eval for
-            # Python-style dicts produced by parse_aql_results
             if aql_results_str:
                 parsed = parse_aql_results(aql_results_str)
                 docs = self._parse_docs_from_str(parsed)
@@ -194,39 +200,85 @@ class AdaptivePipeline:
                 )
 
         # ----------------------------------------------------------
-        # evidence (fulltext excerpts when evidence_mode != abstracts)
+        # document filter (second LLM pass)
+        # skipped when the result set is already small enough that
+        # filtering would burn an LLM call for negligible benefit.
         # ----------------------------------------------------------
-        excerpts, excerpt_stats = self._build_evidence(cfg, question, ontology, docs)
+        full_docs: List[Dict] = list(docs) if docs else []
+        abstract_docs: List[Dict] = []
+        drop_docs: List[Dict] = []
+        filter_ran = False
+
+        if docs and len(docs) > cfg.doc_filter_min_keep:
+            full_docs, abstract_docs, drop_docs = self._filter_documents(
+                docs, ontology, profile, question, cfg
+            )
+            filter_ran = True
+            log.info(
+                "doc filter: %d full, %d abstract, %d dropped (of %d)",
+                len(full_docs), len(abstract_docs), len(drop_docs), len(docs),
+            )
+
+        # rebuild aql_results_str from only the non-dropped docs so the
+        # refinement prompt never receives irrelevant context
+        if filter_ran and (abstract_docs or drop_docs):
+            aql_results_str = self._build_filtered_aql_str(
+                full_docs, abstract_docs
+            )
+
+        # ----------------------------------------------------------
+        # evidence: full_docs get PDF fetch; abstract_docs are
+        # abstract-only (no PDF fetch); drop_docs are excluded
+        # ----------------------------------------------------------
+        excerpts, excerpt_stats = self._build_evidence(
+            cfg, question, ontology, full_docs
+        )
+        excerpt_stats["n_full_docs"]     = len(full_docs)
+        excerpt_stats["n_abstract_docs"] = len(abstract_docs)
+        excerpt_stats["n_dropped_docs"]  = len(drop_docs)
+        excerpt_stats["filter_ran"]      = filter_ran
 
         # ----------------------------------------------------------
         # refinement
         # ----------------------------------------------------------
         ref_llm = self._llm(cfg.model_name, cfg.temperature_refine)
+
         if cfg.evidence_mode == "abstracts":
+            # tier-1 / fallback: plain aql_results_str (no PDF fetch)
             ref_agent = RefinementAgent1PassRefined(
                 ref_llm,
                 prompt_dir=str(self._prompts_root / "refinement"),
             )
         else:
+            # tier-2/3: unified documents_block (v2) with abstracts +
+            # interleaved full-text excerpts
             ref_agent = RefinementAgent1PassFullText(
                 ref_llm,
                 prompt_dir=str(self._prompts_root / "refinement"),
             )
-            excerpts_text = self._render_excerpts_block(excerpts) if excerpts else ""
-            ref_agent.set_excerpts(excerpts_text)
+            # build aql_lookup for render_documents_block
+            aql_lookup = self._build_aql_lookup(aql_results_str, docs or [])
+            documents_block = self._render_documents_block(
+                full_docs, abstract_docs, excerpts, aql_lookup
+            )
+            ref_agent.set_documents_block(documents_block)
 
         if hasattr(ref_agent, "set_scope_filter"):
             ref_agent.set_scope_filter(cfg.scope_filter)
 
-        # when we have live KG docs, pass the rich context string directly;
-        # otherwise fall through to the existing aql_results_str path
-        context_for_refinement = (
-            aql_results_str if kg_source == "live"
-            else (aql_results_str or "")
-        )
-
         # build query hint from profile for richer generation context
         query_hint = self._build_query_hint(question, profile)
+
+        # abstracts mode: pass filtered aql_results_str
+        # excerpts modes: pass None so process_context takes the v2 branch
+        context_for_refinement = (
+            aql_results_str
+            if cfg.evidence_mode == "abstracts"
+            else None
+        )
+        # live KG always provides its own rich context string regardless of mode
+        if kg_source == "live" and cfg.evidence_mode == "abstracts":
+            context_for_refinement = aql_results_str
 
         refined = ref_agent.process_context(
             question=query_hint,
@@ -266,15 +318,10 @@ class AdaptivePipeline:
             system_prompt=cfg.system_prompt_modifier,
         )
 
-        # Normalise the answer's citation hygiene. The generation prompt now
-        # forbids the model from writing its own References section (to prevent
-        # ID hallucination + truncation), and we take three defensive steps
-        # here:
-        #   1. strip any References section the model wrote anyway
-        #   2. strip any [N] citation marker whose N is outside the validated
-        #      reference range (prevents Q3-style [7] / [12] hallucinations)
-        #   3. append the authoritative References block we own, trimmed to
-        #      just the IDs actually cited in the final answer
+        # citation hygiene:
+        #   1. strip any References section the model wrote
+        #   2. strip out-of-range [N] markers
+        #   3. append authoritative References block (only cited IDs)
         final_answer = ans.answer or ""
         final_answer = AdaptivePipeline._strip_self_written_refs(final_answer)
 
@@ -320,19 +367,15 @@ class AdaptivePipeline:
         ontology: DynamicOntology,
         aql_params: Optional[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """attempt live ArangoDB query; return [] if unavailable or unconfigured."""
+        """attempt live ArangoDB query; return [] if unavailable."""
         import os
         if not os.getenv("ARANGO_ROOT_PASSWORD"):
             return []
-
         try:
             from core.utils.arango_client import query_kg
         except ImportError:
             return []
-
-        # build a keyword-focused search string from the ontology + question
         search_terms = self._build_search_query(question, ontology)
-
         params = aql_params or {}
         return query_kg(
             search_query=search_terms,
@@ -343,7 +386,6 @@ class AdaptivePipeline:
         )
 
     def _build_search_query(self, question: str, ontology: DynamicOntology) -> str:
-        """combine question keywords with ontology attributes for BM25 search."""
         parts = [question]
         try:
             if hasattr(ontology, "attributes") and ontology.attributes:
@@ -356,12 +398,6 @@ class AdaptivePipeline:
 
     @staticmethod
     def _format_kg_context(docs: List[Dict[str, Any]]) -> str:
-        """render the full KG neighbourhood as a structured text block.
-
-        structure mirrors DLR's _structure_context() but keeps keywords and
-        secondary nodes as named sections so the refinement agent can reason
-        over graph-adjacent documents.
-        """
         sections: List[str] = []
         for doc in docs:
             lines = [f"## {doc.get('title', 'Untitled')}"]
@@ -369,7 +405,6 @@ class AdaptivePipeline:
                 lines.append(doc["abstract"])
             if doc.get("uri"):
                 lines.append(f"URI: {doc['uri']}")
-
             for sk in doc.get("science_keywords", []):
                 kw_name = sk.get("name", "")
                 kw_desc = sk.get("description", "")
@@ -377,12 +412,11 @@ class AdaptivePipeline:
                 if kw_desc:
                     lines.append(kw_desc)
                 for sn in sk.get("secondary_nodes", []):
-                    sn_title = sn.get("title", "")
+                    sn_title   = sn.get("title", "")
                     sn_abstract = sn.get("abstract", "")
                     if sn_title or sn_abstract:
                         lines.append(f"  - **{sn_title}**: {sn_abstract[:300]}")
             sections.append("\n".join(lines))
-
         return "\n\n".join(sections)
 
     # ------------------------------------------------------------------
@@ -391,22 +425,14 @@ class AdaptivePipeline:
 
     @staticmethod
     def _parse_docs_from_str(raw: str) -> List[Dict[str, Any]]:
-        """Parse a docs list from a raw string.
-
-        Tries JSON first (fast path), then falls back to ast.literal_eval
-        for Python-style dicts produced by parse_aql_results.
-        Returns an empty list on any failure.
-        """
         if not raw or not raw.strip():
             return []
-        # fast path: valid JSON
         try:
             result = json.loads(raw)
             if isinstance(result, list):
                 return result
         except (json.JSONDecodeError, ValueError):
             pass
-        # fallback: Python literal (single quotes, True/False/None)
         try:
             result = ast.literal_eval(raw)
             if isinstance(result, list):
@@ -438,6 +464,7 @@ class AdaptivePipeline:
         ontology: DynamicOntology,
         docs: List[Dict[str, Any]],
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """fetch excerpts for full_docs only. abstract_docs never reach here."""
         if cfg.evidence_mode == "abstracts" or not docs:
             return [], {
                 "mode":       cfg.evidence_mode,
@@ -461,15 +488,27 @@ class AdaptivePipeline:
         })
         return excerpts, stats
 
+    def _render_documents_block(
+        self,
+        full_docs: List[Dict[str, Any]],
+        abstract_docs: List[Dict[str, Any]],
+        excerpts: List[Dict[str, Any]],
+        aql_lookup: Dict[str, Dict[str, Any]],
+    ) -> str:
+        """v2 unified documents block: full_docs with interleaved excerpts,
+        followed by abstract_docs (abstract only). delegates to
+        FullTextIndexer.render_documents_block for consistent formatting."""
+        self._ensure_indexer()
+        return self._indexer.render_documents_block(
+            full_docs=full_docs,
+            abstract_docs=abstract_docs,
+            excerpts=excerpts,
+            aql_lookup=aql_lookup,
+        )
+
     @staticmethod
     def _render_excerpts_block(excerpts: List[Dict[str, Any]]) -> str:
-        """Render a list of excerpt dicts (from select_excerpts_for_question)
-        into a plain-text block suitable for injection into the refinement
-        agent prompt.
-
-        Each excerpt dict has keys: doc_index, title, work_id, section,
-        page, text, tokens, score.
-        """
+        """Legacy flat excerpts block (kept for backwards compat / tier-1)."""
         if not excerpts:
             return ""
         parts: List[str] = []
@@ -482,8 +521,25 @@ class AdaptivePipeline:
             )
             parts.append(header)
             parts.append(ex.get("text", ""))
-            parts.append("")  # blank line between excerpts
+            parts.append("")
         return "\n".join(parts).strip()
+
+    @staticmethod
+    def _build_filtered_aql_str(
+        full_docs: List[Dict[str, Any]],
+        abstract_docs: List[Dict[str, Any]],
+    ) -> str:
+        """Rebuild aql_results_str from only full + abstract docs so the
+        refinement prompt never receives dropped documents. Returns a
+        compact JSON string matching the format expected by _parse_aql_for_prompt.
+        """
+        combined = list(full_docs) + list(abstract_docs)
+        if not combined:
+            return ""
+        try:
+            return json.dumps(combined, ensure_ascii=False)
+        except Exception:
+            return ""
 
     def _filter_documents(
         self,
@@ -513,8 +569,6 @@ class AdaptivePipeline:
         aql_results_str: str,
         docs: List[Dict[str, Any]],
     ) -> Dict[str, Dict[str, Any]]:
-        """Build a URI -> metadata dict from both the in-memory docs list
-        and the raw aql_results_str (which may contain richer metadata)."""
         lookup: Dict[str, Dict[str, Any]] = {}
         for d in docs:
             uri = d.get("uri", "")
@@ -534,13 +588,9 @@ class AdaptivePipeline:
 
     @staticmethod
     def _extract_cited_ids(answer: str) -> List[int]:
-        """Return sorted, deduplicated list of [N] citation IDs appearing in
-        the body of the answer (ignoring any existing References section).
-        """
         import re
         body = AdaptivePipeline._strip_self_written_refs(answer)
         ids = set()
-        # match [1], [1, 2], [1,2,3], [1; 2]
         for m in re.finditer(r"\[([0-9][0-9,;\s]*)\]", body):
             for tok in re.split(r"[,;\s]+", m.group(1)):
                 if tok.isdigit():
@@ -549,9 +599,6 @@ class AdaptivePipeline:
 
     @staticmethod
     def _strip_out_of_range_citations(answer: str, max_id: int) -> str:
-        """Remove any [N] marker in the body whose N is > max_id or <= 0.
-        Leaves the References section (if any) alone.
-        """
         import re
         lines = answer.split("\n")
         refs_start = None
@@ -584,7 +631,6 @@ class AdaptivePipeline:
 
     @staticmethod
     def _strip_self_written_refs(answer: str) -> str:
-        """Remove any References / REFERENCES section the LLM wrote."""
         import re
         lines = answer.split("\n")
         for i, line in enumerate(lines):
@@ -597,9 +643,6 @@ class AdaptivePipeline:
     def _filter_refs_by_cited_ids(
         formatted_refs: List[str], cited_ids: List[int]
     ) -> List[str]:
-        """Return the subset of formatted_refs whose leading [N] ID appears in
-        cited_ids. Preserves original order and leading IDs verbatim.
-        """
         import re
         cited = set(cited_ids)
         out: List[str] = []
@@ -612,7 +655,6 @@ class AdaptivePipeline:
     @staticmethod
     def _build_query_hint(question: str, profile: QuestionProfile) -> str:
         hints = []
-
         if profile.complexity is not None:
             if profile.complexity < 0.50:
                 hints.append(
@@ -624,14 +666,11 @@ class AdaptivePipeline:
                     "[DEPTH: comprehensive -- this is a high-complexity question; "
                     "provide mechanistic detail, quantitative evidence, and uncertainty assessment]"
                 )
-
         if getattr(profile, "needs_numeric_emphasis", False):
             hints.append(
                 "[NUMERIC EMPHASIS: prioritise excerpts with quantitative "
                 "values, rates, and units]"
             )
-
         if profile.answer_shape and profile.answer_shape not in ("direct_paragraph", ""):
             hints.append(f"[SYNTHESIS TARGET: {profile.answer_shape}]")
-
         return ("\n".join(hints) + "\n" + question) if hints else question
