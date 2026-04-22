@@ -172,8 +172,9 @@ class OntologyConstructionAgent(BaseAgent):
           "abstract" -- abstract only (no PDF fetch)
           "drop"     -- exclude from refinement entirely
 
-        Thresholds are adjusted for simple (definition/factual) questions
-        so we don't over-fetch PDFs when a few abstracts suffice.
+        The filter is complexity-aware: simple/definitional questions are
+        steered toward fewer "full" fetches since their abstracts typically
+        suffice. Complex mechanistic or comparison questions may use more.
 
         Returns (full_docs, abstract_docs, drop_docs).
         On any error (including LLM 503/timeout) falls back to returning
@@ -213,11 +214,14 @@ class OntologyConstructionAgent(BaseAgent):
             f'abstract only is sufficient\n'
             f'- "drop"     : clearly unrelated to both the question and ontology concepts\n\n'
             f"Rules:\n"
-            f'- Be GENEROUS. When uncertain, prefer "abstract" over "drop", '
-            f'"full" over "abstract".\n'
-            f'- "full" documents will have their complete PDF text fetched \u2014 only assign '
-            f'"full" if the document directly addresses the main topic or a closely '
-            f"related method or variable.\n"
+            f"- First, judge the question's complexity: does it require deep methodological\n"
+            f"  detail from multiple sources, or can it be answered well with 2-3 strong papers?\n"
+            f'- Only mark "full" for documents that are CENTRAL to answering the question —\n'
+            f"  i.e. they likely contain the specific methods, results, or measurements needed.\n"
+            f'  If the abstract alone is sufficient to support a claim, mark "abstract".\n'
+            f"- A simple or definitional question rarely needs more than 3 \"full\" documents.\n"
+            f"  A complex mechanistic or comparison question may need up to 6. Be honest\n"
+            f"  about which this is.\n"
             f'- "drop" only when there is no plausible connection to the question or ontology.\n'
             f'- You MUST return at least {min_full} "full" classifications.\n'
             f'- You MUST return at least {min_total} combined "full"+"abstract" '
