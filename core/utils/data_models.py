@@ -89,7 +89,23 @@ class RefinedContext(BaseModel):
 # ---------------------------------------------------------------------------
 
 class QuestionProfile(BaseModel):
-    """compact question characterisation emitted by the profiler."""
+    """compact question characterisation emitted by the profiler.
+
+    Fields used by the router (rules.yaml):
+      question_type, complexity, quantitativity, spatial_specificity,
+      temporal_specificity, confidence
+
+    Fields used downstream (refinement query hint):
+      needs_numeric_emphasis, methodological_depth
+
+    answer_shape and expected_length have been intentionally removed:
+      - answer_shape was always overwritten by router._resolve_answer_shape()
+        and never read from the LLM response.
+      - expected_length was never consumed anywhere in the pipeline.
+      Both fields added LLM noise with no routing or generation benefit.
+      Generation structure is controlled by the prompt templates selected
+      per tier, not by per-question shape directives.
+    """
     identity: str
     one_line_summary: str = ""
     question_type: Literal[
@@ -101,12 +117,7 @@ class QuestionProfile(BaseModel):
     spatial_specificity: float = Field(0.1, ge=0.0, le=1.0)
     temporal_specificity: float = Field(0.1, ge=0.0, le=1.0)
     methodological_depth: float = Field(0.1, ge=0.0, le=1.0)
-    scope: Literal["global", "regional", "local"] = "global"
     needs_numeric_emphasis: bool = False
-    answer_shape: Literal[
-        "direct_paragraph", "short_explainer", "structured_long",
-        "comparison_table", "mechanism_walkthrough", "raw",
-    ] = "structured_long"
     # none = parse failure -> safety net triggers in router
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
