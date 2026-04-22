@@ -2,7 +2,7 @@
 
 import os
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.agents.base_agent import BaseAgent
 from core.utils.data_models import (
@@ -158,27 +158,19 @@ class OntologyConstructionAgent(BaseAgent):
     # document relevance filter (second LLM pass)
     # ------------------------------------------------------------------
 
-    def _lexical_fallback(
+    def _lexical_score(
         self,
         docs: List[Dict[str, Any]],
         ontology: "DynamicOntology",
-        min_full: int,
-        min_total: int,
-    ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        """Rank docs by keyword overlap with ontology AV-pairs and split into
-        full / abstract / drop using min_full and min_total as cut-points.
+    ) -> List[Tuple[float, int, Dict]]:
+        """Score docs by keyword overlap with ontology AV-pairs.
 
-        Used as a fallback when the LLM filter fails or its response violates
-        the guardrail. Avoids the previous behaviour of returning all docs as
-        full, which defeats the purpose of filtering entirely.
-
-        If all scores are 0 (empty ontology / no AV-pairs), the ranking is
-        order-stable (first N docs become full), which is no worse than the
-        old all-full fallback but respects the budget.
+        Returns a list of (score, original_index, doc) sorted by score DESC,
+        with original index as stable tiebreak. Used by both _lexical_fallback
+        and _abstracts_topup.
         """
         word_re = re.compile(r"[a-z][a-z0-9\-]{1,}")
 
-        # build keyword + literal sets from ontology AV-pairs
         kws: List[str] = []
         lits: List[str] = []
         for av in getattr(ontology, "attribute_value_pairs", []):
@@ -201,6 +193,29 @@ class OntologyConstructionAgent(BaseAgent):
             score    = kw_hits + 0.5 * lit_hits
             scored.append((score, idx, doc))
 
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        return scored
+
+    def _lexical_fallback(
+        self,
+        docs: List[Dict[str, Any]],
+        ontology: "DynamicOntology",
+        min_full: int,
+        min_total: int,
+    ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+        """Rank docs by keyword overlap with ontology AV-pairs and split into
+        full / abstract / drop using min_full and min_total as cut-points.
+
+        Used as a fallback when the LLM filter fails or its response violates
+        the guardrail. Avoids the previous behaviour of returning all docs as
+        full, which defeats the purpose of filtering entirely.
+
+        If all scores are 0 (empty ontology / no AV-pairs), the ranking is
+        order-stable (first N docs become full), which is no worse than the
+        old all-full fallback but respects the budget.
+        """
+        scored = self._lexical_score(docs, ontology)
+
         all_zero = all(s == 0 for s, _, _ in scored)
         if all_zero:
             self.logger.warning(
@@ -208,10 +223,7 @@ class OntologyConstructionAgent(BaseAgent):
                 "(empty ontology?) — using document order as tiebreak"
             )
 
-        # sort by score desc, preserving original order as stable tiebreak
-        scored.sort(key=lambda t: (-t[0], t[1]))
         ranked = [doc for _, _, doc in scored]
-
         full_docs     = ranked[:min_full]
         abstract_docs = ranked[min_full:min_total]
         drop_docs     = ranked[min_total:]
@@ -222,6 +234,41 @@ class OntologyConstructionAgent(BaseAgent):
         )
         return full_docs, abstract_docs, drop_docs
 
+    def _abstracts_topup(
+        self,
+        full_docs: List[Dict[str, Any]],
+        abstract_docs: List[Dict[str, Any]],
+        drop_docs: List[Dict[str, Any]],
+        ontology: "DynamicOntology",
+        min_keep: int,
+    ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+        """Top up the kept pool (full + abstract) to min_keep by promoting
+        the highest-scoring dropped docs back into abstract_docs.
+
+        Called only in abstracts evidence mode, where the full/abstract split
+        is irrelevant (no PDF fetch either way) and the only thing that matters
+        is the total number of docs available for refinement.
+
+        The promoted docs go into abstract_docs (not full_docs) so that the
+        rest of the pipeline never tries to fetch their PDFs even if evidence
+        mode changes later.
+        """
+        kept = len(full_docs) + len(abstract_docs)
+        needed = min_keep - kept
+        if needed <= 0 or not drop_docs:
+            return full_docs, abstract_docs, drop_docs
+
+        scored = self._lexical_score(drop_docs, ontology)
+        promote = [doc for _, _, doc in scored[:needed]]
+        remaining_drop = [doc for _, _, doc in scored[needed:]]
+
+        self.logger.info(
+            "filter_documents abstracts_topup: promoting %d dropped docs "
+            "to abstract (kept was %d, target %d)",
+            len(promote), kept, min_keep,
+        )
+        return full_docs, abstract_docs + promote, remaining_drop
+
     def filter_documents(
         self,
         docs: List[Dict[str, Any]],
@@ -229,6 +276,7 @@ class OntologyConstructionAgent(BaseAgent):
         profile: "QuestionProfile",
         question: str,
         min_keep: int = 6,
+        evidence_mode: str = "excerpts_narrow",
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
         """LLM-based document relevance filter.
 
@@ -246,12 +294,14 @@ class OntologyConstructionAgent(BaseAgent):
           min_full  : 2 for simple/definitional, 3 for all others.
           min_total : always max(min_keep, n//3) — enough docs kept so the
                       lexical fallback is not over-aggressive on large pools.
-                      Previously the simple branch used n//4 which dropped
-                      too many docs (e.g. 12 of 16) when the LLM filter
-                      fired and fell back to lexical ranking.
 
-        On guardrail violation, falls back to _lexical_fallback() (ranked
-        by ontology keyword overlap) rather than returning all docs as full.
+        Abstracts top-up (evidence_mode == "abstracts" only):
+          After the LLM or lexical path resolves, if the kept pool
+          (full + abstract) is still below min_keep, the best-scoring
+          dropped docs are re-promoted into abstract_docs via lexical
+          ranking. This ensures tier-1/tier-1-def/fallback always have
+          at least min_keep docs for the refinement agent, regardless of
+          how aggressively the LLM filter classified.
 
         Returns (full_docs, abstract_docs, drop_docs).
         """
@@ -343,9 +393,19 @@ class OntologyConstructionAgent(BaseAgent):
 
         except Exception as exc:
             self.logger.warning(
-                "filter_documents: %s \u2014 falling back to lexical ranking", exc
+                "filter_documents: %s — falling back to lexical ranking", exc
             )
-            return self._lexical_fallback(docs, ontology, min_full, min_total)
+            full_docs, abstract_docs, drop_docs = self._lexical_fallback(
+                docs, ontology, min_full, min_total
+            )
+            # abstracts-mode top-up: if we are in abstracts evidence mode,
+            # full/abstract distinction is irrelevant (no PDF fetch either way).
+            # ensure the total kept pool reaches min_keep.
+            if evidence_mode == "abstracts":
+                full_docs, abstract_docs, drop_docs = self._abstracts_topup(
+                    full_docs, abstract_docs, drop_docs, ontology, min_keep
+                )
+            return full_docs, abstract_docs, drop_docs
 
         full_docs     = [docs[i] for i, c in enumerate(classifications) if c == "full"]
         abstract_docs = [docs[i] for i, c in enumerate(classifications) if c == "abstract"]
@@ -355,4 +415,13 @@ class OntologyConstructionAgent(BaseAgent):
             "filter_documents: %d full, %d abstract, %d dropped (of %d)",
             len(full_docs), len(abstract_docs), len(drop_docs), n,
         )
+
+        # abstracts-mode top-up after successful LLM filter too:
+        # even a valid LLM response can keep fewer than min_keep docs
+        # if the question is simple and the pool is large.
+        if evidence_mode == "abstracts":
+            full_docs, abstract_docs, drop_docs = self._abstracts_topup(
+                full_docs, abstract_docs, drop_docs, ontology, min_keep
+            )
+
         return full_docs, abstract_docs, drop_docs
