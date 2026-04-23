@@ -15,14 +15,14 @@ load_dotenv()
 DEFAULT_MODEL = os.getenv("PIPELINE_MODEL", "mistral-small-latest")
 
 # Per-model Mistral client timeout defaults (milliseconds).
-# The Mistral client timeout_ms applies to the full HTTP call including
-# streaming. Large has a 30s TTFT so it needs a much wider window than small.
 _MODEL_TIMEOUT_MS: dict = {
-    "mistral-small-latest":  90_000,   #  90 s — small is fast, 90s is generous
-    "mistral-medium-latest": 180_000,  # 180 s — medium TTFT ~1.3s, 1400 tok ~30s
-    "mistral-large-latest":  420_000,  # 420 s — large TTFT ~30s, 1400 tok ~60s
+    "mistral-small-latest":  90_000,
+    "mistral-medium-latest": 180_000,
+    "mistral-large-latest":  420_000,
 }
 _DEFAULT_TIMEOUT_MS = int(os.getenv("MISTRAL_TIMEOUT_MS", "300000"))
+
+_log = logging.getLogger(__name__)
 
 
 class MistralLLMWrapper:
@@ -42,6 +42,8 @@ class MistralLLMWrapper:
 
     def invoke(self, prompt_text: str, force_json: bool = False) -> Optional[Union[dict, str]]:
         """send a prompt and return parsed json (force_json=True) or raw text."""
+        from core.utils.logger import log_llm_retry, log_llm_failure
+
         full_prompt = (
             "You MUST respond with ONLY valid JSON when instructed to do so.\n" + prompt_text
             if force_json else prompt_text
@@ -97,12 +99,10 @@ class MistralLLMWrapper:
                     ))
                 )
                 if not retryable or attempt == 7:
-                    logging.error("llm call failed (attempt %d/8): %s", attempt + 1, e)
+                    log_llm_failure(_log, attempt + 1, 8, str(e))
                     return None
                 delay = min(60.0, 2 ** attempt) + random.uniform(0, 1.5)
-                logging.warning(
-                    "llm retryable error (attempt %d/8): %s — sleeping %.1fs", attempt + 1, e, delay
-                )
+                log_llm_retry(_log, attempt + 1, 8, str(e), delay)
                 time.sleep(delay)
         return None
 
@@ -110,7 +110,7 @@ class MistralLLMWrapper:
         content = re.sub(r"```json\n?", "", content)
         content = re.sub(r"```\n?", "", content).strip()
         if not content:
-            logging.error("empty content from llm")
+            _log.error("empty content from llm")
             return None
         if not force_json:
             return content
@@ -120,7 +120,7 @@ class MistralLLMWrapper:
                 data = {"assessments": data}
             return data
         except json.JSONDecodeError:
-            logging.error("json parsing failed with force_json=True")
+            _log.error("json parsing failed with force_json=True")
             return None
 
 
@@ -134,6 +134,8 @@ class OpenRouterLLMWrapper:
         self.max_tokens = max_tokens
 
     def invoke(self, prompt_text: str, force_json: bool = False) -> Optional[Union[dict, str]]:
+        from core.utils.logger import log_llm_retry, log_llm_failure
+
         full_prompt = (
             "You MUST respond with ONLY valid JSON when instructed to do so.\n" + prompt_text
             if force_json else prompt_text
@@ -167,12 +169,10 @@ class OpenRouterLLMWrapper:
                     ))
                 )
                 if not retryable or attempt == 7:
-                    logging.error("openrouter call failed (attempt %d/8): %s", attempt + 1, e)
+                    log_llm_failure(_log, attempt + 1, 8, str(e))
                     return None
                 delay = min(60.0, 2 ** attempt) + random.uniform(0, 1.5)
-                logging.warning(
-                    "openrouter retryable (attempt %d/8): %s — sleeping %.1fs", attempt + 1, e, delay
-                )
+                log_llm_retry(_log, attempt + 1, 8, str(e), delay)
                 time.sleep(delay)
         return None
 
@@ -180,7 +180,7 @@ class OpenRouterLLMWrapper:
         content = re.sub(r"```json\n?", "", content)
         content = re.sub(r"```\n?", "", content).strip()
         if not content:
-            logging.error("empty content from openrouter")
+            _log.error("empty content from openrouter")
             return None
         if not force_json:
             return content
@@ -190,7 +190,7 @@ class OpenRouterLLMWrapper:
                 data = {"assessments": data}
             return data
         except json.JSONDecodeError:
-            logging.error("json parsing failed with force_json=True (openrouter)")
+            _log.error("json parsing failed with force_json=True (openrouter)")
             return None
 
 
@@ -203,9 +203,7 @@ def get_llm_model(
     """create an llm wrapper.
 
     timeout_s  — per-call socket timeout in seconds.  When None the model-
-                 specific default from _MODEL_TIMEOUT_MS is used, which is
-                 always safer than the old single global MISTRAL_TIMEOUT_MS.
-                 Pass cfg.timeout_refine_s / cfg.timeout_generate_s here.
+                 specific default from _MODEL_TIMEOUT_MS is used.
     """
     if model.startswith(("qwen/", "openrouter/", "mistralai/")):
         from openai import OpenAI
@@ -220,7 +218,6 @@ def get_llm_model(
     if not api_key:
         raise ValueError("MISTRAL_API_KEY not found in .env")
 
-    # Resolve timeout: explicit arg > model-specific default > env-var global
     if timeout_s is not None:
         timeout_ms = timeout_s * 1000
     else:
@@ -234,6 +231,12 @@ def get_llm_model(
 
 
 def setup_logging(name: str, level: str = "INFO") -> logging.Logger:
+    """Return a named logger.  Delegates to core.utils.logger when available."""
+    try:
+        from core.utils.logger import get_logger
+        return get_logger(name)
+    except ImportError:
+        pass
     logger = logging.getLogger(name)
     logger.setLevel(level)
     if not logger.handlers:
