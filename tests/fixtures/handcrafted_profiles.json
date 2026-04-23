@@ -4,7 +4,7 @@
     "expected_question_type": "definition",
     "expected_complexity_max": 0.35,
     "expected_quantitativity_max": 0.35,
-    "expected_rule_hit": "tier-1",
+    "expected_rule_hit": "tier-1-def",
     "raw_response": {
       "pairs": [
         {"attribute": "ndvi", "value": "normalised difference vegetation index", "description": "spectral index", "centrality": 0.95}
@@ -79,8 +79,8 @@
   },
   {
     "question": "How are urban heat island patterns evolving across European cities?",
-    "expected_complexity_min": 0.35,
-    "expected_complexity_max": 0.6,
+    "expected_complexity_min": 0.40,
+    "expected_complexity_max": 0.60,
     "expected_rule_hit": "tier-m",
     "raw_response": {
       "pairs": [],
