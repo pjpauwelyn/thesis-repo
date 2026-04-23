@@ -1,4 +1,4 @@
-"""3-phase adaptive pipeline v2 test framework.
+"""3-phase adaptive pipeline test suite.
 
 phase 1: profile + tier routing on all questions  (inspection only -- no assertions)
 phase 2: document filter dry-run on up to 10 questions with docs
@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
-from core.pipelines.adaptive_pipeline import AdaptivePipeline
+from core.pipelines.pipeline import Pipeline
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +92,6 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 _CSV_PATH: Optional[str] = _find_dlr_csv()
 _ROWS_RAW: List[Dict[str, Any]] = _load_questions(_CSV_PATH) if _CSV_PATH else []
-# deduplicate by question text, preserve order
 _seen: set = set()
 _ROWS: List[Dict[str, Any]] = []
 for _r in _ROWS_RAW:
@@ -100,7 +99,7 @@ for _r in _ROWS_RAW:
     if _key and _key not in _seen:
         _seen.add(_key)
         _ROWS.append(_r)
-_PIPELINE = AdaptivePipeline()
+_PIPELINE = Pipeline()
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +148,7 @@ def test_phase1_profiles() -> None:
                 f"quant={profile.quantitativity:.2f}  "
                 f"meth={profile.methodological_depth:.2f}  "
                 f"conf={conf_str}  "
-                f"tier={cfg.rule_hit}  "
-                f"shape={profile.answer_shape}\\n"
+                f"tier={cfg.rule_hit}\n"
             )
 
         tf.write("\nTier distribution:\n")
@@ -167,7 +165,7 @@ def test_phase1_profiles() -> None:
 
 def test_phase2_filter() -> None:
     """Run filter_documents on up to 10 questions that have docs.
-    Asserts basic guardrails: at least min_keep docs survive."""
+    Asserts: at least min_keep docs survive the filter."""
     if not _ROWS:
         pytest.skip("no DLR CSV found")
 
@@ -191,9 +189,9 @@ def test_phase2_filter() -> None:
                 _PIPELINE.profile_and_route_with_filter(question, docs=docs)
 
             record = {
-                "q_index":       i,
-                "question":      question,
-                "tier":          cfg.rule_hit,
+                "q_index":        i,
+                "question":       question,
+                "tier":           cfg.rule_hit,
                 "filter_summary": filter_summary,
             }
             jf.write(json.dumps(record) + "\n")
@@ -207,18 +205,14 @@ def test_phase2_filter() -> None:
                 f"dropped={filter_summary.get('n_drop',0)}  "
                 f"(of {filter_summary.get('n_total',0)})\n"
             )
-            tf.write("  FULL:\n")
             for t in filter_summary.get("full_titles", []):
-                tf.write(f"    - {t}\n")
-            tf.write("  ABSTRACT:\n")
+                tf.write(f"    + {t}\n")
             for t in filter_summary.get("abstract_titles", []):
-                tf.write(f"    - {t}\n")
-            tf.write("  DROPPED:\n")
+                tf.write(f"    ~ {t}\n")
             for t in filter_summary.get("drop_titles", []):
                 tf.write(f"    - {t}\n")
             tf.write("---\n")
 
-            # guardrail: fail-safe in filter_documents means we always keep >= min_keep
             assert n_kept >= cfg.doc_filter_min_keep or n_kept == len(docs), (
                 f"filter dropped too many docs: kept {n_kept} of {len(docs)} "
                 f"(min_keep={cfg.doc_filter_min_keep})"
@@ -236,8 +230,8 @@ def _pick_questions_by_tier(
     target_counts: Dict[str, int],
 ) -> List[Tuple[str, str, str]]:
     """Return list of (question, aql_results_str, tier_hit).
-    Tries to read tier assignments from phase1 output first; falls back to
-    inline profiling so the test is self-contained."""
+    Reads tier assignments from phase1 output if available; otherwise
+    runs inline profiling so the test is self-contained."""
     phase1_path = OUTPUT_DIR / "phase1_profiles.jsonl"
     selected: List[Tuple[str, str, str]] = []
 
@@ -293,13 +287,13 @@ def test_phase3_generation() -> None:
     jsonl_path = OUTPUT_DIR / "phase3_answers.jsonl"
     txt_path   = OUTPUT_DIR / "phase3_answers_readable.txt"
 
-    valid_tiers = {"tier-1", "tier-2", "tier-3", "safety-tier3", "fallback"}
+    valid_tiers = {"tier-1", "tier-2", "tier-2a", "tier-2b", "tier-3",
+                   "tier-m", "safety-tier3", "fallback"}
 
     with open(jsonl_path, "w", encoding="utf-8") as jf, \
          open(txt_path,   "w", encoding="utf-8") as tf:
 
         for i, (question, aql_results_str, expected_tier) in enumerate(questions, start=1):
-            # find docs for this question
             docs: List[Dict[str, Any]] = []
             for row in _ROWS:
                 if _get_question(row) == question:
@@ -313,15 +307,15 @@ def test_phase3_generation() -> None:
             )
 
             record = {
-                "q_index":               i,
-                "question":              question,
-                "expected_tier":         expected_tier,
-                "actual_tier":           ans.rule_hit,
-                "answer":                ans.answer,
+                "q_index":                i,
+                "question":               question,
+                "expected_tier":          expected_tier,
+                "actual_tier":            ans.rule_hit,
+                "answer":                 ans.answer,
                 "enriched_context_chars": len(ans.enriched_context),
-                "excerpt_stats":         ans.excerpt_stats,
-                "references":            ans.references,
-                "formatted_references":  ans.formatted_references,
+                "excerpt_stats":          ans.excerpt_stats,
+                "references":             ans.references,
+                "formatted_references":   ans.formatted_references,
             }
             jf.write(json.dumps(record) + "\n")
 
@@ -331,19 +325,15 @@ def test_phase3_generation() -> None:
                 f"{question}\n"
             )
             tf.write("-" * 60 + "\n")
-            tf.write("ANSWER:\n")
             tf.write(ans.answer + "\n")
             tf.write("-" * 60 + "\n")
-            tf.write("FORMATTED REFERENCES:\n")
             tf.write("\n".join(ans.formatted_references) + "\n")
-            tf.write("-" * 60 + "\n")
             tf.write(
                 f"context={len(ans.enriched_context)} chars | "
                 f"excerpts={ans.excerpt_stats.get('n_excerpts', 0)}\n"
             )
             tf.write("=" * 60 + "\n\n")
 
-            # smoke assertions
             assert len(ans.answer) > 50, (
                 f"answer too short ({len(ans.answer)} chars) for: {question[:60]}"
             )
