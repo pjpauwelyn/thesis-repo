@@ -23,6 +23,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 csv.field_size_limit(int(1e8))
 
+# pipeline_analyzer is optional — it may not be present in all checkouts.
+try:
+    from core.agents.pipeline_analyzer import PipelineAnalyzer as _PipelineAnalyzer
+except ImportError:
+    _PipelineAnalyzer = None  # type: ignore[assignment,misc]
+
 
 class _DuplicateFilter(logging.Filter):
     """suppress consecutive identical log messages."""
@@ -64,7 +70,6 @@ _raw.propagate = False
 from core.utils.helpers import get_llm_model, DEFAULT_MODEL
 from core.agents.ontology_agent import OntologyAgent, OntologyConstructionAgent
 from core.agents.refinement_agent_abstracts import RefinementAgentAbstracts, RefinementAgent1PassRefined
-from core.agents.pipeline_analyzer import PipelineAnalyzer
 from core.agents.generation_agent import GenerationAgent
 
 
@@ -167,7 +172,9 @@ class PipelineOrchestrator:
             )
 
         self.generation_agent = GenerationAgent(self.generation_llm, prompt_dir=f"{prompt_dir}/generation")
-        self.pipeline_analyzer = PipelineAnalyzer()
+
+        # analytics logger (optional)
+        self.pipeline_analyzer = _PipelineAnalyzer() if _PipelineAnalyzer is not None else None
 
         self._adaptive_pipeline = None
 
@@ -476,6 +483,8 @@ class PipelineOrchestrator:
 
     def _log_analytics(self, result, question, structured_context, aql_results,
                        final_text_context, ontology, ont_time, ref_time, gen_time):
+        if self.pipeline_analyzer is None:
+            return
         try:
             self.pipeline_analyzer.log_pipeline_execution(
                 question_id=result.original_question_id,
