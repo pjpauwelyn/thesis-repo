@@ -10,6 +10,7 @@ import ast
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -19,6 +20,14 @@ from core.utils.data_models import (
     DynamicOntology,
     PipelineConfig,
     QuestionProfile,
+)
+from core.utils.logger import (
+    log_doc_filter,
+    log_excerpt_stats,
+    log_generation,
+    log_ontology,
+    log_profile_and_route,
+    log_refinement,
 )
 
 log = logging.getLogger(__name__)
@@ -114,9 +123,11 @@ class Pipeline:
         from core.agents.refinement_agent_fulltext import RefinementAgent1PassFullText
         from core.utils.aql_parser import parse_aql_results
 
+        # ── 1. profile + route ───────────────────────────────────────────────────
+        t0 = time.perf_counter()
         if precomputed_route is not None:
             ontology, profile, cfg = precomputed_route
-            log.info(
+            log.debug(
                 "q=%s... -> rule=%s refine=%s gen=%s evidence=%s (precomputed route)",
                 question[:60], cfg.rule_hit,
                 cfg.refinement_model_name or cfg.model_name,
@@ -124,13 +135,17 @@ class Pipeline:
             )
         else:
             ontology, profile, cfg = self.profile_and_route(question)
-            log.info(
+            log.debug(
                 "q=%s... -> rule=%s refine=%s gen=%s evidence=%s",
                 question[:60], cfg.rule_hit,
                 cfg.refinement_model_name or cfg.model_name,
                 cfg.model_name, cfg.evidence_mode,
             )
+        ontology_elapsed = time.perf_counter() - t0
+        log_ontology(log, ontology, elapsed=ontology_elapsed)
+        log_profile_and_route(log, profile, cfg, elapsed=ontology_elapsed)
 
+        # ── 2. retrieve documents ────────────────────────────────────────────────
         kg_source = "none"
         live_docs = self._try_live_kg(question, ontology, aql_params)
         if live_docs:
@@ -138,15 +153,18 @@ class Pipeline:
             docs = live_docs
             aql_results_str = self._format_kg_context(live_docs)
             log.info(
-                "KG live: %d primary docs, %d total nodes",
+                "  ✓ KG-live   %d primary docs  %d total nodes",
                 len(live_docs),
-                sum(1 + len(d.get("science_keywords", [])) +
-                    sum(len(sk.get("secondary_nodes", []))
-                        for sk in d.get("science_keywords", []))
-                    for d in live_docs),
+                sum(
+                    1 + len(d.get("science_keywords", []))
+                    + sum(len(sk.get("secondary_nodes", []))
+                          for sk in d.get("science_keywords", []))
+                    for d in live_docs
+                ),
             )
         elif docs:
             kg_source = "csv"
+            log.info("  ✓ KG-csv    %d pre-parsed docs", len(docs))
         else:
             if aql_results_str:
                 parsed = parse_aql_results(aql_results_str)
@@ -155,11 +173,11 @@ class Pipeline:
                 docs = []
             kg_source = "csv" if docs else "none"
             if docs:
-                log.info("CSV fallback: parsed %d docs from aql_results_str", len(docs))
+                log.info("  ✓ KG-csv    %d docs parsed from aql_results_str", len(docs))
             else:
                 log.warning(
-                    "CSV fallback: could not parse any docs from aql_results_str "
-                    "(len=%d)", len(aql_results_str or "")
+                    "  ⚠ KG        no docs available (aql_results_str len=%d)",
+                    len(aql_results_str or ""),
                 )
 
         if not docs:
@@ -169,6 +187,8 @@ class Pipeline:
                 "Cannot proceed — refinement and generation require document context."
             )
 
+        # ── 3. document filter ───────────────────────────────────────────────────
+        t0 = time.perf_counter()
         full_docs: List[Dict] = list(docs)
         abstract_docs: List[Dict] = []
         drop_docs: List[Dict] = []
@@ -177,16 +197,15 @@ class Pipeline:
             full_docs, abstract_docs, drop_docs = self._filter_documents(
                 docs, ontology, profile, question, cfg
             )
-            log.info(
-                "filter: full=%d abstract=%d drop=%d (of %d)",
-                len(full_docs), len(abstract_docs), len(drop_docs), len(docs),
-            )
+        log_doc_filter(log, full_docs, abstract_docs, drop_docs, elapsed=time.perf_counter() - t0)
 
+        # ── 4. excerpt selection ────────────────────────────────────────────────
         excerpts: List[Any] = []
         excerpt_stats: Dict[str, Any] = {}
         documents_block = ""
 
         if cfg.evidence_mode in ("excerpts_narrow", "excerpts_full"):
+            t0 = time.perf_counter()
             indexer = self._get_indexer()
             excerpts, excerpt_stats = indexer.select_excerpts_for_question(
                 question=question,
@@ -196,17 +215,22 @@ class Pipeline:
                 global_budget=cfg.global_budget,
                 top_k_per_doc=cfg.top_k_per_doc,
             )
+            log_excerpt_stats(log, excerpt_stats, elapsed=time.perf_counter() - t0)
             aql_lookup = self._build_aql_lookup(aql_results_str, docs)
             documents_block = self._render_documents_block(
                 full_docs, abstract_docs, excerpts, aql_lookup
             )
+        else:
+            log_excerpt_stats(log, {}, elapsed=0.0)
 
+        # ── 5. refinement ─────────────────────────────────────────────────────────
         refine_llm = self._llm(
             cfg.refinement_model_name or cfg.model_name,
             cfg.temperature_refine,
             timeout_s=cfg.timeout_refine_s,
         )
 
+        t0 = time.perf_counter()
         if cfg.evidence_mode == "abstracts":
             refine_agent = RefinementAgentAbstracts(
                 refine_llm,
@@ -238,12 +262,15 @@ class Pipeline:
             )
 
         enriched_context = refined.enriched_context or ""
+        log_refinement(log, enriched_context, elapsed=time.perf_counter() - t0)
+
         if not enriched_context.strip():
             raise RuntimeError(
                 f"Pipeline.run(): refinement produced empty enriched_context for "
                 f"question '{question[:80]}'. Aborting generation."
             )
 
+        # ── 6. generation ─────────────────────────────────────────────────────────
         gen_llm = self._llm(
             cfg.model_name,
             cfg.temperature_generate,
@@ -253,6 +280,7 @@ class Pipeline:
             gen_llm,
             prompt_dir=str(self._prompts_root / "generation"),
         )
+        t0 = time.perf_counter()
         answer_obj = gen_agent.generate(
             question=question,
             text_context=enriched_context,
@@ -261,6 +289,7 @@ class Pipeline:
             max_output_tokens=cfg.max_output_tokens,
             system_prompt=cfg.system_prompt_modifier,
         )
+        log_generation(log, answer_obj, elapsed=time.perf_counter() - t0)
 
         return PipelineResult(
             answer=answer_obj.answer,
