@@ -18,14 +18,23 @@ import csv
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
 from core.pipelines.pipeline import Pipeline
+from core.utils.logger import (
+    configure_pipeline_logging,
+    log_question_end,
+    log_question_start,
+)
 
+# bootstrap logging for the test session
+configure_pipeline_logging(log_file="logs/test_adaptive.log")
 log = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # data loading
@@ -300,11 +309,25 @@ def test_phase3_generation() -> None:
                     docs = _parse_docs(row)
                     break
 
-            ans = _PIPELINE.run(
-                question,
-                aql_results_str,
-                docs=docs or None,
-            )
+            log_question_start(log, i, question)
+            t0 = time.perf_counter()
+            status = "success"
+            err_msg = None
+
+            try:
+                ans = _PIPELINE.run(
+                    question,
+                    aql_results_str,
+                    docs=docs or None,
+                )
+            except Exception as exc:
+                status = "error"
+                err_msg = str(exc)
+                log_question_end(log, i, status, time.perf_counter() - t0, err_msg)
+                raise
+
+            elapsed = time.perf_counter() - t0
+            log_question_end(log, i, status, elapsed)
 
             record = {
                 "q_index":                i,
