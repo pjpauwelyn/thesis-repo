@@ -13,9 +13,9 @@ from core.utils.data_models import (
 )
 
 
-class OntologyConstructionAgent(BaseAgent):
+class OntologyAgent(BaseAgent):
     def __init__(self, llm, prompt_dir: str = "prompts/ontology"):
-        super().__init__("OntologyConstructionAgent", llm)
+        super().__init__("OntologyAgent", llm)
         self.prompt_dir = prompt_dir
 
     def load_prompt(self, filename: str) -> str:
@@ -40,10 +40,6 @@ class OntologyConstructionAgent(BaseAgent):
             include_relationships=include_relationships,
         )
 
-    # ------------------------------------------------------------------
-    # private llm helpers
-    # ------------------------------------------------------------------
-
     def _extract_attribute_value_pairs(self, question: str) -> List[AttributeValuePair]:
         template = self.load_prompt("extract_attributes_slim.txt")
         prompt = template.replace("{question}", question)
@@ -66,21 +62,12 @@ class OntologyConstructionAgent(BaseAgent):
             self.logger.error(f"attribute extraction failed: {e}")
             return []
 
-    # ------------------------------------------------------------------
-    # adaptive pipeline (set5) -- fused av-pair + profile extraction
-    # ------------------------------------------------------------------
-
     def process_with_profile(
         self, question: str, include_relationships: bool = False
     ):
         """superset of process(): fuses av-pair extraction and profile
         extraction into a single llm call. falls back to process() plus a
-        null-confidence profile on any error -- the null confidence then
-        triggers the safety net in core.policy.router.
-
-        include_relationships defaults to False because the adaptive
-        pipeline routes before refinement, so relationships add latency
-        without informing routing.
+        null-confidence profile on any error.
         """
         template = self.load_prompt("extract_profile.txt")
         prompt = template.replace("{question}", question)
@@ -112,10 +99,6 @@ class OntologyConstructionAgent(BaseAgent):
             )
 
             raw = resp.get("profile", {}) or {}
-            # normalise question_type: strip whitespace and lowercase to guard
-            # against LLM responses like "Mechanism" or "mechanism " that would
-            # silently fail the {in: [...]} check in rules.yaml and cause
-            # tier-3 to never fire.
             raw_qt = (raw.get("question_type") or "continuous").strip().lower()
             profile = QuestionProfile(
                 identity=question,
@@ -150,25 +133,16 @@ class OntologyConstructionAgent(BaseAgent):
                 spatial_specificity=0.1,
                 temporal_specificity=0.1,
                 methodological_depth=0.1,
-                confidence=None,  # triggers safety-tier3 in router
+                confidence=None,
             )
             return ontology, profile
-
-    # ------------------------------------------------------------------
-    # document relevance filter (second LLM pass)
-    # ------------------------------------------------------------------
 
     def _lexical_score(
         self,
         docs: List[Dict[str, Any]],
         ontology: "DynamicOntology",
     ) -> List[Tuple[float, int, Dict]]:
-        """Score docs by keyword overlap with ontology AV-pairs.
-
-        Returns a list of (score, original_index, doc) sorted by score DESC,
-        with original index as stable tiebreak. Used by both _lexical_fallback
-        and _abstracts_topup.
-        """
+        """Score docs by keyword overlap with ontology AV-pairs."""
         word_re = re.compile(r"[a-z][a-z0-9\-]{1,}")
 
         kws: List[str] = []
@@ -203,17 +177,7 @@ class OntologyConstructionAgent(BaseAgent):
         min_full: int,
         min_total: int,
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        """Rank docs by keyword overlap with ontology AV-pairs and split into
-        full / abstract / drop using min_full and min_total as cut-points.
-
-        Used as a fallback when the LLM filter fails or its response violates
-        the guardrail. Avoids the previous behaviour of returning all docs as
-        full, which defeats the purpose of filtering entirely.
-
-        If all scores are 0 (empty ontology / no AV-pairs), the ranking is
-        order-stable (first N docs become full), which is no worse than the
-        old all-full fallback but respects the budget.
-        """
+        """Rank docs by keyword overlap and split into full/abstract/drop."""
         scored = self._lexical_score(docs, ontology)
 
         all_zero = all(s == 0 for s, _, _ in scored)
@@ -242,17 +206,7 @@ class OntologyConstructionAgent(BaseAgent):
         ontology: "DynamicOntology",
         min_keep: int,
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        """Top up the kept pool (full + abstract) to min_keep by promoting
-        the highest-scoring dropped docs back into abstract_docs.
-
-        Called only in abstracts evidence mode, where the full/abstract split
-        is irrelevant (no PDF fetch either way) and the only thing that matters
-        is the total number of docs available for refinement.
-
-        The promoted docs go into abstract_docs (not full_docs) so that the
-        rest of the pipeline never tries to fetch their PDFs even if evidence
-        mode changes later.
-        """
+        """top up the kept pool to min_keep by promoting best-scoring dropped docs."""
         kept = len(full_docs) + len(abstract_docs)
         needed = min_keep - kept
         if needed <= 0 or not drop_docs:
@@ -280,35 +234,13 @@ class OntologyConstructionAgent(BaseAgent):
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
         """LLM-based document relevance filter.
 
-        Classifies every document in `docs` as one of:
-          "full"     -- fetch PDF + excerpts
-          "abstract" -- abstract only (no PDF fetch)
-          "drop"     -- exclude from refinement entirely
-
-        The filter is complexity-aware: simple/definitional questions are
-        steered toward fewer "full" fetches since their abstracts typically
-        suffice. Complex mechanistic or comparison questions may need more,
-        but the LLM is instructed to be selective rather than generous.
-
-        Guardrail floors:
-          min_full  : 2 for simple/definitional, 3 for all others.
-          min_total : always max(min_keep, n//3) — enough docs kept so the
-                      lexical fallback is not over-aggressive on large pools.
-
-        Abstracts top-up (evidence_mode == "abstracts" only):
-          After the LLM or lexical path resolves, if the kept pool
-          (full + abstract) is still below min_keep, the best-scoring
-          dropped docs are re-promoted into abstract_docs via lexical
-          ranking. This ensures tier-1/tier-1-def/fallback always have
-          at least min_keep docs for the refinement agent, regardless of
-          how aggressively the LLM filter classified.
-
-        Returns (full_docs, abstract_docs, drop_docs).
+        Classifies every document as 'full', 'abstract', or 'drop'.
+        Guardrail floors ensure minimum kept docs. Falls back to lexical
+        ranking on LLM failure.
         """
         if not docs:
             return [], [], []
 
-        # top-5 ontology concepts by centrality, for the filter prompt
         pairs = sorted(
             getattr(ontology, "attribute_value_pairs", []),
             key=lambda av: getattr(av, "centrality", 0.0),
@@ -321,11 +253,7 @@ class OntologyConstructionAgent(BaseAgent):
 
         n = len(docs)
         is_simple = getattr(profile, "question_type", "mechanism") in ("definition", "factual")
-        # min_full: slightly lower for simple questions (definitions often
-        # need fewer full PDFs), but never below 2 (safety net).
         min_full  = 2 if is_simple else 3
-        # min_total: always n//3 floor — avoids the old is_simple branch that
-        # used n//4, which caused 12-of-16 drops in the lexical fallback.
         min_total = max(min_keep, n // 3)
 
         doc_list = "\n".join(
@@ -362,8 +290,6 @@ class OntologyConstructionAgent(BaseAgent):
         try:
             raw = self.llm.invoke(prompt, force_json=True)
 
-            # explicit None check: invoke() returns None when all retries are
-            # exhausted (503, timeout, etc.). treat as transient -- fall back.
             if raw is None:
                 raise ValueError("LLM unavailable after retries (returned None)")
 
@@ -398,9 +324,6 @@ class OntologyConstructionAgent(BaseAgent):
             full_docs, abstract_docs, drop_docs = self._lexical_fallback(
                 docs, ontology, min_full, min_total
             )
-            # abstracts-mode top-up: if we are in abstracts evidence mode,
-            # full/abstract distinction is irrelevant (no PDF fetch either way).
-            # ensure the total kept pool reaches min_keep.
             if evidence_mode == "abstracts":
                 full_docs, abstract_docs, drop_docs = self._abstracts_topup(
                     full_docs, abstract_docs, drop_docs, ontology, min_keep
@@ -416,12 +339,13 @@ class OntologyConstructionAgent(BaseAgent):
             len(full_docs), len(abstract_docs), len(drop_docs), n,
         )
 
-        # abstracts-mode top-up after successful LLM filter too:
-        # even a valid LLM response can keep fewer than min_keep docs
-        # if the question is simple and the pool is large.
         if evidence_mode == "abstracts":
             full_docs, abstract_docs, drop_docs = self._abstracts_topup(
                 full_docs, abstract_docs, drop_docs, ontology, min_keep
             )
 
         return full_docs, abstract_docs, drop_docs
+
+
+# backward-compat alias
+OntologyConstructionAgent = OntologyAgent

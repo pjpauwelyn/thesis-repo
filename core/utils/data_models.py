@@ -65,6 +65,10 @@ class DocumentAssessment(BaseModel):
     reference_id: Optional[str] = None
 
 
+# shorter alias used in refinement agents
+DocScore = DocumentAssessment
+
+
 class RefinedContext(BaseModel):
     original_context: str
     question: str
@@ -85,28 +89,8 @@ class RefinedContext(BaseModel):
         )
 
 
-# ---------------------------------------------------------------------------
-# adaptive pipeline (set5)  --  question profile + routing decision
-# ---------------------------------------------------------------------------
-
 class QuestionProfile(BaseModel):
-    """compact question characterisation emitted by the profiler.
-
-    Fields used by the router (rules.yaml):
-      question_type, complexity, quantitativity, spatial_specificity,
-      temporal_specificity, confidence
-
-    Fields used downstream (refinement query hint):
-      needs_numeric_emphasis, methodological_depth
-
-    answer_shape and expected_length have been intentionally removed:
-      - answer_shape was always overwritten by router._resolve_answer_shape()
-        and never read from the LLM response.
-      - expected_length was never consumed anywhere in the pipeline.
-      Both fields added LLM noise with no routing or generation benefit.
-      Generation structure is controlled by the prompt templates selected
-      per tier, not by per-question shape directives.
-    """
+    """compact question characterisation emitted by the profiler."""
     identity: str
     one_line_summary: str = ""
     question_type: Literal[
@@ -119,63 +103,48 @@ class QuestionProfile(BaseModel):
     temporal_specificity: float = Field(0.1, ge=0.0, le=1.0)
     methodological_depth: float = Field(0.1, ge=0.0, le=1.0)
     needs_numeric_emphasis: bool = False
-    # None = parse failure -> safety net triggers in router
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
 class PipelineConfig(BaseModel):
-    """resolved routing decision for one question.
-
-    Per-agent model split
-    ---------------------
-    model_name         : generation model (and refinement fallback if
-                         refinement_model_name is not set)
-    refinement_model_name: explicit refinement model; when None the pipeline
-                         falls back to model_name so existing rules that only
-                         set model_name keep working unchanged.
-
-    Per-call timeouts
-    -----------------
-    timeout_refine_s   : hard ceiling for the refinement LLM call (seconds).
-    timeout_generate_s : hard ceiling for the generation LLM call (seconds).
-    Both are passed to get_llm_model() so the Mistral client socket is closed
-    after this deadline rather than hanging indefinitely.
-    Values are model-specific (large needs 360s, small needs 60s) and are set
-    in rules.yaml so the ceiling always matches the assigned model.
-    """
-    # --- generation / fallback model ---
+    """resolved routing decision for one question."""
+    # generation / fallback model
     model_name: str = "mistral-small-latest"
-    # --- refinement model (None -> use model_name) ---
+    # refinement model (None -> use model_name)
     refinement_model_name: Optional[str] = None
 
-    # --- evidence ---
+    # evidence
     evidence_mode: Literal["abstracts", "excerpts_narrow", "excerpts_full"] = "abstracts"
     top_k_per_doc: int = 6
     per_doc_budget: int = 6000
     global_budget: int = 30000
 
-    # --- prompts ---
+    # prompts
     refinement_prompt: str = "refinement_1pass_refined_exp4.txt"
     generation_prompt: str = "generation_prompt_exp4.txt"
 
-    # --- filters / synthesis ---
+    # filters / synthesis
     scope_filter: bool = False
     synthesis_mode: Literal["homogeneous", "focused"] = "homogeneous"
     doc_filter_min_keep: int = 6
 
-    # --- temperatures ---
+    # temperatures
     temperature_refine: float = 0.1
     temperature_generate: float = 0.2
 
-    # --- per-call timeouts (seconds, model-aware) ---
+    # per-call timeouts (seconds, model-aware)
     timeout_refine_s: int = 120
     timeout_generate_s: int = 120
 
-    # --- generation caps ---
+    # generation caps
     gen_context_cap: int = 60_000
     max_output_tokens: int = 700
     system_prompt_modifier: str = ""
 
-    # --- routing metadata ---
+    # routing metadata
     rule_hit: str = "fallback"
     reason: str = ""
+
+
+# cleaner alias: routing decision, not a general pipeline config
+RouteConfig = PipelineConfig
