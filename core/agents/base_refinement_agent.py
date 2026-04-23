@@ -1,8 +1,4 @@
-"""shared logic for all refinement agent variants.
-
-handles document parsing, ontology-guided selection, enriched-context
-building, and the glue between base_agent and concrete subclasses.
-"""
+"""shared logic for all refinement agent variants."""
 
 import os
 import re
@@ -30,10 +26,6 @@ class BaseRefinementAgent(BaseAgent):
         except FileNotFoundError:
             self.logger.warning(f"prompt not found: {filepath}")
             return ""
-
-    # ------------------------------------------------------------------
-    # public api
-    # ------------------------------------------------------------------
 
     def process_context(
         self,
@@ -91,10 +83,6 @@ class BaseRefinementAgent(BaseAgent):
             )
         raise ValueError("input must be a dict with question, structured_context, etc.")
 
-    # ------------------------------------------------------------------
-    # abstract hook
-    # ------------------------------------------------------------------
-
     @abstractmethod
     def _assess_documents(
         self,
@@ -105,10 +93,6 @@ class BaseRefinementAgent(BaseAgent):
         aql_results_str: Optional[str],
     ) -> List[DocumentAssessment]:
         ...
-
-    # ------------------------------------------------------------------
-    # document parsing
-    # ------------------------------------------------------------------
 
     def _parse_documents(
         self, context_string: str, aql_results_str: Optional[str] = None
@@ -152,19 +136,13 @@ class BaseRefinementAgent(BaseAgent):
                     }
                 )
 
-        # attach parsed aql data to the first document for llm assessment
         if aql_results_str and documents:
             from core.utils.aql_parser import parse_aql_results
-
             clean_aql = parse_aql_results(aql_results_str)
             documents[0]["aql_data"] = clean_aql
 
         self.logger.info(f"parsed {len(documents)} documents from structured context")
         return documents
-
-    # ------------------------------------------------------------------
-    # ontology-guided reordering
-    # ------------------------------------------------------------------
 
     def _reorder_by_ontology(
         self,
@@ -184,10 +162,6 @@ class BaseRefinementAgent(BaseAgent):
             return sum(c in haystack for c in key_concepts)
 
         return sorted(documents, key=score, reverse=True)
-
-    # ------------------------------------------------------------------
-    # enriched context builders
-    # ------------------------------------------------------------------
 
     def _build_enriched_context(
         self,
@@ -211,7 +185,6 @@ class BaseRefinementAgent(BaseAgent):
             title = self._clean_title(a.title_or_name)
             lines.append(f"\n## Document {idx}: {title}")
             lines.append(f"**Relevance:** {a.relevance_score:.2f}")
-
             if a.geographic_scope:
                 geo = f"**Geographic Scope:** {a.geographic_scope}"
                 if a.geographic_match:
@@ -236,9 +209,7 @@ class BaseRefinementAgent(BaseAgent):
                 lines.append(f"**Supporting Details:** {a.supporting_details_text}")
             if a.generation_instruction:
                 lines.append(f"**Usage Guidance:** {a.generation_instruction}")
-
             self._append_citation_lines(lines, a)
-
         return "\n".join(lines)
 
     def _build_slim_context(self, assessments: List[DocumentAssessment]) -> str:
@@ -247,7 +218,6 @@ class BaseRefinementAgent(BaseAgent):
             title = self._clean_title(a.title_or_name)
             lines.append(f"\n## Document {idx}: {title}")
             lines.append(f"**Relevance:** {a.relevance_score:.2f}")
-
             if a.geographic_scope:
                 geo = f"**Geographic Scope:** {a.geographic_scope}"
                 if a.geographic_match and a.geographic_match.lower() != "none":
@@ -264,9 +234,7 @@ class BaseRefinementAgent(BaseAgent):
                 lines.append(f"**Supporting Details:** {a.supporting_details_text}")
             if a.instruction and a.instruction.strip():
                 lines.append(f"**Usage Guidance:** {a.instruction}")
-
             self._append_citation_lines(lines, a)
-
         return "\n".join(lines)
 
     def _build_scores_only_context(
@@ -281,14 +249,8 @@ class BaseRefinementAgent(BaseAgent):
             lines.append(f"**Relevance Score:** {a.relevance_score:.2f}")
             if a.generation_instruction:
                 lines.append(f"**Usage Guidance:** {a.generation_instruction}")
-
             self._append_citation_lines(lines, a)
-
         return "\n".join(lines)
-
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _clean_title(title: str) -> str:
