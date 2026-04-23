@@ -8,14 +8,12 @@ usage examples:
 import argparse
 import csv
 import json
-import logging
 import threading
 import asyncio
 import os
 import sys
 import time
 import traceback
-from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -29,43 +27,17 @@ try:
 except ImportError:
     _PipelineAnalyzer = None  # type: ignore[assignment,misc]
 
+from core.utils.logger import (
+    configure_pipeline_logging,
+    get_logger,
+    log_question_end,
+    log_question_start,
+    log_run_summary,
+)
 
-class _DuplicateFilter(logging.Filter):
-    """suppress consecutive identical log messages."""
-    def filter(self, record):
-        current = (record.name, record.levelno, record.getMessage())
-        if current == getattr(self, "_last", None):
-            return False
-        self._last = current
-        return True
-
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-_console = logging.StreamHandler()
-_console.setLevel(logging.INFO)
-_console.setFormatter(logging.Formatter("%(message)s"))
-_console.addFilter(_DuplicateFilter())
-
-_file = logging.FileHandler("pipeline_debug.log", mode="w")
-_file.setLevel(logging.DEBUG)
-_file.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-_file.addFilter(_DuplicateFilter())
-
-logger.addHandler(_console)
-logger.addHandler(_file)
-
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-_raw = logging.getLogger("raw_prompts")
-_raw_handler = logging.FileHandler("raw_prompts_debug.log", mode="w")
-_raw_handler.setLevel(logging.DEBUG)
-_raw_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
-_raw.addHandler(_raw_handler)
-_raw.setLevel(logging.DEBUG)
-_raw.propagate = False
+# ── logging bootstrap ──────────────────────────────────────────────────────────────
+configure_pipeline_logging(log_file="logs/pipeline.log")
+logger = get_logger(__name__)
 
 from core.utils.helpers import get_llm_model, DEFAULT_MODEL
 from core.agents.ontology_agent import OntologyAgent, OntologyConstructionAgent
@@ -173,13 +145,12 @@ class PipelineOrchestrator:
 
         self.generation_agent = GenerationAgent(self.generation_llm, prompt_dir=f"{prompt_dir}/generation")
 
-        # analytics logger (optional)
         self.pipeline_analyzer = _PipelineAnalyzer() if _PipelineAnalyzer is not None else None
-
         self._adaptive_pipeline = None
 
         logger.info(
-            f"orchestrator ready: {self.PIPELINE_TYPES[pipeline_type]} | model={model_name}"
+            "orchestrator ready: %s | model=%s",
+            self.PIPELINE_TYPES[pipeline_type], model_name,
         )
 
     def run(
@@ -234,7 +205,8 @@ class PipelineOrchestrator:
         self._write_results_csv(output_path, results)
 
         if verbose:
-            self._print_summary(stats, output_path)
+            log_run_summary(logger, stats)
+            logger.info("  output: %s", output_path)
 
         return results, str(output_path), stats
 
@@ -243,7 +215,7 @@ class PipelineOrchestrator:
     ) -> PipelineResult:
         question = row.get("question", "")
         if verbose:
-            print(f"\n[{idx + 1}] {question[:70]}...")
+            log_question_start(logger, idx + 1, question)
 
         result = PipelineResult(index=idx, question=question)
         result.original_question_id = question_id
@@ -283,80 +255,70 @@ class PipelineOrchestrator:
                     result.evidence_mode = getattr(cfg, "evidence_mode", "")
                 result.status = "success"
                 result.time_elapsed = time.time() - start
-                if verbose:
-                    self._progress(
-                        "adaptive", "success",
-                        f"(rule={result.rule_hit} model={result.model_name} "
-                        f"evidence={result.evidence_mode} {result.time_elapsed:.1f}s)",
-                    )
-                return result
 
-            if "without_ontology" not in self.pipeline_type:
-                self._progress("building ontology", "in_progress")
-                t0 = time.time()
-                ontology = self.ontology_agent.process(
-                    question, include_relationships=self.include_ontology_relationships
-                )
-                ontology_time = time.time() - t0
-                if ontology and not ontology.should_use_ontology:
-                    ontology = None
-                if ontology:
+            else:
+                from core.utils.logger import log_ontology
+                if "without_ontology" not in self.pipeline_type:
+                    t0 = time.time()
+                    ontology = self.ontology_agent.process(
+                        question, include_relationships=self.include_ontology_relationships
+                    )
+                    ontology_time = time.time() - t0
+                    if ontology and not ontology.should_use_ontology:
+                        ontology = None
                     result.ontology = ontology
-                    self._progress(
-                        "building ontology", "success",
-                        f"({len(ontology.attribute_value_pairs)} attrs)",
+                    log_ontology(logger, ontology, elapsed=ontology_time)
+
+                t0 = time.time()
+                include_ontology = "without_ontology" not in self.pipeline_type
+                parsed_aql = result.clean_aql_used or aql_results or None
+
+                if self.refinement_agent:
+                    refined = self.refinement_agent.process_context(
+                        question=question,
+                        structured_context=structured_context,
+                        ontology=ontology,
+                        include_ontology=include_ontology,
+                        aql_results_str=parsed_aql,
+                        context_filter=self.context_filter,
                     )
                 else:
-                    self._progress("building ontology", "success", "(skipped)")
+                    raise RuntimeError("no refinement agent configured for this pipeline type")
+                refinement_time = time.time() - t0
+                result.refined_context_summary = refined.summary
+                final_text_context = refined.enriched_context or structured_context or ""
 
-            self._progress("refining context", "in_progress")
-            t0 = time.time()
+                from core.utils.logger import log_refinement, log_generation
+                log_refinement(logger, final_text_context, elapsed=refinement_time)
 
-            include_ontology = "without_ontology" not in self.pipeline_type
-            parsed_aql = result.clean_aql_used or aql_results or None
-
-            if self.refinement_agent:
-                refined = self.refinement_agent.process_context(
+                t0 = time.time()
+                answer_obj = self.generation_agent.generate(
                     question=question,
-                    structured_context=structured_context,
+                    text_context=final_text_context,
                     ontology=ontology,
-                    include_ontology=include_ontology,
-                    aql_results_str=parsed_aql,
-                    context_filter=self.context_filter,
                 )
-            else:
-                raise RuntimeError("no refinement agent configured for this pipeline type")
+                generation_time = time.time() - t0
 
-            refinement_time = time.time() - t0
-            result.refined_context_summary = refined.summary
-            final_text_context = refined.enriched_context or structured_context or ""
-
-            self._progress("generating answer", "in_progress")
-            t0 = time.time()
-            answer_obj = self.generation_agent.generate(
-                question=question,
-                text_context=final_text_context,
-                ontology=ontology,
-            )
-            generation_time = time.time() - t0
-
-            result.answer = answer_obj.answer
-            result.references = answer_obj.references
-            result.formatted_references = answer_obj.formatted_references
-            result.final_text_context = final_text_context
-            result.status = "success"
-            self._progress("generating answer", "success", f"({generation_time:.1f}s)")
+                result.answer = answer_obj.answer
+                result.references = answer_obj.references
+                result.formatted_references = answer_obj.formatted_references
+                result.final_text_context = final_text_context
+                result.status = "success"
+                log_generation(logger, answer_obj, elapsed=generation_time)
 
         except Exception as exc:
             result.status = "error"
             result.error_message = str(exc)
             result.answer = f"ERROR: {str(exc)[:100]}"
-            logger.error(f"question {idx} failed: {exc}")
+            logger.error("question %d failed: %s", idx, exc)
             if verbose:
                 traceback.print_exc()
 
         finally:
             result.time_elapsed = time.time() - start
+            log_question_end(
+                logger, idx + 1, result.status, result.time_elapsed, result.error_message
+            )
             self._log_analytics(
                 result, question, structured_context, aql_results,
                 final_text_context, ontology, ontology_time,
@@ -371,7 +333,7 @@ class PipelineOrchestrator:
             with open(path, "r", encoding="utf-8") as f:
                 return list(csv.DictReader(f))
         except FileNotFoundError:
-            logger.error(f"csv not found: {path}")
+            logger.error("csv not found: %s", path)
             return []
 
     def _resolve_output_path(self, output_csv: Optional[str]) -> Path:
@@ -401,7 +363,7 @@ class PipelineOrchestrator:
                     key = f"{qid}_{pipe}" if exp == "default" else f"{qid}_{pipe}_{exp}"
                     existing[key] = ok
         except Exception as exc:
-            logger.warning(f"could not read existing results: {exc}")
+            logger.warning("could not read existing results: %s", exc)
         return existing
 
     def _tracking_key(self, question_id) -> str:
@@ -420,11 +382,11 @@ class PipelineOrchestrator:
             if not self.overwrite and key in existing and existing[key]:
                 skipped += 1
                 if verbose:
-                    logger.info(f"skipping question {qid} (already processed)")
+                    logger.info("skipping Q%s (already processed)", qid)
             else:
                 filtered.append(row)
         if verbose and skipped:
-            logger.info(f"skipped {skipped} already-processed questions")
+            logger.info("skipped %d already-processed questions", skipped)
         return filtered, skipped
 
     def _write_results_csv(self, path: Path, results: List[PipelineResult]) -> None:
@@ -452,7 +414,7 @@ class PipelineOrchestrator:
             writer.writeheader()
             writer.writerows(existing_rows)
 
-        logger.info(f"wrote {len(results)} results to {path}")
+        logger.info("wrote %d results to %s", len(results), path)
 
     def _result_to_row(self, r: PipelineResult) -> Dict[str, Any]:
         ctx = r.final_text_context or ""
@@ -468,7 +430,10 @@ class PipelineOrchestrator:
             "references": " | ".join(str(x) for x in refs) if refs else "",
             "formatted_references": " | ".join(str(x) for x in fmt_refs) if fmt_refs else "",
             "processing_time": f"{r.time_elapsed:.2f}",
-            "documents_parsed": r.kg_docs_used if r.kg_docs_used > 0 else (len([s for s in ctx.split("##") if s.strip()]) if ctx else 0),
+            "documents_parsed": (
+                r.kg_docs_used if r.kg_docs_used > 0
+                else (len([s for s in ctx.split("##") if s.strip()]) if ctx else 0)
+            ),
             "timestamp": datetime.now().isoformat(),
             "experiment_type": self.experiment_type,
             "rule_hit": r.rule_hit,
@@ -506,30 +471,13 @@ class PipelineOrchestrator:
                 error_msg=result.error_message,
             )
         except Exception as exc:
-            logger.debug(f"analytics logging failed: {exc}")
+            logger.debug("analytics logging failed: %s", exc)
 
     def _print_header(self, data):
-        print("=" * 80)
-        print("ORCHESTRATOR")
-        print("=" * 80)
-        print(f"Pipeline: {self.PIPELINE_TYPES[self.pipeline_type]}")
-        print(f"Questions: {len(data)}")
-        print("=" * 80)
-
-    @staticmethod
-    def _progress(step, status, detail=""):
-        symbols = {"in_progress": "•", "success": "✓", "error": "✗", "warning": "⚠"}
-        sym = symbols.get(status, "•")
-        indent = "  " if status == "in_progress" else "    "
-        print(f"{indent}{sym} {step} {detail}".rstrip())
-
-    @staticmethod
-    def _print_summary(stats, path):
-        print("=" * 80)
-        print(f"Total: {stats.total} | OK: {stats.successful} | Failed: {stats.failed}")
-        print(f"Avg time: {stats.avg_time:.2f}s")
-        print(f"Output: {path}")
-        print("=" * 80)
+        logger.info("\n%s", "=" * 78)
+        logger.info("ORCHESTRATOR  pipeline=%s  questions=%d",
+                    self.PIPELINE_TYPES[self.pipeline_type], len(data))
+        logger.info("%s", "=" * 78)
 
 
 def main():
@@ -549,11 +497,16 @@ def main():
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--refinement-temp", type=float, default=0.1)
     parser.add_argument("--generation-temp", type=float, default=0.2)
+    parser.add_argument("--log-file", default="logs/pipeline.log", help="path for debug log file")
 
     args = parser.parse_args()
 
-    if args.verbose:
-        _console.setLevel(logging.DEBUG)
+    # re-configure with user-supplied log path and optional debug console
+    import logging as _logging
+    configure_pipeline_logging(
+        log_file=args.log_file,
+        console_level=_logging.DEBUG if args.verbose else _logging.INFO,
+    )
 
     orchestrator = PipelineOrchestrator(
         pipeline_type=args.type,
