@@ -11,7 +11,7 @@ from core.utils.data_models import DynamicOntology
 # 60% of the 128k token window shared by mistral-small-latest and
 # mistral-large-latest, expressed in chars. this constant is the source of
 # truth; rules.yaml and router.py carry the same value for config clarity.
-_CONTEXT_WINDOW_60PCT_CHARS = 307_200  # 76_800 tokens × 4
+_CONTEXT_WINDOW_60PCT_CHARS = 307_200  # 76_800 tokens x 4
 
 
 @dataclass
@@ -49,8 +49,21 @@ class GenerationAgent(BaseAgent):
         context_cap: int = _CONTEXT_WINDOW_60PCT_CHARS,
         max_output_tokens: int = 700,
         system_prompt: str = "",
+        use_draft: bool = True,
     ) -> Answer:
-        self.logger.info(f"generating answer for: {question[:80]}")
+        """Generate an answer for a question.
+
+        Args:
+            use_draft: When True (default), generates a zero-shot draft first
+                then refines it against the provided context. When False,
+                skips the draft step entirely and goes straight to
+                context-grounded generation. Set to False for high-context
+                tiers (tier-2, tier-3) where a draft anchors the model to
+                parametric knowledge and fights against context grounding.
+        """
+        self.logger.info(
+            f"generating answer for: {question[:80]} (use_draft={use_draft})"
+        )
 
         # Guard: context must be non-empty.
         if not text_context or not text_context.strip():
@@ -60,9 +73,6 @@ class GenerationAgent(BaseAgent):
             )
 
         # Guard: context must not exceed the 60% window ceiling.
-        # This should almost never fire given the excerpt budgets, but if it
-        # does it means something upstream produced runaway output and we want
-        # a loud failure rather than silent evidence truncation.
         ctx_len = len(text_context)
         effective_cap = context_cap if context_cap > 0 else _CONTEXT_WINDOW_60PCT_CHARS
         if ctx_len > effective_cap:
@@ -71,16 +81,20 @@ class GenerationAgent(BaseAgent):
                 f"exceeds the 60% context window ceiling of {effective_cap:,} chars "
                 f"({effective_cap // 4:,} tokens). "
                 "This indicates runaway excerpt output upstream. "
-                "Aborting — do not truncate evidence silently."
+                "Aborting -- do not truncate evidence silently."
             )
 
-        # step 1: zero-shot draft (question only)
-        zero_prompt = self.zero_shot_template.replace("{question}", question)
-        draft = self._call_llm(zero_prompt, max_tokens=max_output_tokens)
+        if use_draft:
+            # step 1: zero-shot draft (question only)
+            zero_prompt = self.zero_shot_template.replace("{question}", question)
+            draft = self._call_llm(zero_prompt, max_tokens=max_output_tokens)
+        else:
+            # skip draft -- context-grounded generation only
+            draft = ""
 
         # step 2: refine with context + ontology
         refine_prompt = self._build_refinement_prompt(
-            question, draft, text_context, ontology
+            question, draft, text_context, ontology, use_draft=use_draft
         )
         final_answer = self._call_llm(
             refine_prompt, max_tokens=max_output_tokens, system=system_prompt
@@ -100,10 +114,13 @@ class GenerationAgent(BaseAgent):
         draft: str,
         context: str,
         ontology: Optional[DynamicOntology],
+        use_draft: bool = True,
     ) -> str:
         prompt = self.refinement_template
         prompt = prompt.replace("{question}", question)
-        prompt = prompt.replace("{draft_answer}", draft)
+        # When use_draft=False the draft is empty string; replace placeholder
+        # so templates that include {draft_answer} don't break.
+        prompt = prompt.replace("{draft_answer}", draft if use_draft else "")
         prompt = prompt.replace(
             "{context}",
             context.strip() if context else "No additional context available.",
@@ -135,7 +152,7 @@ class GenerationAgent(BaseAgent):
         if not response:
             raise RuntimeError(
                 "GenerationAgent._call_llm(): LLM returned empty/None response. "
-                "Aborting generation — no silent fallback."
+                "Aborting generation -- no silent fallback."
             )
         text = response.strip()
         if not text:
@@ -165,7 +182,7 @@ class GenerationAgent(BaseAgent):
             line = line.strip()
             if not line:
                 break
-            cleaned = line.strip("-•* []")
+            cleaned = line.strip("-\u2022* []")
             if cleaned and "No author" not in cleaned and "[EVIDENCE]" not in cleaned:
                 refs.append(" ".join(cleaned.split()))
         return refs

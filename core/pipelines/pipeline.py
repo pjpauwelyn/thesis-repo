@@ -1,4 +1,4 @@
-"""pipeline — routes each question to the right evidence mode and model.
+"""pipeline -- routes each question to the right evidence mode and model.
 
 Routing is determined at runtime by the policy router based on the
 question profile.
@@ -10,6 +10,7 @@ import ast
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,6 +65,13 @@ class Pipeline:
         self._llm_cache: Dict[Tuple[str, float, int, int], Any] = {}
         self._indexer = None  # lazy
 
+        # Profiler parse-failure counter (thread-safe).
+        # Incremented whenever the profiler LLM returns malformed JSON and
+        # confidence falls back to 0.0, causing silent escalation to
+        # safety-tier3 (most expensive model + evidence path).
+        self._profiler_parse_failures: int = 0
+        self._counter_lock = threading.Lock()
+
     def profile_and_route(
         self, question: str
     ) -> Tuple[DynamicOntology, QuestionProfile, PipelineConfig]:
@@ -74,6 +82,21 @@ class Pipeline:
         )
         ontology, profile = ont_agent.process_with_profile(question)
         cfg = self.router.select(profile)
+
+        # Track questions where the profiler returned malformed JSON.
+        # confidence == 0.0 is the sentinel that OntologyAgent sets on parse
+        # failure before falling back to the safety-tier3 catch-all rule.
+        if profile.confidence is not None and profile.confidence == 0.0:
+            with self._counter_lock:
+                self._profiler_parse_failures += 1
+                count = self._profiler_parse_failures
+            log.warning(
+                "profiler JSON parse failure for question '%s...' "
+                "(null-confidence fallback -> safety-tier3). "
+                "Session total: %d",
+                question[:60], count,
+            )
+
         return ontology, profile, cfg
 
     def profile_and_route_with_filter(
@@ -123,7 +146,7 @@ class Pipeline:
         from core.agents.refinement_agent_fulltext import RefinementAgent1PassFullText
         from core.utils.aql_parser import parse_aql_results
 
-        # ── 1. profile + route ───────────────────────────────────────────────────
+        # -- 1. profile + route -----------------------------------------------
         t0 = time.perf_counter()
         if precomputed_route is not None:
             ontology, profile, cfg = precomputed_route
@@ -145,7 +168,7 @@ class Pipeline:
         log_ontology(log, ontology, elapsed=ontology_elapsed)
         log_profile_and_route(log, profile, cfg, elapsed=ontology_elapsed)
 
-        # ── 2. retrieve documents ────────────────────────────────────────────────
+        # -- 2. retrieve documents --------------------------------------------
         kg_source = "none"
         live_docs = self._try_live_kg(question, ontology, aql_params)
         if live_docs:
@@ -153,7 +176,7 @@ class Pipeline:
             docs = live_docs
             aql_results_str = self._format_kg_context(live_docs)
             log.info(
-                "  ✓ KG-live   %d primary docs  %d total nodes",
+                "  KG-live   %d primary docs  %d total nodes",
                 len(live_docs),
                 sum(
                     1 + len(d.get("science_keywords", []))
@@ -164,7 +187,7 @@ class Pipeline:
             )
         elif docs:
             kg_source = "csv"
-            log.info("  ✓ KG-csv    %d pre-parsed docs", len(docs))
+            log.info("  KG-csv    %d pre-parsed docs", len(docs))
         else:
             if aql_results_str:
                 parsed = parse_aql_results(aql_results_str)
@@ -173,10 +196,10 @@ class Pipeline:
                 docs = []
             kg_source = "csv" if docs else "none"
             if docs:
-                log.info("  ✓ KG-csv    %d docs parsed from aql_results_str", len(docs))
+                log.info("  KG-csv    %d docs parsed from aql_results_str", len(docs))
             else:
                 log.warning(
-                    "  ⚠ KG        no docs available (aql_results_str len=%d)",
+                    "  KG        no docs available (aql_results_str len=%d)",
                     len(aql_results_str or ""),
                 )
 
@@ -184,10 +207,10 @@ class Pipeline:
             raise RuntimeError(
                 f"Pipeline.run(): no documents available for question "
                 f"'{question[:80]}...' (kg_source={kg_source}). "
-                "Cannot proceed — refinement and generation require document context."
+                "Cannot proceed -- refinement and generation require document context."
             )
 
-        # ── 3. document filter ───────────────────────────────────────────────────
+        # -- 3. document filter -----------------------------------------------
         t0 = time.perf_counter()
         full_docs: List[Dict] = list(docs)
         abstract_docs: List[Dict] = []
@@ -199,7 +222,7 @@ class Pipeline:
             )
         log_doc_filter(log, full_docs, abstract_docs, drop_docs, elapsed=time.perf_counter() - t0)
 
-        # ── 4. excerpt selection ────────────────────────────────────────────────
+        # -- 4. excerpt selection ---------------------------------------------
         excerpts: List[Any] = []
         excerpt_stats: Dict[str, Any] = {}
         documents_block = ""
@@ -223,7 +246,7 @@ class Pipeline:
         else:
             log_excerpt_stats(log, {}, elapsed=0.0)
 
-        # ── 5. refinement ─────────────────────────────────────────────────────────
+        # -- 5. refinement ----------------------------------------------------
         refine_llm = self._llm(
             cfg.refinement_model_name or cfg.model_name,
             cfg.temperature_refine,
@@ -270,7 +293,7 @@ class Pipeline:
                 f"question '{question[:80]}'. Aborting generation."
             )
 
-        # ── 6. generation ─────────────────────────────────────────────────────────
+        # -- 6. generation ----------------------------------------------------
         gen_llm = self._llm(
             cfg.model_name,
             cfg.temperature_generate,
@@ -288,8 +311,21 @@ class Pipeline:
             context_cap=cfg.gen_context_cap,
             max_output_tokens=cfg.max_output_tokens,
             system_prompt=cfg.system_prompt_modifier,
+            use_draft=cfg.use_draft,
         )
         log_generation(log, answer_obj, elapsed=time.perf_counter() - t0)
+
+        # Log session profiler failure count after every question so operators
+        # can spot misrouting early without waiting for the run to finish.
+        with self._counter_lock:
+            failure_count = self._profiler_parse_failures
+        if failure_count > 0:
+            log.info(
+                "session profiler_parse_failures=%d "
+                "(questions silently escalated to safety-tier3 "
+                "due to profiler JSON errors)",
+                failure_count,
+            )
 
         return PipelineResult(
             answer=answer_obj.answer,
