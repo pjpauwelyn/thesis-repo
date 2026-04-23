@@ -141,6 +141,16 @@ class PipelineConfig(BaseModel):
     max_output_tokens: int = 700
     system_prompt_modifier: str = ""
 
+    # generation strategy
+    # True  = zero-shot draft -> context-grounded refinement
+    #         use for thin-context tiers: tier-1*, tier-m, fallback
+    #         draft adds structure when only abstracts/narrow excerpts available
+    # False = skip draft, straight context-grounded generation
+    #         use for rich-context tiers: tier-2a, tier-2b, tier-3
+    #         a zero-shot draft anchors the model to parametric memory and
+    #         fights grounding when full-text excerpts are already in context
+    use_draft: bool = True
+
     # routing metadata
     rule_hit: str = "fallback"
     reason: str = ""
