@@ -24,6 +24,26 @@ _DEFAULT_TIMEOUT_MS = int(os.getenv("MISTRAL_TIMEOUT_MS", "300000"))
 
 _log = logging.getLogger(__name__)
 
+# Transient API / network errors — safe to retry with exponential back-off.
+_API_RETRYABLE_TOKENS = (
+    "429", "rate limit", "too many requests", "timeout",
+    "connection", "service unavailable", "disconnected",
+    "server disconnected", "remote protocol", "read error",
+    "broken pipe", "reset by peer", "eof", "incomplete read",
+    "bad gateway", "gateway timeout", "overloaded", "capacity",
+    "server error", "internal error", "empty stream",
+)
+
+# Local Python bugs — return None immediately, no retry.
+# Retrying these wastes up to 8× exponential back-off (~4 min) on real bugs.
+_CODE_ERROR_TOKENS = (
+    "nonetype",
+    "subscriptable",
+    "object has no attribute",
+    "attributeerror",
+    "typeerror",
+)
+
 
 class MistralLLMWrapper:
     """thin wrapper around the mistral chat api with json mode support."""
@@ -85,18 +105,18 @@ class MistralLLMWrapper:
             except Exception as e:
                 msg = str(e).lower()
                 status = getattr(e, "status_code", None) or getattr(e, "http_status", None)
+
+                # Local code bug — bail immediately, no retry.
+                if any(tok in msg for tok in _CODE_ERROR_TOKENS):
+                    _log.error(
+                        "llm call aborted — local code error (will not retry): %s", e
+                    )
+                    return None
+
                 retryable = (
                     status == 429
                     or (isinstance(status, int) and 500 <= status < 600)
-                    or any(tok in msg for tok in (
-                        "429", "rate limit", "too many requests", "timeout",
-                        "connection", "service unavailable", "disconnected",
-                        "server disconnected", "remote protocol", "read error",
-                        "broken pipe", "reset by peer", "eof", "incomplete read",
-                        "bad gateway", "gateway timeout", "overloaded", "capacity",
-                        "nonetype", "subscriptable", "object has no attribute",
-                        "server error", "internal error", "empty stream",
-                    ))
+                    or any(tok in msg for tok in _API_RETRYABLE_TOKENS)
                 )
                 if not retryable or attempt == 7:
                     log_llm_failure(_log, attempt + 1, 8, str(e))
@@ -155,18 +175,18 @@ class OpenRouterLLMWrapper:
             except Exception as e:
                 msg = str(e).lower()
                 status = getattr(e, "status_code", None)
+
+                # Local code bug — bail immediately, no retry.
+                if any(tok in msg for tok in _CODE_ERROR_TOKENS):
+                    _log.error(
+                        "llm call aborted — local code error (will not retry): %s", e
+                    )
+                    return None
+
                 retryable = (
                     status == 429
                     or (isinstance(status, int) and 500 <= status < 600)
-                    or any(tok in msg for tok in (
-                        "429", "rate limit", "too many requests", "timeout",
-                        "connection", "service unavailable", "disconnected",
-                        "server disconnected", "remote protocol", "read error",
-                        "broken pipe", "reset by peer", "eof", "incomplete read",
-                        "bad gateway", "gateway timeout", "overloaded", "capacity",
-                        "nonetype", "subscriptable", "object has no attribute",
-                        "server error", "internal error", "empty stream",
-                    ))
+                    or any(tok in msg for tok in _API_RETRYABLE_TOKENS)
                 )
                 if not retryable or attempt == 7:
                     log_llm_failure(_log, attempt + 1, 8, str(e))
@@ -205,7 +225,7 @@ def get_llm_model(
     timeout_s  — per-call socket timeout in seconds.  When None the model-
                  specific default from _MODEL_TIMEOUT_MS is used.
     """
-    if model.startswith(("qwen/", "openrouter/", "mistralai/")):
+    if model.startswith(("qwen/", "openrouter/", "mistralai/", "google/")):
         from openai import OpenAI
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
