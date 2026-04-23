@@ -37,16 +37,16 @@ _TIER_GUIDANCE: Dict[str, Tuple[str, str]] = {
         "supporting data or context; general background papers are fine as 'abstract'.",
     ),
     "tier-2a": (
-        "mechanistic",
-        "A question about how something works or what drives it. Papers describing "
-        "specific mechanisms, processes, or causal relationships are strong 'full' "
+        "high quantitativity",
+        "A quantitative question requiring numeric evidence. Papers with measured "
+        "data, estimates, or observations for the specific variable are strong 'full' "
         "candidates. Supporting context papers can stay 'abstract'.",
     ),
     "tier-2b": (
-        "comparative / multi-entity",
-        "A comparison or multi-variable question. Papers covering each entity being "
-        "compared, or that present side-by-side measurements, are worth 'full'. "
-        "Partial-overlap papers (cover one side well) can be 'abstract'.",
+        "quantitative focal",
+        "A quantitative question with strong spatial or temporal focus. Papers "
+        "covering the specific region/period with measured data are worth 'full'. "
+        "Partial-overlap papers (cover one dimension well) can be 'abstract'.",
     ),
     "tier-3": (
         "complex synthesis",
@@ -61,6 +61,12 @@ _TIER_GUIDANCE: Dict[str, Tuple[str, str]] = {
         "like a tier-2 question: collect solid evidence without over-fetching. "
         "Lexical and centrality scores are the most reliable signal here.",
     ),
+    "fallback": (
+        "conservative fallback",
+        "No routing rule matched confidently. Use centrality and lexical scores as "
+        "the primary signal. Prefer 'abstract' over 'drop' unless the paper is "
+        "clearly off-topic.",
+    ),
 }
 
 _TIER_GUIDANCE_DEFAULT = (
@@ -69,15 +75,20 @@ _TIER_GUIDANCE_DEFAULT = (
     "over 'drop' unless the paper is clearly off-topic.",
 )
 
+# rule_hit values that indicate a simple/definitional routing outcome.
+# Used to set min_full=2 instead of 3 (fewer PDFs needed for shallow questions).
+# Checked against rule_hit (reliable) rather than question_type (can be noisy).
+_SIMPLE_RULE_HITS = frozenset({"tier-1", "tier-1-def"})
 
-class OntologyConstructionAgent(BaseAgent):
+
+class OntologyAgent(BaseAgent):
     def __init__(self, llm, prompt_dir: str = "prompts/ontology"):
-        super().__init__("OntologyConstructionAgent", llm)
+        super().__init__("OntologyAgent", llm)
         self.prompt_dir = prompt_dir
 
     def load_prompt(self, filename: str) -> str:
         filepath = os.path.join(self.prompt_dir, filename)
-        with open(filepath, "r", encoding="utf-8\") as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             return f.read()
 
     def process(self, question: str, include_relationships: bool = True) -> DynamicOntology:
@@ -123,8 +134,55 @@ class OntologyConstructionAgent(BaseAgent):
             self.logger.error(f"attribute extraction failed: {e}")
             return []
 
+    def _define_logical_relationships(
+        self,
+        av_pairs: List[AttributeValuePair],
+        question: str,
+    ) -> List[LogicalRelationship]:
+        """Extract logical relationships between AV-pairs via LLM.
+
+        Only called when include_relationships=True (non-default). The adaptive
+        pipeline always passes include_relationships=False so this path is
+        effectively unused at runtime — it exists for the legacy
+        1_pass_with_ontology pipeline type in core/main.py.
+        """
+        if not av_pairs:
+            return []
+        try:
+            template = self.load_prompt("define_relationships.txt")
+        except FileNotFoundError:
+            self.logger.warning(
+                "define_relationships.txt not found — skipping relationship extraction"
+            )
+            return []
+
+        pairs_text = "\n".join(
+            f"  {av.attribute}: {av.value}" for av in av_pairs
+        )
+        prompt = template.replace("{question}", question).replace(
+            "{pairs}", pairs_text
+        )
+        try:
+            resp = self.llm.invoke(prompt, force_json=True)
+            if not isinstance(resp, dict):
+                return []
+            return [
+                LogicalRelationship(
+                    source_attribute=r.get("source_attribute", ""),
+                    source_value=r.get("source_value", ""),
+                    target_attribute=r.get("target_attribute", ""),
+                    target_value=r.get("target_value", ""),
+                    relationship_type=r.get("relationship_type", "influences"),
+                    logical_constraint=r.get("logical_constraint", ""),
+                )
+                for r in resp.get("relationships", [])
+            ]
+        except Exception as e:
+            self.logger.error(f"relationship extraction failed: {e}")
+            return []
+
     # ------------------------------------------------------------------
-    # adaptive pipeline (set5) -- fused av-pair + profile extraction
+    # adaptive pipeline -- fused av-pair + profile extraction
     # ------------------------------------------------------------------
 
     def process_with_profile(
@@ -231,8 +289,8 @@ class OntologyConstructionAgent(BaseAgent):
         kws: List[str] = []
         lits: List[str] = []
         for av in getattr(ontology, "attribute_value_pairs", []):
-            for field in ("attribute", "value", "description"):
-                val = getattr(av, field, None)
+            for field_name in ("attribute", "value", "description"):
+                val = getattr(av, field_name, None)
                 if val and isinstance(val, str):
                     kws.extend(word_re.findall(val.lower()))
                     short = val.strip().lower()
@@ -246,7 +304,7 @@ class OntologyConstructionAgent(BaseAgent):
             text = ((doc.get("abstract") or "") + " " + (doc.get("title") or "")).lower()
             token_set = set(word_re.findall(text))
             kw_hits  = sum(1 for k in kws if k in token_set)
-            lit_hits = sum(1 for l in lits if l and l in text)
+            lit_hits = sum(1 for lit in lits if lit and lit in text)
             score    = kw_hits + 0.5 * lit_hits
             scored.append((score, idx, doc))
 
@@ -268,7 +326,7 @@ class OntologyConstructionAgent(BaseAgent):
           cen  -- centrality-weighted AV overlap (high-centrality pair hits count more)
 
         Returns list of (scores_dict, original_index, doc), in original doc order.
-        The list is NOT sorted — callers rebuild sorted order themselves so the
+        The list is NOT sorted -- callers rebuild sorted order themselves so the
         index mapping to the original docs list is stable.
         """
         word_re = re.compile(r"[a-z][a-z0-9\-]{1,}")
@@ -278,7 +336,6 @@ class OntologyConstructionAgent(BaseAgent):
         max_lex = max((s for s, _, _ in raw_lex), default=1.0) or 1.0
         lex_by_idx = {idx: s / max_lex for s, idx, _ in raw_lex}
 
-        # dim: dimension-specific signal keywords
         _DIM_KWS: Dict[str, List[str]] = {
             "spatial": [
                 "region", "area", "spatial", "geographic", "location",
@@ -301,7 +358,6 @@ class OntologyConstructionAgent(BaseAgent):
                 "uncertainty", "assessment",
             ],
         }
-        # only use dimensions that are actually meaningful for this question
         _DIM_THRESHOLD = 0.2
         dim_weights: Dict[str, float] = {}
         raw_weights = {
@@ -315,7 +371,6 @@ class OntologyConstructionAgent(BaseAgent):
                 dim_weights[dim] = w
         total_dim_weight = sum(dim_weights.values()) or 1.0
 
-        # cen: centrality-weighted AV overlap
         av_pairs = getattr(ontology, "attribute_value_pairs", [])
         total_centrality = sum(getattr(av, "centrality", 0.5) for av in av_pairs) or 1.0
 
@@ -326,18 +381,16 @@ class OntologyConstructionAgent(BaseAgent):
             ).lower()
             tokens = set(word_re.findall(text))
 
-            # dim score (only over active dimensions)
             if dim_weights:
                 dim_score = 0.0
                 for dim, weight in dim_weights.items():
                     hits = sum(1 for kw in _DIM_KWS[dim] if kw in tokens)
-                    presence = min(hits / 3.0, 1.0)  # saturates at 3 hits
+                    presence = min(hits / 3.0, 1.0)
                     dim_score += weight * presence
                 dim_score /= total_dim_weight
             else:
-                dim_score = 0.0  # no active dimensions for this question
+                dim_score = 0.0
 
-            # cen score
             cen_score = 0.0
             for av in av_pairs:
                 cent = getattr(av, "centrality", 0.5)
@@ -364,16 +417,11 @@ class OntologyConstructionAgent(BaseAgent):
         min_full: int,
         min_total: int,
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        """Rank docs by keyword overlap with ontology AV-pairs and split into
-        full / abstract / drop using min_full and min_total as cut-points.
+        """Rank docs by keyword overlap and split into full/abstract/drop.
 
-        Used as a fallback when the LLM filter fails or its response violates
-        the guardrail. Avoids the previous behaviour of returning all docs as
-        full, which defeats the purpose of filtering entirely.
-
-        If all scores are 0 (empty ontology / no AV-pairs), the ranking is
-        order-stable (first N docs become full), which is no worse than the
-        old all-full fallback but respects the budget.
+        Used as fallback when the LLM filter fails or violates guardrails.
+        If all scores are 0 (empty ontology), document order is used as
+        tiebreak -- no worse than the old all-full fallback but respects budget.
         """
         scored = self._lexical_score(docs, ontology)
 
@@ -381,7 +429,7 @@ class OntologyConstructionAgent(BaseAgent):
         if all_zero:
             self.logger.warning(
                 "filter_documents lexical_fallback: all scores are 0 "
-                "(empty ontology?) — using document order as tiebreak"
+                "(empty ontology?) -- using document order as tiebreak"
             )
 
         ranked = [doc for _, _, doc in scored]
@@ -409,10 +457,6 @@ class OntologyConstructionAgent(BaseAgent):
         Called only in abstracts evidence mode, where the full/abstract split
         is irrelevant (no PDF fetch either way) and the only thing that matters
         is the total number of docs available for refinement.
-
-        The promoted docs go into abstract_docs (not full_docs) so that the
-        rest of the pipeline never tries to fetch their PDFs even if evidence
-        mode changes later.
         """
         kept = len(full_docs) + len(abstract_docs)
         needed = min_keep - kept
@@ -443,34 +487,31 @@ class OntologyConstructionAgent(BaseAgent):
         """Hybrid semantic + LLM document relevance filter.
 
         Each document is scored on three pre-computed signals (lex, dim, cen)
-        derived from the ontology and question profile.  These scores are
-        forwarded to the LLM as orientation — the LLM reasons about what the
+        derived from the ontology and question profile. These scores are
+        forwarded to the LLM as orientation -- the LLM reasons about what the
         question genuinely needs and classifies each doc as:
 
-          "full"     -- fetch PDF + excerpts (LLM is confident this doc
-                        contains specific evidence the question needs)
-          "abstract" -- abstract only; default when relevance is plausible
-                        but depth is uncertain
+          "full"     -- fetch PDF + excerpts
+          "abstract" -- abstract only; DEFAULT when relevance is plausible
           "drop"     -- clearly off-topic; would introduce noise
 
         The LLM is steered by a tier description (from rule_hit) that
-        characterises how much evidence depth this question type typically
-        needs.  It must justify each drop with a one-sentence reason.
+        characterises how much evidence depth this question type needs.
+        It must justify each classification with a one-sentence reason.
 
         Guardrail floors (safety net, invisible to LLM):
-          min_full  : 2 for simple/definitional, 3 for all others
+          min_full  : 2 for simple/definitional tiers, 3 for all others
           min_total : always max(min_keep, n//3)
 
         Abstracts top-up (evidence_mode == "abstracts" only):
-          After LLM or lexical path resolves, if kept pool < min_keep,
-          best-scoring dropped docs are re-promoted via lexical ranking.
+          After filter resolves, if kept pool < min_keep, best-scoring
+          dropped docs are re-promoted via lexical ranking.
 
         Returns (full_docs, abstract_docs, drop_docs).
         """
         if not docs:
             return [], [], []
 
-        # top-5 ontology concepts by centrality, for the filter prompt
         pairs = sorted(
             getattr(ontology, "attribute_value_pairs", []),
             key=lambda av: getattr(av, "centrality", 0.0),
@@ -483,13 +524,14 @@ class OntologyConstructionAgent(BaseAgent):
         )
 
         n = len(docs)
-        is_simple = getattr(profile, "question_type", "mechanism") in ("definition", "factual")
+        # is_simple drives min_full=2 (fewer PDFs for shallow questions).
+        # Checked against rule_hit (reliable) rather than question_type
+        # to avoid Pydantic Literal validation noise on profiler edge cases.
+        is_simple = rule_hit in _SIMPLE_RULE_HITS
         min_full  = 2 if is_simple else 3
         min_total = max(min_keep, n // 3)
 
-        # semantic scores per doc
         sem_scores = self._semantic_score(docs, ontology, profile)
-        # build doc list with scores, in original index order
         doc_lines: List[str] = []
         for scores, idx, doc in sorted(sem_scores, key=lambda t: t[1]):
             title = docs[idx].get("title", "Unknown")
@@ -500,23 +542,21 @@ class OntologyConstructionAgent(BaseAgent):
             )
         doc_list = "\n".join(doc_lines)
 
-        # active profile dimensions (only those >= 0.2, to avoid noise)
         _active_dims = {
-            "spatial":      getattr(profile, "spatial_specificity", 0.1),
-            "temporal":     getattr(profile, "temporal_specificity", 0.1),
-            "quantitative": getattr(profile, "quantitativity", 0.3),
+            "spatial":        getattr(profile, "spatial_specificity", 0.1),
+            "temporal":       getattr(profile, "temporal_specificity", 0.1),
+            "quantitative":   getattr(profile, "quantitativity", 0.3),
             "methodological": getattr(profile, "methodological_depth", 0.1),
         }
         active_dim_parts = [
             f"{dim}={val:.2f}" for dim, val in _active_dims.items() if val >= 0.2
         ]
         profile_dim_line = (
-            "Active question dimensions (≥0.2): " + ", ".join(active_dim_parts)
+            "Active question dimensions (>=0.2): " + ", ".join(active_dim_parts)
             if active_dim_parts
-            else "No strongly active dimensions — treat as a general conceptual question."
+            else "No strongly active dimensions -- treat as a general conceptual question."
         )
 
-        # tier description
         tier_label, tier_desc = _TIER_GUIDANCE.get(rule_hit, _TIER_GUIDANCE_DEFAULT)
 
         prompt = (
@@ -526,32 +566,32 @@ class OntologyConstructionAgent(BaseAgent):
             f"{profile_dim_line}\n\n"
             f"Routing tier: {rule_hit} ({tier_label})\n"
             f"{tier_desc}\n\n"
-            f"Three pre-computed relevance signals are shown for each document (all 0–1):\n"
-            f"  lex — vocabulary overlap between title/abstract and the ontology concepts above\n"
-            f"  dim — how well the abstract addresses the question's active dimensions\n"
-            f"        (spatial coverage, temporal scope, quantitative data, methodology)\n"
-            f"  cen — how strongly the abstract addresses the highest-centrality concepts\n\n"
+            f"Three pre-computed relevance signals are shown for each document (all 0-1):\n"
+            f"  lex -- vocabulary overlap between title/abstract and the ontology concepts above\n"
+            f"  dim -- how well the abstract addresses the question's active dimensions\n"
+            f"         (spatial coverage, temporal scope, quantitative data, methodology)\n"
+            f"  cen -- how strongly the abstract addresses the highest-centrality concepts\n\n"
             f"These scores are orientation, not verdicts. Use them to form a hypothesis\n"
             f"about each paper, then apply your judgment:\n"
             f"  - A paper can score low yet be foundational to the question.\n"
             f"  - A paper can score high on shared vocabulary while being off-topic.\n\n"
             f"Classify each document as exactly one of:\n"
-            f'  "abstract" — DEFAULT. Use when the paper is plausibly relevant or provides\n'
+            f'  "abstract" -- DEFAULT. Use when the paper is plausibly relevant or provides\n'
             f"               supporting context, but you are not confident the full text\n"
             f"               would add specific evidence beyond what the abstract reveals.\n"
-            f'  "full"     — Use only when you are confident that:\n'
+            f'  "full"     -- Use only when you are confident that:\n'
             f"               (a) this paper likely contains specific data, methods, or\n"
             f"                   arguments that directly address what the question asks, AND\n"
             f"               (b) that depth of specificity is what this question's tier needs.\n"
             f"               High lex + cen together is a strong signal; tier-1/def questions\n"
             f"               need very few full papers.\n"
-            f'  "drop"     — Use only when the paper would introduce noise: it shares\n'
+            f'  "drop"     -- Use only when the paper would introduce noise: it shares\n'
             f"               vocabulary with the question but addresses a clearly different\n"
             f"               phenomenon, domain, or application context.\n"
             f"               When in doubt between 'drop' and 'abstract', choose 'abstract'.\n\n"
             f"For each document, provide a one-sentence reason for your classification.\n"
-            f"This is used for pipeline debugging and thesis evaluation — be specific.\n\n"
-            f"Hard constraints (safety net — do not target these as goals):\n"
+            f"This is used for pipeline debugging and thesis evaluation -- be specific.\n\n"
+            f"Hard constraints (safety net -- do not target these as goals):\n"
             f'  - At least {min_full} "full" classifications required.\n'
             f'  - At least {min_total} combined "full"+"abstract" required.\n\n'
             f"Documents (with pre-computed scores):\n{doc_list}\n\n"
@@ -575,7 +615,7 @@ class OntologyConstructionAgent(BaseAgent):
             else:
                 raise ValueError(f"unexpected llm response type: {type(raw)}")
 
-            # support both new format {"documents": [...]} and legacy {"classifications": [...]}
+            # support new format {"documents": [...]} and legacy {"classifications": [...]}
             if "documents" in data:
                 entries = data["documents"]
                 if not entries:
@@ -585,18 +625,15 @@ class OntologyConstructionAgent(BaseAgent):
                         f"documents count {len(entries)} != doc count {n}"
                     )
                 classifications = []
-                for e in entries:
+                for i, e in enumerate(entries):
                     c = e.get("classification", "abstract")
                     if c not in ("full", "abstract", "drop"):
                         c = "abstract"
                     classifications.append(c)
-                    reason = e.get("reason", "")
                     self.logger.debug(
-                        "filter doc[%d] -> %s | %s",
-                        entries.index(e) + 1, c, reason,
+                        "filter doc[%d] -> %s | %s", i + 1, c, e.get("reason", "")
                     )
             elif "classifications" in data:
-                # legacy flat format fallback
                 classifications = data["classifications"]
                 if not classifications:
                     raise ValueError("LLM returned empty classifications list")
@@ -605,7 +642,9 @@ class OntologyConstructionAgent(BaseAgent):
                         f"classification count {len(classifications)} != doc count {n}"
                     )
             else:
-                raise ValueError("LLM response missing both 'documents' and 'classifications' keys")
+                raise ValueError(
+                    "LLM response missing both 'documents' and 'classifications' keys"
+                )
 
             n_full  = classifications.count("full")
             n_total = n_full + classifications.count("abstract")
@@ -617,7 +656,7 @@ class OntologyConstructionAgent(BaseAgent):
 
         except Exception as exc:
             self.logger.warning(
-                "filter_documents: %s — falling back to lexical ranking", exc
+                "filter_documents: %s -- falling back to lexical ranking", exc
             )
             full_docs, abstract_docs, drop_docs = self._lexical_fallback(
                 docs, ontology, min_full, min_total
@@ -645,5 +684,5 @@ class OntologyConstructionAgent(BaseAgent):
         return full_docs, abstract_docs, drop_docs
 
 
-# backward-compat alias used by pipeline.py
-OntologyAgent = OntologyConstructionAgent
+# backward-compat alias (pre-refactor name, still referenced in some test files)
+OntologyConstructionAgent = OntologyAgent
