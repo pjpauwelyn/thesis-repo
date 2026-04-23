@@ -1,7 +1,7 @@
-"""pipeline — routes per-question to the right evidence mode + model.
+"""pipeline — routes each question to the right evidence mode and model.
 
-routing is determined at runtime by the policy router based on the question
-profile. zero changes to exp 1-4 pipelines.
+Routing is determined at runtime by the policy router based on the
+question profile.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ class Pipeline:
         docs: Optional[List[Dict[str, Any]]] = None,
         aql_results_str: Optional[str] = None,
     ) -> Tuple[DynamicOntology, QuestionProfile, PipelineConfig, Dict[str, Any]]:
-        """extended dry-run: profile + route + document filter, no generation."""
+        """Profile + route + document filter without generation."""
         ontology, profile, cfg = self.profile_and_route(question)
         filter_summary: Dict[str, Any] = {"n_total": 0}
         if docs:
@@ -99,16 +99,15 @@ class Pipeline:
         aql_params: Optional[Dict[str, Any]] = None,
         precomputed_route: Optional[Tuple[DynamicOntology, QuestionProfile, PipelineConfig]] = None,
     ) -> PipelineResult:
-        """run the full pipeline for one question.
+        """Run the full pipeline for one question.
 
-        retrieval order:
-          1. live ArangoDB KG  (if ARANGO_ROOT_PASSWORD is set)
-          2. pre-parsed docs   (if caller already passed docs list)
-          3. aql_results_str   (CSV fallback, JSON first then ast.literal_eval)
+        Retrieval order:
+          1. Live ArangoDB KG  (if ARANGO_ROOT_PASSWORD is set)
+          2. Pre-parsed docs   (if caller already passed a docs list)
+          3. aql_results_str   (CSV fallback, JSON then ast.literal_eval)
 
-        precomputed_route: if phase3_parallel (or any caller) already ran
-          profile_and_route() to choose the semaphore, pass the result here
-          to skip a redundant LLM call.
+        Pass precomputed_route to skip a redundant profiling LLM call when
+        the caller has already run profile_and_route().
         """
         from core.agents.generation_agent import GenerationAgent
         from core.agents.refinement_agent_abstracts import RefinementAgentAbstracts
@@ -173,13 +172,11 @@ class Pipeline:
         full_docs: List[Dict] = list(docs)
         abstract_docs: List[Dict] = []
         drop_docs: List[Dict] = []
-        filter_ran = False
 
         if len(docs) > cfg.doc_filter_min_keep:
             full_docs, abstract_docs, drop_docs = self._filter_documents(
                 docs, ontology, profile, question, cfg
             )
-            filter_ran = True
             log.info(
                 "filter: full=%d abstract=%d drop=%d (of %d)",
                 len(full_docs), len(abstract_docs), len(drop_docs), len(docs),
@@ -211,7 +208,6 @@ class Pipeline:
         )
 
         if cfg.evidence_mode == "abstracts":
-            from core.agents.refinement_agent_abstracts import RefinementAgentAbstracts
             refine_agent = RefinementAgentAbstracts(
                 refine_llm,
                 prompt_dir=str(self._prompts_root / "refinement"),
@@ -308,7 +304,6 @@ class Pipeline:
         return self._indexer
 
     def _llm(self, model: str, temperature: float, max_tokens: int = 1400, timeout_s: Optional[int] = None):
-        """return a cached llm wrapper for the given model/temperature combo."""
         from core.utils.helpers import get_llm_model
         key = (model, temperature, max_tokens, timeout_s or 0)
         if key not in self._llm_cache:
@@ -426,5 +421,5 @@ class Pipeline:
         return " ".join(parts)
 
 
-# backward-compat alias so existing callers of AdaptivePipeline keep working
+# backward-compat alias
 AdaptivePipeline = Pipeline

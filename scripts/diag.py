@@ -279,14 +279,10 @@ def phase2_filter_probe(
         print(f"  doc_filter_min_keep: {cfg.doc_filter_min_keep}")
         print(f"\n  Profile:")
         print(f"    question_type      = {profile.question_type}")
-        print(f"    complexity         = {getattr(profile,'complexity',None):.2f}"
-              if profile.complexity is not None else "    complexity         = None")
-        print(f"    quantitativity     = {getattr(profile,'quantitativity',None):.2f}"
-              if profile.quantitativity is not None else "    quantitativity     = None")
-        print(f"    spatial_specificity= {getattr(profile,'spatial_specificity',None):.2f}"
-              if profile.spatial_specificity is not None else "    spatial_specificity= None")
+        print(f"    complexity         = {profile.complexity:.2f}" if profile.complexity is not None else "    complexity         = None")
+        print(f"    quantitativity     = {profile.quantitativity:.2f}" if profile.quantitativity is not None else "    quantitativity     = None")
+        print(f"    spatial_specificity= {profile.spatial_specificity:.2f}" if profile.spatial_specificity is not None else "    spatial_specificity= None")
         print(f"    confidence         = {profile.confidence}")
-        print(f"    answer_shape       = {getattr(profile,'answer_shape','?')}")
 
         n_total    = filter_summary.get("n_total", len(docs))
         n_full_f   = filter_summary.get("n_full", 0)
@@ -385,4 +381,46 @@ def phase2_filter_probe(
                 full_docs, abstract_docs, excerpts, aql_lookup
             )
         except Exception as exc:
-            log.error
+            log.error("_render_documents_block failed: %s", exc, exc_info=True)
+            continue
+
+        print("\n[3] Refinement agent handoff probe ...")
+        try:
+            agent = RefinementAgent1PassFullText(ref_llm)
+            agent.set_documents_block(documents_block)
+            print("  ✓  set_documents_block succeeded")
+            print(_summarise_documents_block(documents_block))
+        except Exception as exc:
+            log.error("Refinement agent handoff failed: %s", exc, exc_info=True)
+
+    print(f"\n{'='*72}")
+    print("Probe complete.")
+    print(f"{'='*72}\n")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="pipeline diagnostic")
+    ap.add_argument("--phase", type=int, choices=[1, 2], default=None,
+                    help="run only phase 1 (cache audit) or phase 2 (filter probe)")
+    ap.add_argument("--cache-dir", default=str(DEFAULT_CACHE_DIR))
+    ap.add_argument("--csv", default=str(DEFAULT_CSV))
+    ap.add_argument("--row", type=int, default=None,
+                    help="specific CSV row index (0-based) for phase 2")
+    args = ap.parse_args()
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+    cache_dir = Path(args.cache_dir)
+    csv_path  = Path(args.csv)
+
+    if args.phase == 1 or args.phase is None:
+        phase1_cache_audit(cache_dir)
+    if args.phase == 2 or args.phase is None:
+        if not csv_path.exists():
+            log.error("CSV not found: %s", csv_path)
+            sys.exit(1)
+        phase2_filter_probe(cache_dir, csv_path, args.row)
+
+
+if __name__ == "__main__":
+    main()

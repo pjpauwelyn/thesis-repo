@@ -1,19 +1,14 @@
 """refinement agent variant that injects full-text excerpts into the prompt.
 
-Reuses all of RefinementAgent1PassRefined (prompt building, ontology
-formatting, reference enrichment).  Overrides only the prompt filename and
+Reuses all of RefinementAgentAbstracts (prompt building, ontology
+formatting, reference enrichment). Overrides only the prompt filename and
 the prompt-construction step so it can fill either:
-  - the new {documents_block} placeholder  (documents_block path, v2)
+  - the {documents_block} placeholder  (v2, primary path)
   - the legacy {aql_results}/{fulltext_excerpts} placeholders (backwards compat)
 
-Hard-fail policy
-----------------
-This agent NEVER silently falls back to returning a placeholder string.
-If the LLM call fails (None/empty response) or the documents_block is empty,
-a RuntimeError is raised immediately so AdaptivePipeline.run() can propagate
-the failure to the caller (smoke test / phase3_parallel retry loop).
-There is no circumstance under which generation should proceed without a
-grounded, non-empty refined context.
+Hard-fail policy: this agent never silently falls back to a placeholder
+string. If the LLM call fails or the documents_block is empty, a
+RuntimeError is raised so Pipeline.run() can propagate the failure.
 """
 
 from __future__ import annotations
@@ -21,38 +16,32 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.agents.refinement_agent_1pass_refined import RefinementAgent1PassRefined
+from core.agents.refinement_agent_abstracts import RefinementAgentAbstracts
 from core.utils.data_models import DynamicOntology, RefinedContext
 from core.utils.helpers import setup_logging
 
 _debug_logger = logging.getLogger("raw_prompts")
 
 
-class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
-    """Drop-in replacement for the 1-pass refined agent that also consumes
+class RefinementAgent1PassFullText(RefinementAgentAbstracts):
+    """Drop-in replacement for RefinementAgentAbstracts that also consumes
     per-document full-text excerpts produced by FullTextIndexer."""
 
     PROMPT_FILENAME = "refinement_1pass_refined_fulltext.txt"
 
     def __init__(self, llm, prompt_dir: str = "prompts/refinement"):
         super().__init__(llm, prompt_dir=prompt_dir)
-        # override the name inherited from RefinementAgent1PassRefined so logs
-        # correctly identify this agent as RefinementAgent1PassFullText.
         self.name = "RefinementAgent1PassFullText"
         self.logger = setup_logging(self.name)
         self._current_excerpts_text: str = ""
         self._documents_block: Optional[str] = None
-
-    # ------------------------------------------------------------------
-    # runner hooks
-    # ------------------------------------------------------------------
 
     def set_excerpts(self, excerpts_text: str) -> None:
         """Called by the runner per question before process_context (legacy path)."""
         self._current_excerpts_text = excerpts_text or ""
 
     def set_documents_block(self, documents_block: str) -> None:
-        """Called by AdaptivePipeline.run() with the unified documents block (v2)."""
+        """Called by Pipeline.run() with the unified documents block (v2)."""
         if not documents_block or not documents_block.strip():
             raise RuntimeError(
                 "RefinementAgent1PassFullText.set_documents_block(): "
@@ -61,10 +50,6 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
                 "before calling the refinement agent."
             )
         self._documents_block = documents_block
-
-    # ------------------------------------------------------------------
-    # overridden prompt builder
-    # ------------------------------------------------------------------
 
     def _build_refined_prompt(
         self,
@@ -94,8 +79,6 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
         documents_text = self._format_documents_for_references(documents)
 
         if self._documents_block is not None:
-            # v2 path: unified documents_block replaces both aql_results and
-            # fulltext_excerpts slots.
             prompt = (
                 template
                 .replace("{query}", question)
@@ -107,7 +90,6 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
                 .replace("{incomplete_references}", "")
             )
         else:
-            # legacy path: fill {aql_results} and {fulltext_excerpts} as before
             excerpts_text = self._current_excerpts_text or (
                 "No full-text excerpts available for this question (abstracts only)."
             )
@@ -124,10 +106,6 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
         _debug_logger.debug("fulltext refinement prompt head:\n%s", prompt[:500])
         return prompt, documents
 
-    # ------------------------------------------------------------------
-    # process_context: hard-fail on LLM error — no silent fallback
-    # ------------------------------------------------------------------
-
     def process_context(
         self,
         question: str,
@@ -137,13 +115,10 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
         aql_results_str: Optional[str] = None,
         context_filter: str = "full",
     ) -> RefinedContext:
-        # v2 path: documents_block is set; aql_results_str is None.
-        # _documents_block emptiness is already checked in set_documents_block().
         if self._documents_block is not None:
             prompt, documents = self._build_refined_prompt(
                 question, ontology, include_ontology, aql_results_str
             )
-            # _invoke_llm_text raises RuntimeError on None/empty — let it propagate.
             refined_text = self._invoke_llm_text(prompt)
             est_tokens = len(refined_text) // 4
             self.logger.info(
@@ -164,9 +139,6 @@ class RefinementAgent1PassFullText(RefinementAgent1PassRefined):
                 enriched_context=refined_text,
             )
 
-        # legacy path: delegate to parent.
-        # Parent's process_context() now also hard-fails on empty aql_results_str
-        # and on empty LLM response.
         return super().process_context(
             question=question,
             structured_context=structured_context,
