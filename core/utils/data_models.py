@@ -142,13 +142,10 @@ class PipelineConfig(BaseModel):
     system_prompt_modifier: str = ""
 
     # generation strategy
-    # True  = zero-shot draft -> context-grounded refinement
-    #         use for thin-context tiers: tier-1*, tier-m, fallback
-    #         draft adds structure when only abstracts/narrow excerpts available
-    # False = skip draft, straight context-grounded generation
-    #         use for rich-context tiers: tier-2a, tier-2b, tier-3
-    #         a zero-shot draft anchors the model to parametric memory and
-    #         fights grounding when full-text excerpts are already in context
+    # True  = zero-shot draft -> context-grounded refinement (tier-1*, tier-m, fallback)
+    #         adds structure when context is thin (abstracts / narrow excerpts)
+    # False = skip draft, straight context-grounded generation (tier-2*, tier-3)
+    #         prevents parametric-knowledge anchoring when rich full-text is available
     use_draft: bool = True
 
     # routing metadata

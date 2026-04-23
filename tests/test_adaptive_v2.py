@@ -143,6 +143,7 @@ def test_phase1_profiles() -> None:
                 "profile":    profile.model_dump(),
                 "tier":       cfg.rule_hit,
                 "confidence": profile.confidence,
+                "use_draft":  cfg.use_draft,
             }
             jf.write(json.dumps(record) + "\n")
 
@@ -157,7 +158,8 @@ def test_phase1_profiles() -> None:
                 f"quant={profile.quantitativity:.2f}  "
                 f"meth={profile.methodological_depth:.2f}  "
                 f"conf={conf_str}  "
-                f"tier={cfg.rule_hit}\n"
+                f"tier={cfg.rule_hit}  "
+                f"use_draft={cfg.use_draft}\n"
             )
 
         tf.write("\nTier distribution:\n")
@@ -282,13 +284,15 @@ def _pick_questions_by_tier(
     return selected
 
 
+@pytest.mark.timeout(480)
 def test_phase3_generation() -> None:
     """Run full pipeline on ~5 questions, one per tier where possible.
     Asserts: non-empty answer, valid rule_hit, answer length > 50 chars."""
     if not _ROWS:
         pytest.skip("no DLR CSV found")
 
-    target_counts = {"tier-1": 2, "tier-2": 2, "tier-3": 1}
+    # Use current tier names (tier-2a / tier-2b, not the stale tier-2 label)
+    target_counts = {"tier-1": 2, "tier-2a": 1, "tier-2b": 1, "tier-3": 1}
     questions = _pick_questions_by_tier(target_counts)
     if not questions:
         pytest.skip("could not select representative questions")
@@ -296,8 +300,8 @@ def test_phase3_generation() -> None:
     jsonl_path = OUTPUT_DIR / "phase3_answers.jsonl"
     txt_path   = OUTPUT_DIR / "phase3_answers_readable.txt"
 
-    valid_tiers = {"tier-1", "tier-2", "tier-2a", "tier-2b", "tier-3",
-                   "tier-m", "safety-tier3", "fallback"}
+    valid_tiers = {"tier-1", "tier-1-def", "tier-2", "tier-2a", "tier-2b",
+                   "tier-3", "tier-m", "safety-tier3", "fallback"}
 
     with open(jsonl_path, "w", encoding="utf-8") as jf, \
          open(txt_path,   "w", encoding="utf-8") as tf:
@@ -334,6 +338,7 @@ def test_phase3_generation() -> None:
                 "question":               question,
                 "expected_tier":          expected_tier,
                 "actual_tier":            ans.rule_hit,
+                "use_draft":              ans.pipeline_config.use_draft if ans.pipeline_config else None,
                 "answer":                 ans.answer,
                 "enriched_context_chars": len(ans.enriched_context),
                 "excerpt_stats":          ans.excerpt_stats,
@@ -344,7 +349,8 @@ def test_phase3_generation() -> None:
 
             tf.write("=" * 60 + "\n")
             tf.write(
-                f"Q{i} [expected={expected_tier} actual={ans.rule_hit}]: "
+                f"Q{i} [expected={expected_tier} actual={ans.rule_hit} "
+                f"use_draft={ans.pipeline_config.use_draft if ans.pipeline_config else '?'}]: "
                 f"{question}\n"
             )
             tf.write("-" * 60 + "\n")

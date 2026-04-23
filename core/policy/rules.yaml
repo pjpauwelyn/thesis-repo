@@ -1,4 +1,4 @@
-# adaptive routing rules (set5 -> v5)
+# adaptive routing rules (set5 → v5)
 #
 # evaluated top-to-bottom; first match wins.
 # the final fallback rule is always reached if nothing else matches.
@@ -9,19 +9,19 @@
 # refinement_model_name: refinement model (omit = use model_name)
 #
 # The profiler (OntologyConstructionAgent) and doc-filter are always
-# mistral-small-latest regardless of tier -- they are hardcoded in
+# mistral-small-latest regardless of tier — they are hardcoded in
 # adaptive_pipeline.py because they are fast structured-output tasks.
 #
 # Model escalation rationale
 # --------------------------
-# tier-1-def / tier-1 : abstracts + small -- definitional/factual or low
+# tier-1-def / tier-1 : abstracts + small — definitional/factual or low
 #   complexity; no PDF fetch needed, short output is sufficient.
-# tier-m              : medium everywhere -- mid-complexity catch-all.
-# tier-2a             : high quant standalone -- medium refinement for
+# tier-m              : medium everywhere — mid-complexity catch-all.
+# tier-2a             : high quant standalone — medium refinement for
 #   numeric extraction, small generation (short focused output).
-# tier-2b             : quant + focal -- medium refinement for numeric
+# tier-2b             : quant + focal — medium refinement for numeric
 #   fidelity from full-text; small generation.
-# tier-3              : complex mechanism/comparison -- medium refinement
+# tier-3              : complex mechanism/comparison — medium refinement
 #   + large generation for coherent 1400-token synthesis.
 #
 # Per-call timeouts (model-aware)
@@ -30,19 +30,19 @@
 # deadline for each individual LLM call.
 #
 # Measured baselines (Mistral API, Apr 2026):
-#   small  : TTFT ~0.3s,  ~130 tok/s  -> 700 tok ~6s   -> 60s ceiling
-#   medium : TTFT ~1.3s,  ~53 tok/s   -> 700 tok ~15s  -> 150s ceiling
-#   large  : TTFT ~30s,   ~47 tok/s   -> 1400 tok ~60s -> 360s ceiling
+#   small  : TTFT ~0.3s,  ~130 tok/s  → 700 tok ≈ 6s   → 60s ceiling
+#   medium : TTFT ~1.3s,  ~53 tok/s   → 700 tok ≈ 15s  → 150s ceiling
+#   large  : TTFT ~30s,   ~47 tok/s   → 1400 tok ≈ 60s → 360s ceiling
 #
 # NOTE: safety-tier3 (confidence < 0.60) is handled directly in router.py
 # and does NOT appear here. Its timeouts match tier-3 (large generation).
 #
 # Rule ordering rationale
 # -----------------------
-# tier-1-def  : first -- catch definitional/factual + low-quant before
+# tier-1-def  : first — catch definitional/factual + low-quant before
 #               any complexity check fires (guards against profiler drift
 #               that scores definitions at 0.38-0.45 instead of <0.35).
-# tier-2b     : before tier-3 -- quant-focal beats complex-type so a
+# tier-2b     : before tier-3 — quant-focal beats complex-type so a
 #               high-quant focal question uses medium+narrow not large.
 # tier-3      : complex type check.
 # tier-2a     : standalone quant catch.
@@ -50,14 +50,6 @@
 # tier-1      : low complexity <0.40 (ceiling raised from 0.35 to absorb
 #               profiler drift zone 0.35-0.40).
 # fallback    : always: true.
-#
-# use_draft rationale
-# -------------------
-# True  (tier-1*, tier-m, fallback): thin context (abstracts / narrow
-#   excerpts) -- zero-shot draft adds structure before context grounding.
-# False (tier-2a, tier-2b, tier-3): rich full-text excerpts in context --
-#   a zero-shot draft anchors the model to parametric memory and fights
-#   grounding; skip draft and go straight to context-grounded generation.
 
 rules:
 
@@ -134,7 +126,7 @@ rules:
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
       max_output_tokens:        1400
-      system_prompt_modifier:   "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' -- do not present it as a cited fact."
+      system_prompt_modifier:   "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' — do not present it as a cited fact."
       doc_filter_min_keep:      5
       scope_filter:             false
       synthesis_mode:           homogeneous
