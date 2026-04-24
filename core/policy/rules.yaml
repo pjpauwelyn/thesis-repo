@@ -17,12 +17,12 @@
 # tier-1-def / tier-1 : abstracts + small — definitional/factual or low
 #   complexity; no PDF fetch needed, short output is sufficient.
 # tier-m              : medium everywhere — mid-complexity catch-all.
-# tier-2a             : high quant standalone — medium refinement for
-#   numeric extraction, small generation (short focused output).
-# tier-2b             : quant + focal — medium refinement for numeric
-#   fidelity from full-text; small generation.
-# tier-3              : complex mechanism/comparison — medium refinement
-#   + large generation for coherent 1400-token synthesis.
+# tier-2a             : high quant standalone — medium refinement + medium
+#   generation for numeric extraction and focused synthesis.
+# tier-2b             : quant + focal — large refinement for spatial/temporal
+#   numeric fidelity; medium generation.
+# tier-3              : complex mechanism/comparison — large refinement
+#   + large generation (OpenRouter) for coherent 1400-token synthesis.
 #
 # Per-call timeouts (model-aware)
 # --------------------------------
@@ -35,7 +35,7 @@
 #   large  : TTFT ~30s,   ~47 tok/s   → 1400 tok ≈ 60s → 360s ceiling
 #
 # NOTE: safety-tier3 (confidence < 0.60) is handled directly in router.py
-# and does NOT appear here. Its timeouts match tier-3 (large generation).
+# and does NOT appear here. Its timeouts match tier-3 (large everywhere).
 #
 # Rule ordering rationale
 # -----------------------
@@ -43,7 +43,8 @@
 #               any complexity check fires (guards against profiler drift
 #               that scores definitions at 0.38-0.45 instead of <0.35).
 # tier-2b     : before tier-3 — quant-focal beats complex-type so a
-#               high-quant focal question uses medium+narrow not large.
+#               high-quant focal question uses large-refine+medium-gen
+#               rather than large everywhere.
 # tier-3      : complex type check.
 # tier-2a     : standalone quant catch.
 # tier-m      : mid-complexity catch-all [0.40, 0.60).
@@ -83,6 +84,10 @@ rules:
       reason:                   "definitional/factual + low quant -- abstracts + small (drift guard)"
 
 # tier-2b: quantitative + spatially or temporally focal
+# Large refinement model: spatial/temporal numeric fidelity requires careful
+# grounding of measured values to the named region/period in the evidence.
+# System prompt is a light nudge — not a hard constraint — so the model can
+# still use supporting cross-regional context when it is the only evidence.
   - name: tier_2b
     when:
       quantitativity: {ge: 0.60}
@@ -90,8 +95,8 @@ rules:
         spatial_specificity:  {ge: 0.60}
         temporal_specificity: {ge: 0.60}
     config:
-      model_name:               mistral-small-latest
-      refinement_model_name:    mistral-medium-latest
+      model_name:               mistral-medium-latest
+      refinement_model_name:    mistralai/mistral-large
       evidence_mode:            excerpts_narrow
       top_k_per_doc:            6
       per_doc_budget:           6000
@@ -100,24 +105,26 @@ rules:
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
       max_output_tokens:        700
-      system_prompt_modifier:   "Focus your synthesis strictly on the specific region and/or time period named in the question. Do not extrapolate findings to other regions or periods."
-      doc_filter_min_keep:      5
+      system_prompt_modifier:   "Pay particular attention to findings specific to the geographic region and time period named in the question. Supporting context from other regions is acceptable when it is the only available evidence."
+      doc_filter_min_keep:      6
       scope_filter:             true
       synthesis_mode:           focused
-      timeout_refine_s:         150
-      timeout_generate_s:       60
+      timeout_refine_s:         360
+      timeout_generate_s:       150
       use_draft:                false
       rule_hit:                 tier-2b
-      reason:                   "quantitative focal -- medium refinement for numeric fidelity, small generation"
+      reason:                   "quantitative focal -- large refinement for spatial/temporal fidelity, medium generation"
 
 # tier-3: complex mechanism / method-eval / comparison
+# Large model for both agents: refinement must parse dense full-text evidence
+# and generation must synthesise coherent 1400-token responses.
   - name: tier_3
     when:
       complexity: {ge: 0.60}
       question_type: {in: [mechanism, method_eval, comparison]}
     config:
       model_name:               mistralai/mistral-large
-      refinement_model_name:    mistral-medium-latest
+      refinement_model_name:    mistralai/mistral-large
       evidence_mode:            excerpts_full
       top_k_per_doc:            6
       per_doc_budget:           6000
@@ -127,21 +134,21 @@ rules:
       gen_context_cap:          307200
       max_output_tokens:        1400
       system_prompt_modifier:   "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' — do not present it as a cited fact."
-      doc_filter_min_keep:      5
+      doc_filter_min_keep:      7
       scope_filter:             false
       synthesis_mode:           homogeneous
-      timeout_refine_s:         150
+      timeout_refine_s:         360
       timeout_generate_s:       360
       use_draft:                false
       rule_hit:                 tier-3
-      reason:                   "complex mechanism/comparison -- medium refinement + large generation"
+      reason:                   "complex mechanism/comparison -- large refinement + large generation"
 
-# tier-2a: standalone high quantitativity
+# tier-2a: standalone high quantitativity (no strong spatial/temporal focus)
   - name: tier_2a
     when:
       quantitativity: {ge: 0.55}
     config:
-      model_name:               mistral-small-latest
+      model_name:               mistral-medium-latest
       refinement_model_name:    mistral-medium-latest
       evidence_mode:            excerpts_narrow
       top_k_per_doc:            5
@@ -151,15 +158,15 @@ rules:
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
       max_output_tokens:        700
-      system_prompt_modifier:   "Answer concisely and directly. Lead with the core finding in the first sentence. Use at most 2 short sections after the opening paragraph. Do not add an Implications section unless the question explicitly asks for one."
-      doc_filter_min_keep:      4
+      system_prompt_modifier:   "Answer concisely and directly. Lead with the core finding in the first sentence. Verify every numeric claim against the provided context before stating it."
+      doc_filter_min_keep:      6
       scope_filter:             false
       synthesis_mode:           homogeneous
       timeout_refine_s:         150
-      timeout_generate_s:       60
+      timeout_generate_s:       150
       use_draft:                false
       rule_hit:                 tier-2a
-      reason:                   "high quantitativity -- medium refinement for numeric extraction, small generation"
+      reason:                   "high quantitativity -- medium refinement + medium generation for numeric extraction"
 
 # tier-m: mid-complexity catch-all [0.40, 0.60)
 # Lower bound raised from 0.35 to 0.40 to match the raised tier-1 ceiling.
@@ -178,7 +185,7 @@ rules:
       gen_context_cap:          307200
       max_output_tokens:        700
       system_prompt_modifier:   ""
-      doc_filter_min_keep:      5
+      doc_filter_min_keep:      6
       scope_filter:             false
       synthesis_mode:           homogeneous
       timeout_refine_s:         150
@@ -213,6 +220,9 @@ rules:
       reason:                   "simple/low-complexity (<0.40) -- abstracts + small everywhere"
 
 # fallback: conservative default (no rule matched)
+# Assumes a simple question type since no profile signal was strong enough
+# to match any rule. Small model + abstracts. Wide doc keep net because
+# we don't know what the question needs.
   - name: fallback
     when:
       always: true
@@ -223,11 +233,11 @@ rules:
       per_doc_budget:           0
       global_budget:            0
       refinement_prompt:        refinement_1pass_refined_exp4.txt
-      generation_prompt:        generation_prompt_exp4.txt
+      generation_prompt:        generation_direct.txt
       gen_context_cap:          307200
       max_output_tokens:        700
       system_prompt_modifier:   ""
-      doc_filter_min_keep:      4
+      doc_filter_min_keep:      6
       scope_filter:             false
       synthesis_mode:           homogeneous
       timeout_refine_s:         60
