@@ -81,11 +81,22 @@ class Pipeline:
             prompt_dir=str(self._prompts_root / "ontology"),
         )
         ontology, profile = ont_agent.process_with_profile(question)
+
+        # Single automatic retry on profiler parse failure.
+        # confidence == 0.0 is the sentinel OntologyAgent sets when the LLM
+        # returns malformed JSON.  One retry is cheap (small model, fast) and
+        # recovers the majority of transient JSON-wrapping blips without
+        # touching the failure counter.  If the retry also fails the counter
+        # is incremented below and safety-tier3 fallback applies as before.
+        if profile.confidence is not None and profile.confidence == 0.0:
+            log.warning(
+                "profiler parse failure on first attempt — retrying once for '%s...'",
+                question[:60],
+            )
+            ontology, profile = ont_agent.process_with_profile(question)
+
         cfg = self.router.select(profile)
 
-        # Track questions where the profiler returned malformed JSON.
-        # confidence == 0.0 is the sentinel that OntologyAgent sets on parse
-        # failure before falling back to the safety-tier3 catch-all rule.
         if profile.confidence is not None and profile.confidence == 0.0:
             with self._counter_lock:
                 self._profiler_parse_failures += 1
@@ -140,6 +151,22 @@ class Pipeline:
 
         Pass precomputed_route to skip a redundant profiling LLM call when
         the caller has already run profile_and_route().
+
+        Failure contract
+        ----------------
+        Hard RuntimeError (re-raised, stops the question):
+          - No documents available at all (no evidence, nothing to generate).
+          - Context length exceeded during refinement or generation (the prompt
+            is too large — this is a code/config bug that must be fixed, not
+            silently swallowed; answer quality would be degraded).
+          - Abstract fallback also empty (no usable text anywhere).
+
+        Soft failure (returns PipelineResult with answer=""):
+          - Generation LLM returns None after exhausted retries (transient API
+            outage or persistent rate-limit).  Worker stays alive; caller /
+            test harness records the empty answer and continues.
+          - Refinement produces empty context and abstract fallback succeeds
+            (generation continues on raw abstracts with a WARNING).
         """
         from core.agents.generation_agent import GenerationAgent
         from core.agents.refinement_agent_abstracts import RefinementAgentAbstracts
@@ -254,44 +281,80 @@ class Pipeline:
         )
 
         t0 = time.perf_counter()
-        if cfg.evidence_mode == "abstracts":
-            refine_agent = RefinementAgentAbstracts(
-                refine_llm,
-                prompt_dir=str(self._prompts_root / "refinement"),
+        try:
+            if cfg.evidence_mode == "abstracts":
+                refine_agent = RefinementAgentAbstracts(
+                    refine_llm,
+                    prompt_dir=str(self._prompts_root / "refinement"),
+                )
+                query_hint = self._build_query_hint(question, profile)
+                refined = refine_agent.process_context(
+                    question=query_hint,
+                    structured_context="",
+                    ontology=ontology,
+                    include_ontology=True,
+                    aql_results_str=aql_results_str,
+                    context_filter="full",
+                )
+            else:
+                refine_agent = RefinementAgent1PassFullText(
+                    refine_llm,
+                    prompt_dir=str(self._prompts_root / "refinement"),
+                )
+                refine_agent.set_documents_block(documents_block)
+                query_hint = self._build_query_hint(question, profile)
+                refined = refine_agent.process_context(
+                    question=query_hint,
+                    structured_context="",
+                    ontology=ontology,
+                    include_ontology=True,
+                    aql_results_str=None,
+                    context_filter="full",
+                )
+        except Exception as refine_exc:
+            refine_msg = str(refine_exc).lower()
+            # Context overload is a hard config/code bug — re-raise immediately.
+            # Continuing would produce a truncated, quality-degraded answer.
+            if "context length exceeded" in refine_msg:
+                raise RuntimeError(
+                    f"Pipeline.run(): context length exceeded during refinement for "
+                    f"question '{question[:80]}' (rule={cfg.rule_hit}, "
+                    f"model={cfg.refinement_model_name or cfg.model_name}). "
+                    "Reduce per_doc_budget / global_budget in rules.yaml or "
+                    "switch to a larger context model."
+                ) from refine_exc
+            # All other refinement exceptions: log and fall through to abstract fallback.
+            log.error(
+                "refinement raised an exception for '%s...' (rule=%s): %s — "
+                "attempting abstract fallback",
+                question[:60], cfg.rule_hit, refine_exc,
             )
-            query_hint = self._build_query_hint(question, profile)
-            refined = refine_agent.process_context(
-                question=query_hint,
-                structured_context="",
-                ontology=ontology,
-                include_ontology=True,
-                aql_results_str=aql_results_str,
-                context_filter="full",
-            )
-        else:
-            refine_agent = RefinementAgent1PassFullText(
-                refine_llm,
-                prompt_dir=str(self._prompts_root / "refinement"),
-            )
-            refine_agent.set_documents_block(documents_block)
-            query_hint = self._build_query_hint(question, profile)
-            refined = refine_agent.process_context(
-                question=query_hint,
-                structured_context="",
-                ontology=ontology,
-                include_ontology=True,
-                aql_results_str=None,
-                context_filter="full",
-            )
+            refined = None
 
-        enriched_context = refined.enriched_context or ""
+        enriched_context = (refined.enriched_context or "") if refined is not None else ""
         log_refinement(log, enriched_context, elapsed=time.perf_counter() - t0)
 
         if not enriched_context.strip():
-            raise RuntimeError(
-                f"Pipeline.run(): refinement produced empty enriched_context for "
-                f"question '{question[:80]}'. Aborting generation."
+            # Refinement returned empty context (LLM call failed or produced
+            # nothing).  Fall back to concatenated raw abstracts so generation
+            # can still produce a partial answer rather than crashing the worker.
+            fallback_ctx = "\n\n".join(
+                d.get("abstract", "") for d in (full_docs + abstract_docs)
+                if d.get("abstract", "").strip()
             )
+            if not fallback_ctx.strip():
+                raise RuntimeError(
+                    f"Pipeline.run(): refinement produced empty enriched_context and no "
+                    f"abstract fallback available for question '{question[:80]}'. "
+                    "Aborting generation."
+                )
+            log.warning(
+                "refinement returned empty context for '%s...' (rule=%s) — "
+                "falling back to %d raw abstracts for generation",
+                question[:60], cfg.rule_hit,
+                len([d for d in (full_docs + abstract_docs) if d.get("abstract", "").strip()]),
+            )
+            enriched_context = fallback_ctx
 
         # -- 6. generation ----------------------------------------------------
         gen_llm = self._llm(
@@ -304,16 +367,54 @@ class Pipeline:
             prompt_dir=str(self._prompts_root / "generation"),
         )
         t0 = time.perf_counter()
-        answer_obj = gen_agent.generate(
-            question=question,
-            text_context=enriched_context,
-            ontology=ontology,
-            context_cap=cfg.gen_context_cap,
-            max_output_tokens=cfg.max_output_tokens,
-            system_prompt=cfg.system_prompt_modifier,
-            use_draft=cfg.use_draft,
-        )
+        try:
+            answer_obj = gen_agent.generate(
+                question=question,
+                text_context=enriched_context,
+                ontology=ontology,
+                context_cap=cfg.gen_context_cap,
+                max_output_tokens=cfg.max_output_tokens,
+                system_prompt=cfg.system_prompt_modifier,
+                use_draft=cfg.use_draft,
+            )
+        except Exception as gen_exc:
+            gen_msg = str(gen_exc).lower()
+            # Context overload during generation — hard-fail, same rationale as
+            # refinement: truncated output would silently degrade answer quality.
+            if "context length exceeded" in gen_msg:
+                raise RuntimeError(
+                    f"Pipeline.run(): context length exceeded during generation for "
+                    f"question '{question[:80]}' (rule={cfg.rule_hit}, "
+                    f"model={cfg.model_name}). "
+                    "Reduce gen_context_cap or max_output_tokens in rules.yaml."
+                ) from gen_exc
+            log.error(
+                "generation raised an exception for '%s...' (rule=%s, model=%s): %s",
+                question[:60], cfg.rule_hit, cfg.model_name, gen_exc,
+            )
+            answer_obj = None
+
         log_generation(log, answer_obj, elapsed=time.perf_counter() - t0)
+
+        # Guard: generation LLM exhausted retries and returned None.
+        # Return an empty PipelineResult so parallel workers stay alive and the
+        # test harness can record the failure without killing the whole run.
+        if answer_obj is None or not getattr(answer_obj, "answer", "").strip():
+            log.error(
+                "generation returned no answer for '%s...' "
+                "(rule=%s, model=%s) — returning empty result",
+                question[:60], cfg.rule_hit, cfg.model_name,
+            )
+            return PipelineResult(
+                answer="",
+                rule_hit=cfg.rule_hit,
+                profile=profile,
+                pipeline_config=cfg,
+                enriched_context=enriched_context,
+                excerpt_stats=excerpt_stats,
+                kg_docs_used=len(full_docs) + len(abstract_docs),
+                kg_source=kg_source,
+            )
 
         # Log session profiler failure count after every question so operators
         # can spot misrouting early without waiting for the run to finish.
