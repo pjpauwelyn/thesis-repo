@@ -41,6 +41,7 @@ class Router:
             )
             return PipelineConfig(
                 model_name="mistral-large-latest",
+                refinement_model_name="mistral-large-latest",
                 evidence_mode="excerpts_full",
                 top_k_per_doc=10,
                 per_doc_budget=9000,
@@ -50,7 +51,12 @@ class Router:
                 gen_context_cap=_CONTEXT_CAP_CHARS,
                 max_output_tokens=1400,
                 system_prompt_modifier="",
-                doc_filter_min_keep=7,
+                doc_filter_min_keep=8,
+                scope_filter=False,
+                synthesis_mode="homogeneous",
+                timeout_refine_s=360,
+                timeout_generate_s=480,
+                use_draft=False,
                 rule_hit="safety-tier3",
                 reason=f"low/missing profiler confidence ({profile.confidence}) -> safety tier-3",
             )
@@ -72,7 +78,9 @@ class Router:
                 _log.info("router.select: matched rule '%s'", rule["name"])
                 return PipelineConfig(**rule["config"])
 
-        # no rule matched -- return the conservative fallback and warn loudly
+        # no rule matched -- yaml fallback (always: true) should have caught
+        # this, so reaching here is a rules.yaml misconfiguration. return a
+        # safe default and warn loudly.
         _log.warning(
             "router.select: NO rule matched for profile "
             "(type=%s complexity=%.2f quant=%.2f spatial=%.2f temporal=%.2f meth=%.2f) "
@@ -91,13 +99,18 @@ class Router:
             per_doc_budget=0,
             global_budget=0,
             refinement_prompt="refinement_1pass_refined_exp4.txt",
-            generation_prompt="generation_prompt_exp4.txt",
+            generation_prompt="generation_direct.txt",
             gen_context_cap=_CONTEXT_CAP_CHARS,
             max_output_tokens=700,
             system_prompt_modifier="",
-            doc_filter_min_keep=4,
+            doc_filter_min_keep=6,
+            scope_filter=False,
+            synthesis_mode="homogeneous",
+            timeout_refine_s=60,
+            timeout_generate_s=60,
+            use_draft=True,
             rule_hit="fallback",
-            reason="no rule matched -- conservative set2 default",
+            reason="no rule matched -- conservative fallback",
         )
 
     def _matches(self, when: Dict[str, Any], p: QuestionProfile) -> bool:
