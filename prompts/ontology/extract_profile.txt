@@ -39,6 +39,9 @@ For question_type "comparison" or "method_eval":
 
 For all other question types:
   - rank pairs by conceptual centrality to the question's core information need.
+  - Ensure at least one AV-pair directly names the phenomenon or concept stated in
+    the question as its primary attribute — do not only extract sub-processes or
+    downstream effects.
 
 ### scoring rubrics
 
