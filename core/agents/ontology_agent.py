@@ -80,6 +80,10 @@ _SIMPLE_RULE_HITS = frozenset({"tier-1", "tier-1-def"})
 
 _COMPARISON_TYPES = frozenset({"comparison", "method_eval"})
 
+# centrality threshold above which an av-pair value/attribute match in a doc
+# title is flagged as [title-match] in the prompt to help the llm decide full.
+_TITLE_MATCH_CENTRALITY = 0.65
+
 
 class OntologyAgent(BaseAgent):
     def __init__(self, llm, prompt_dir: str = "prompts/ontology"):
@@ -502,12 +506,30 @@ class OntologyAgent(BaseAgent):
             else "No strongly active dimensions — treat as a general conceptual question."
         )
 
-        # --- document list with sim scores, in original order ---
+        # --- build title-match set for high-centrality av-pairs ---
+        # a doc gets [title-match] in the listing if a high-centrality pair's
+        # value or attribute appears verbatim (case-insensitive) in its title.
+        # this gives the llm a concrete signal when breaking full/abstract ties.
+        high_cent_terms = [
+            t.strip().lower()
+            for av in av_pairs
+            if getattr(av, "centrality", 0.0) >= _TITLE_MATCH_CENTRALITY
+            for t in (getattr(av, "value", ""), getattr(av, "attribute", ""))
+            if t and len(t.strip()) >= 4
+        ]
+
+        # --- document list with sim scores + title-match flag ---
         doc_lines: List[str] = []
         for idx, doc in enumerate(docs):
             title = doc.get("title", "Unknown")
             sim = sim_by_idx.get(idx, 0.0)
-            doc_lines.append(f"{idx + 1}. {title}\n   sim={sim:.3f}")
+            title_lower = title.lower()
+            flag = (
+                " [title-match]"
+                if any(term in title_lower for term in high_cent_terms)
+                else ""
+            )
+            doc_lines.append(f"{idx + 1}. {title}{flag}\n   sim={sim:.3f}")
         doc_list = "\n".join(doc_lines)
 
         # --- tier guidance ---
@@ -540,10 +562,15 @@ class OntologyAgent(BaseAgent):
             f"{comparison_block}\n"
             f"Ontology AV-pairs (all pairs, ranked by centrality):\n{ontology_lines}\n\n"
             f"{profile_dim_line}\n\n"
-            f"Each document has a pre-computed similarity score (sim, 0-1):\n"
-            f"  sim -- tf-idf cosine similarity of the title+abstract against the question text.\n"
-            f"         This is an unbiased starting hypothesis. Use it to form an initial\n"
-            f"         view, then reason against the ontology and question intent:\n"
+            f"Each document has a pre-computed similarity score (sim, 0-1) and an optional\n"
+            f"[title-match] flag when a high-centrality ontology concept appears verbatim\n"
+            f"in the document title:\n"
+            f"  sim         -- tf-idf cosine similarity of title+abstract vs question text.\n"
+            f"                 Unbiased starting hypothesis. Use it to form an initial view,\n"
+            f"                 then reason against the full ontology and question intent.\n"
+            f"  [title-match] -- a high-centrality concept from the ontology appears directly\n"
+            f"                 in this document's title. Strong prior for 'full' unless the\n"
+            f"                 broader context of the abstract reveals a different focus.\n"
             f"  - A paper can score low on sim yet be conceptually central to the question.\n"
             f"  - A paper can score high on sim due to shared surface vocabulary while\n"
             f"    addressing a clearly different phenomenon.\n\n"
@@ -551,16 +578,25 @@ class OntologyAgent(BaseAgent):
             f'  "abstract" -- DEFAULT. Use when the paper is plausibly relevant or provides\n'
             f"               supporting context, but the full text is unlikely to add\n"
             f"               specific evidence beyond what the abstract reveals.\n"
-            f'  "full"     -- Use only when you are confident that:\n'
+            f'  "full"     -- Use when you are confident that:\n'
             f"               (a) this paper likely contains specific data, methods, or\n"
             f"                   arguments that directly address what the question asks, AND\n"
             f"               (b) that depth is what this question's tier needs.\n"
+            f"               A [title-match] flag is a strong prior for 'full'.\n"
+            f"               A paper that directly measures, models, or empirically tests\n"
+            f"               any mechanism or process named in the question qualifies for\n"
+            f"               'full' even if its primary timescale, scale, or framing differs\n"
+            f"               from the question's — mechanistic evidence is always relevant.\n"
             f'  "drop"     -- Use ONLY when ALL of the following are true:\n'
             f"               (a) the paper does not address ANY concept or domain explicitly\n"
             f"                   named in the question,\n"
             f"               (b) you can state a specific, concrete reason it is off-topic.\n"
             f"               Sharing a domain label with one side of the question does NOT\n"
             f"               justify drop if that domain is named in the question.\n"
+            f"               A paper that challenges, refutes, or questions a mechanism named\n"
+            f"               in the question is NOT off-topic — it is direct evidence.\n"
+            f"               Do not drop a paper because its conclusion differs from the\n"
+            f"               question's implied premise.\n"
             f"               When in doubt between 'drop' and 'abstract', choose 'abstract'.\n\n"
             f"For each document provide a one-sentence reason for your classification.\n"
             f"This is used for pipeline debugging and thesis evaluation — be specific.\n\n"
