@@ -1,6 +1,7 @@
 """two-step generation agent: zero-shot draft then context-grounded refinement."""
 
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
@@ -225,6 +226,10 @@ class GenerationAgent(BaseAgent):
                 break
             if not stripped:
                 continue
-            if stripped.startswith("[") and "]" in stripped and "[EVIDENCE]" not in stripped:
-                refs.append(stripped)
+            # Normalise "N. Author..." → "[N] Author..." so both numbered-list
+            # and bracket-prefixed formats are captured by the parser.
+            # The generation model sometimes uses "1. Author" instead of "[1] Author".
+            normalised = re.sub(r"^(\d+)\.\s+", r"[\1] ", stripped)
+            if normalised.startswith("[") and "]" in normalised and "[EVIDENCE]" not in normalised:
+                refs.append(normalised)
         return refs

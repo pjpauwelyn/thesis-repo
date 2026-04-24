@@ -114,6 +114,7 @@ REQUIRED OUTPUT FORMAT (copy this exactly):
    Use: How to use this reference.
 
 DO NOT INVENT OR MODIFY ANY REFERENCE INFORMATION.
+Copy each URI EXACTLY as it appears in the {documents} list above — character for character. Do not paraphrase, reconstruct, or generate any URI from memory.
 ONLY INCLUDE REFERENCES IN THE FINAL CONTEXT IF THEY ARE RELEVANT TO THE ONTOLOGY AND ARE DIRECTLY USEFUL TO ANSWER THE QUESTION.
 
 RE-SCAN FOCUS: Prioritize matches to QUERY {query} and ONTOLOGY {ontology}
