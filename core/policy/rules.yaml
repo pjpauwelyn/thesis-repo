@@ -1,4 +1,4 @@
-# adaptive routing rules (set5 → v6)
+# adaptive routing rules (set5 → v7)
 #
 # evaluated top-to-bottom; first match wins.
 # the final fallback rule is always reached if nothing else matches.
@@ -27,11 +27,15 @@
 # tier-2b             : quant + focal — large refinement for spatial/temporal
 #   numeric fidelity; medium generation.
 # tier-3              : genuine methodology synthesis ONLY.
-#   Gate: methodological_depth >= 0.55, OR (cx >= 0.75 AND meth >= 0.45),
-#   OR (type in comparison/method_eval AND meth >= 0.45).
-#   Rationale: full-text (35k tokens) dilutes explanatory answers; the extra
-#   context only helps when the question genuinely requires cross-paper
-#   methodology evaluation. large model justified only for this subset.
+#   Gate (v7): methodological_depth >= 0.55,
+#              OR (cx >= 0.75 AND meth >= 0.45),
+#              OR (type in comparison/method_eval AND meth >= 0.40).
+#   v7 change: branch-c lowered from meth>=0.45 → meth>=0.40 for
+#   comparison/method_eval. Rationale: the profiler uses meth=0.40 as its
+#   canonical 'moderate methodology' value for comparison questions; any
+#   comparison in EO-QA inherently requires cross-paper synthesis.
+#   Full-text (35k tokens) only justified when the question genuinely
+#   requires cross-paper methodology evaluation.
 #
 # Per-call timeouts (model-aware)
 # --------------------------------
@@ -128,26 +132,29 @@ rules:
 # Fires ONLY when the question requires cross-paper methodology evaluation,
 # not merely for high complexity. The meth gate is the primary signal.
 #
-# Gate (any one of these must be true):
+# Gate (v7 — any one of these must be true):
 #   a) methodological_depth >= 0.55  (strong method-eval signal regardless of type)
 #   b) complexity >= 0.75 AND meth >= 0.45  (very complex + moderate method grounding)
-#   c) type in comparison/method_eval AND meth >= 0.45  (comparative synthesis needed)
+#   c) type in comparison/method_eval AND meth >= 0.40  (v7: lowered from 0.45)
+#
+# v7 rationale for branch-c change (0.45 → 0.40):
+#   Phase 1 profiling showed the profiler uses meth=0.40 as its canonical
+#   'moderate methodology' value for comparison questions. Every comparison
+#   question in EO-QA (comparing sensors, algorithms, or approaches) requires
+#   reading method sections across papers — that is cross-paper synthesis by
+#   definition. The 0.05 gap between the old gate (0.45) and the profiler's
+#   output (0.40) was systematic quantization, not genuine signal.
+#   tier-m (excerpts_narrow + use_draft=True) produces draft-anchored surface
+#   comparisons for these questions; tier-3 (excerpts_full + use_draft=False)
+#   is the correct pipeline.
 #
 # Why not complexity alone:
-#   A mechanism question at cx=0.80 and meth=0.25 (e.g. "How does InSAR resolve
-#   surface displacement?") is an explanatory question — medium model + excerpts_narrow
-#   + use_draft=True is the right pipeline. Flooding it with 35k tokens of dense
-#   paper text and a 1000-token output budget causes rambling over-hedged answers.
+#   A mechanism question at cx=0.80 and meth=0.25 is an explanatory question.
 #   Only when the question genuinely needs to evaluate or compare methods across
 #   papers does the large model + full excerpts earn their cost.
 #
-# max_output_tokens: 1000 (reduced from 1400)
-#   The real length governor is the generation prompt's paragraph structure, not
-#   this ceiling. 1000 tokens is sufficient for a well-structured comparative
-#   analysis (approx 700-750 words). Setting it to 1400 was a hold-over from
-#   when tier-3 caught all cx >= 0.60 questions and needed headroom for long
-#   explanations. With tier-3 now reserved for synthesis-only questions, 1000 is
-#   appropriate and prevents over-long responses on a slow/expensive model.
+# max_output_tokens: 1000
+#   Sufficient for well-structured comparative analysis (~700-750 words).
   - name: tier_3
     when:
       question_type: {in: [mechanism, method_eval, comparison]}
@@ -158,7 +165,7 @@ rules:
             methodological_depth: {ge: 0.45}
         - all:
             question_type: {in: [comparison, method_eval]}
-            methodological_depth: {ge: 0.45}
+            methodological_depth: {ge: 0.40}
     config:
       model_name:               mistralai/mistral-large
       refinement_model_name:    mistralai/mistral-large
@@ -178,7 +185,7 @@ rules:
       timeout_generate_s:       360
       use_draft:                false
       rule_hit:                 tier-3
-      reason:                   "methodology synthesis (meth>=0.55 OR cx>=0.75+meth>=0.45 OR comparison/method_eval+meth>=0.45)"
+      reason:                   "methodology synthesis (meth>=0.55 OR cx>=0.75+meth>=0.45 OR comparison/method_eval+meth>=0.40)"
 
 # tier-2a: standalone high quantitativity (no strong spatial/temporal focus)
 # methodological_depth guard: prevents capturing questions that also have high

@@ -1,15 +1,21 @@
-"""router unit tests -- 31 parameterised cases covering every tier and the
+"""router unit tests -- 34 parameterised cases covering every tier and the
 safety net.
 
-Key ordering notes (rules.yaml v6 evaluated top-to-bottom, first match wins):
+Key ordering notes (rules.yaml v7 evaluated top-to-bottom, first match wins):
   - tier-1-def fires before tier-m: definitional + complexity < 0.60 + quant < 0.45
   - tier-2b fires before tier-3: high-quant focal beats complex-type
   - tier-3 gate: methodological_depth driven, not complexity driven
       fires when: meth >= 0.55
               OR  (cx >= 0.75 AND meth >= 0.45)
-              OR  (type in comparison/method_eval AND meth >= 0.45)
+              OR  (type in comparison/method_eval AND meth >= 0.40)  ← v7: was 0.45
   - tier-m: catch-all for complexity >= 0.40 (NO upper bound)
   - tier-1 ceiling: complexity < 0.40
+
+v7 changes (cases 32-34):
+  Branch-c gate lowered from meth>=0.45 to meth>=0.40 for comparison/method_eval.
+  Case 29 updated: comparison+meth=0.44 now hits tier-m (below new 0.40 gate? no —
+  0.44 >= 0.40, so it WOULD hit tier-3). Case 29 kept as tier-m regression guard
+  by adjusting meth to 0.35 (clearly below gate).
 """
 
 from __future__ import annotations
@@ -60,7 +66,8 @@ CASES = [
     # tier-m also catches high-complexity mechanism questions with low meth (no longer tier-3)
     ("27", dict(complexity=0.8,  question_type="mechanism",  methodological_depth=0.30),        "tier-m"),
     ("28", dict(complexity=0.7,  question_type="mechanism",  methodological_depth=0.54),        "tier-m"),
-    ("29", dict(complexity=0.75, question_type="comparison", methodological_depth=0.44),        "tier-m"),
+    # v7: comparison+meth=0.35 is below new gate (0.40) -> tier-m (regression guard)
+    ("29", dict(complexity=0.75, question_type="comparison", methodological_depth=0.35),        "tier-m"),
 
     # --- tier-1-def: definition + complexity < 0.60 + quant < 0.45 ---
     # complexity=0.5 -> tier-1-def fires before tier-m
@@ -81,7 +88,7 @@ CASES = [
     # a) pure meth depth >= 0.55
     ("11", dict(complexity=0.6,  question_type="mechanism",  methodological_depth=0.55),        "tier-3"),
     ("12", dict(complexity=0.7,  question_type="method_eval",methodological_depth=0.60),        "tier-3"),
-    # b) comparison + meth >= 0.45
+    # b) comparison + meth >= 0.45 (still fires under v7 gate of 0.40)
     ("13", dict(complexity=0.65, question_type="comparison", methodological_depth=0.50),        "tier-3"),
     ("30", dict(complexity=0.65, question_type="comparison", methodological_depth=0.45),        "tier-3"),
     # c) cx >= 0.75 + meth >= 0.45
@@ -106,6 +113,14 @@ CASES = [
     ("23", dict(complexity=0.0,  quantitativity=0.0),                                           "tier-1"),
     # tier-1-def: low complexity definition
     ("26", dict(complexity=0.3,  question_type="definition", quantitativity=0.1),               "tier-1-def"),
+
+    # --- v7 new cases: tier-3 branch-c gate lowered to meth>=0.40 ---
+    # comparison + meth=0.40 -> tier-3 (new threshold, was tier-m under v6)
+    ("32", dict(complexity=0.70, question_type="comparison", methodological_depth=0.40),        "tier-3"),
+    # method_eval + meth=0.40 -> tier-3 (gate applies to method_eval too)
+    ("33", dict(complexity=0.65, question_type="method_eval", methodological_depth=0.40),       "tier-3"),
+    # comparison + meth=0.35 -> tier-m (below new gate — regression guard)
+    ("34", dict(complexity=0.70, question_type="comparison", methodological_depth=0.35),        "tier-m"),
 ]
 
 
@@ -154,6 +169,25 @@ def test_tier3_requires_meth_not_just_complexity(router):
     )
 
 
+def test_tier3_comparison_meth_040(router):
+    """v7: comparison + meth=0.40 must hit tier-3 (gate lowered from 0.45)."""
+    cfg = router.select(_profile(complexity=0.70, question_type="comparison",
+                                 methodological_depth=0.40))
+    assert cfg.rule_hit == "tier-3", (
+        "comparison+meth=0.40 should hit tier-3 under v7 gate -- "
+        "check tier_3 branch-c in rules.yaml (methodological_depth ge 0.40)"
+    )
+
+
+def test_tier_m_comparison_below_gate(router):
+    """v7 regression guard: comparison + meth=0.35 must stay in tier-m."""
+    cfg = router.select(_profile(complexity=0.70, question_type="comparison",
+                                 methodological_depth=0.35))
+    assert cfg.rule_hit == "tier-m", (
+        "comparison+meth=0.35 should stay in tier-m -- gate lowered too far if this fails"
+    )
+
+
 def test_fallback_properties(router):
     """unmatched profile: cx=0.1, type=application, no quant -> tier-1 (cx < 0.40)."""
     cfg = router.select(_profile(complexity=0.1, quantitativity=0.0,
@@ -164,15 +198,7 @@ def test_fallback_properties(router):
 
 
 def test_fallback_truly_unmatched(router):
-    """force a genuinely unmatched profile: type not in any rule, cx < 0.40
-    but quant high enough to miss tier-1/tier-m ordering... actually this
-    is hard to construct without contradictions. Instead, verify the fallback
-    YAML rule fires for a continuous type with confidence just at floor."""
-    # application + cx < 0.40 hits tier-1 first. That is correct behaviour.
-    # The fallback is a safety net for missing question types / schema gaps.
-    # We verify the fallback config properties via the hardcoded router.py path
-    # (no rule matched) which can only be triggered by mocking; instead we check
-    # that fallback config has the expected values via direct YAML inspection.
+    """verify the fallback YAML rule has the expected config values."""
     import yaml
     from pathlib import Path
     rules = yaml.safe_load((Path(__file__).parent.parent / "core/policy/rules.yaml").read_text())["rules"]
