@@ -1,8 +1,8 @@
 """Centralised logging setup for the thesis pipeline.
 
 Two outputs:
-  console  — clean, INFO-level, human-readable for terminal use
-  file     — DEBUG-level, timestamped, full detail for post-run inspection
+  console  -- clean, INFO-level, human-readable for terminal use
+  file     -- DEBUG-level, timestamped, full detail for post-run inspection
 
 Usage
 -----
@@ -80,14 +80,14 @@ def configure_pipeline_logging(
     # remove any handlers already attached (pytest / ipython noise)
     root.handlers.clear()
 
-    # ── console ──────────────────────────────────────────────────────────────
+    # -- console --------------------------------------------------------------
     ch = logging.StreamHandler(sys.stdout)
     ch.setLevel(console_level)
     ch.setFormatter(_ConsoleFormatter())
     ch.addFilter(_DuplicateFilter())
     root.addHandler(ch)
 
-    # ── file ─────────────────────────────────────────────────────────────────
+    # -- file -----------------------------------------------------------------
     log_path = Path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
@@ -95,7 +95,7 @@ def configure_pipeline_logging(
     fh.setFormatter(logging.Formatter(_FILE_FMT, datefmt=_DATE_FMT))
     root.addHandler(fh)
 
-    # ── silence third-party noise ────────────────────────────────────────────
+    # -- silence third-party noise --------------------------------------------
     if suppress_noisy:
         for name in _NOISY_LOGGERS:
             logging.getLogger(name).setLevel(logging.WARNING)
@@ -112,7 +112,7 @@ def get_logger(name: str) -> logging.Logger:
 
 def log_question_start(log: logging.Logger, idx: int, question: str) -> None:
     """Print the question banner before the pipeline runs."""
-    short = question[:90] + ("…" if len(question) > 90 else "")
+    short = question[:90] + ("\u2026" if len(question) > 90 else "")
     _console_section(log, f"Q{idx}  {short}")
     log.debug("[Q%d] question (full): %s", idx, question)
 
@@ -124,13 +124,13 @@ def log_ontology(
 ) -> None:
     """Log ontology AV-pairs + relationships."""
     if ontology is None:
-        log.info("  ○ ontology  skipped")
+        log.info("  \u25cb ontology  skipped")
         return
 
     pairs = getattr(ontology, "attribute_value_pairs", [])
     rels  = getattr(ontology, "logical_relationships", [])
     log.info(
-        "  ✓ ontology  %d attrs, %d rels  (%.1fs)",
+        "  \u2713 ontology  %d attrs, %d rels  (%.1fs)",
         len(pairs), len(rels), elapsed,
     )
 
@@ -158,7 +158,7 @@ def log_profile_and_route(
 ) -> None:
     """Log profiler output and routing decision."""
     if profile is None or cfg is None:
-        log.info("  ○ routing   skipped (no profile/config)")
+        log.info("  \u25cb routing   skipped (no profile/config)")
         return
 
     conf_str = (
@@ -171,7 +171,7 @@ def log_profile_and_route(
     mode  = getattr(cfg, "evidence_mode", "?")
 
     log.info(
-        "  ✓ routing   rule=%-14s model=%-26s evidence=%-16s conf=%s  (%.1fs)",
+        "  \u2713 routing   rule=%-14s model=%-26s evidence=%-16s conf=%s  (%.1fs)",
         rule, model, mode, conf_str, elapsed,
     )
 
@@ -184,7 +184,7 @@ def log_profile_and_route(
         "  question_type=%s  complexity=%.2f  quantitativity=%.2f\n"
         "  spatial=%.2f  temporal=%.2f  methodological=%.2f\n"
         "  needs_numeric=%s  confidence=%s\n"
-        "  → rule=%-12s  model=%s  evidence=%s\n"
+        "  \u2192 rule=%-12s  model=%s  evidence=%s\n"
         "  reason: %s",
         getattr(profile, "question_type", "?"),
         getattr(profile, "complexity", 0),
@@ -209,14 +209,14 @@ def log_doc_filter(
     """Log document filter results with per-document breakdown in the file."""
     n_total = len(full_docs) + len(abstract_docs) + len(drop_docs)
     log.info(
-        "  ✓ doc-filter full=%-3d abstract=%-3d drop=%-3d  total=%d  (%.1fs)",
+        "  \u2713 doc-filter full=%-3d abstract=%-3d drop=%-3d  total=%d  (%.1fs)",
         len(full_docs), len(abstract_docs), len(drop_docs), n_total, elapsed,
     )
 
     # tuning flag: high drop rate
     if n_total and len(drop_docs) / n_total > 0.5:
         log.warning(
-            "  ⚠ doc-filter drop-rate %.0f%% — check ontology quality or min_keep",
+            "  \u26a0 doc-filter drop-rate %.0f%% -- check ontology quality or min_keep",
             100 * len(drop_docs) / n_total,
         )
 
@@ -238,7 +238,7 @@ def log_excerpt_stats(
 ) -> None:
     """Log excerpt selection stats from FullTextIndexer."""
     if not stats:
-        log.info("  ○ excerpts  none (abstracts mode)")
+        log.info("  \u25cb excerpts  none (abstracts mode)")
         return
 
     n_exc   = stats.get("n_excerpts", 0)
@@ -248,19 +248,19 @@ def log_excerpt_stats(
     pct     = (100 * tot_ch / budget) if budget else 0
 
     log.info(
-        "  ✓ excerpts  %d excerpts from %d docs  %d chars (%.0f%% of budget)  (%.1fs)",
+        "  \u2713 excerpts  %d excerpts from %d docs  %d chars (%.0f%% of budget)  (%.1fs)",
         n_exc, n_docs, tot_ch, pct, elapsed,
     )
 
     # tuning flag: budget nearly full
     if pct > 90:
         log.warning(
-            "  ⚠ excerpts  %.0f%% of budget used — consider raising global_budget", pct
+            "  \u26a0 excerpts  %.0f%% of budget used -- consider raising global_budget", pct
         )
     # tuning flag: very few excerpts
     if n_exc < 3 and n_docs > 0:
         log.warning(
-            "  ⚠ excerpts  only %d excerpt(s) — top_k_per_doc or per_doc_budget may be too low",
+            "  \u26a0 excerpts  only %d excerpt(s) -- top_k_per_doc or per_doc_budget may be too low",
             n_exc,
         )
 
@@ -277,20 +277,20 @@ def log_refinement(
     n_tokens = n_chars // 4
 
     log.info(
-        "  ✓ refinement %d chars (~%d tokens)  (%.1fs)",
+        "  \u2713 refinement %d chars (~%d tokens)  (%.1fs)",
         n_chars, n_tokens, elapsed,
     )
 
     # tuning flags
     if n_chars == 0:
-        log.warning("  ⚠ refinement produced EMPTY context — generation will fail")
+        log.warning("  \u26a0 refinement produced EMPTY context -- generation will fail")
     elif n_chars < 500:
         log.warning(
-            "  ⚠ refinement context very short (%d chars) — answer may be shallow", n_chars
+            "  \u26a0 refinement context very short (%d chars) -- answer may be shallow", n_chars
         )
     elif n_tokens > 70_000:
         log.warning(
-            "  ⚠ refinement context large (%d tokens) — approaching 60%% window cap",
+            "  \u26a0 refinement context large (%d tokens) -- approaching 60%% window cap",
             n_tokens,
         )
 
@@ -300,7 +300,7 @@ def log_refinement(
         "[refinement] %d chars (~%d tokens) elapsed=%.2fs\npreview:\n%s%s",
         n_chars, n_tokens, elapsed,
         textwrap.indent(preview, "  "),
-        "\n  …" if n_chars > 600 else "",
+        "\n  \u2026" if n_chars > 600 else "",
     )
 
 
@@ -311,7 +311,7 @@ def log_generation(
 ) -> None:
     """Log generation output with reference count and tuning hints."""
     if answer_obj is None:
-        log.warning("  ✗ generation  returned None")
+        log.warning("  \u2717 generation  returned None")
         return
 
     answer   = getattr(answer_obj, "answer", "") or ""
@@ -320,18 +320,18 @@ def log_generation(
     n_chars  = len(answer)
 
     log.info(
-        "  ✓ generation %d chars  %d refs  (%.1fs)",
+        "  \u2713 generation %d chars  %d refs  (%.1fs)",
         n_chars, len(fmt_refs) or len(refs), elapsed,
     )
 
     # tuning flags
     if n_chars < 100:
         log.warning(
-            "  ⚠ generation answer short (%d chars) — prompt or context may need tuning",
+            "  \u26a0 generation answer short (%d chars) -- prompt or context may need tuning",
             n_chars,
         )
     if not fmt_refs and not refs:
-        log.warning("  ⚠ generation no references extracted — check reference parsing")
+        log.warning("  \u26a0 generation no references extracted -- check reference parsing")
 
     # full answer + refs to file
     ref_block = "\n".join(fmt_refs or refs) if (fmt_refs or refs) else "(none)"
@@ -352,13 +352,13 @@ def log_question_end(
 ) -> None:
     """Print the question-level result line."""
     if status == "success":
-        log.info("  → Q%d  %-8s  %.2fs", idx, status.upper(), elapsed)
+        log.info("  \u2192 Q%d  %-8s  %.2fs", idx, status.upper(), elapsed)
     elif status == "error":
         short_err = (error or "unknown")[:120]
-        log.error("  → Q%d  %-8s  %.2fs  %s", idx, status.upper(), elapsed, short_err)
+        log.error("  \u2192 Q%d  %-8s  %.2fs  %s", idx, status.upper(), elapsed, short_err)
         log.debug("[Q%d error detail] %s", idx, error)
     else:
-        log.info("  → Q%d  %-8s  %.2fs", idx, status.upper(), elapsed)
+        log.info("  \u2192 Q%d  %-8s  %.2fs", idx, status.upper(), elapsed)
 
 
 def log_run_summary(
@@ -374,7 +374,7 @@ def log_run_summary(
     _console_section(log, "RUN SUMMARY")
     log.info("  total=%-4d  ok=%-4d  failed=%-4d  avg=%.2fs", total, ok, failed, avg)
     if failed:
-        log.warning("  ⚠ %d question(s) failed — check logs/pipeline.log for details", failed)
+        log.warning("  \u26a0 %d question(s) failed -- check logs/pipeline.log for details", failed)
 
 
 def log_llm_retry(
@@ -386,7 +386,7 @@ def log_llm_retry(
 ) -> None:
     """Log LLM retry events (called from helpers.py wrappers)."""
     log.warning(
-        "  ⚠ LLM retry %d/%d  sleeping=%.1fs  reason: %s",
+        "  \u26a0 LLM retry %d/%d  sleeping=%.1fs  reason: %s",
         attempt, max_attempts, delay, error[:120],
     )
     log.debug("[llm-retry] attempt=%d/%d delay=%.2f error=%s", attempt, max_attempts, delay, error)
@@ -400,7 +400,7 @@ def log_llm_failure(
 ) -> None:
     """Log a final LLM failure after all retries exhausted."""
     log.error(
-        "  ✗ LLM failed after %d/%d attempts: %s",
+        "  \u2717 LLM failed after %d/%d attempts: %s",
         attempt, max_attempts, error[:200],
     )
     log.debug("[llm-failure] attempt=%d/%d error=%s", attempt, max_attempts, error)
@@ -409,6 +409,38 @@ def log_llm_failure(
 # ---------------------------------------------------------------------------
 # internal helpers
 # ---------------------------------------------------------------------------
+
+def _warn_routing_flags(
+    log: logging.Logger,
+    profile: Any,
+    cfg: Any,
+) -> None:
+    """Emit WARNING log lines for actionable routing situations.
+
+    Called immediately after the INFO routing line in log_profile_and_route().
+    Two situations are flagged:
+      1. safety-tier3 fired (profiler confidence was below the floor or None)
+         -- indicates a question the profiler could not parse reliably.
+      2. Confidence is valid but below 0.70 (borderline routing territory)
+         -- worth noting in test logs as a tuning signal.
+    Neither flag changes any pipeline behaviour; they are observability only.
+    """
+    rule       = getattr(cfg, "rule_hit", "") or ""
+    confidence = getattr(profile, "confidence", None)
+
+    if rule == "safety-tier3":
+        log.warning(
+            "  \u26a0 routing   safety-tier3 fired (low/null profiler confidence=%.2f) "
+            "-- question will use large model + full excerpts",
+            confidence if confidence is not None else 0.0,
+        )
+    elif confidence is not None and confidence < 0.70:
+        log.warning(
+            "  \u26a0 routing   borderline confidence=%.2f for rule=%s "
+            "-- profile may be ambiguous",
+            confidence, rule,
+        )
+
 
 class _ConsoleFormatter(logging.Formatter):
     """Coloured, compact console formatter.  Falls back gracefully if no TTY."""
@@ -452,8 +484,8 @@ class _DuplicateFilter(logging.Filter):
 
 
 def _console_section(log: logging.Logger, title: str) -> None:
-    bar = "─" * max(0, 76 - len(title))
-    log.info("\n── %s %s", title, bar)
+    bar = "\u2500" * max(0, 76 - len(title))
+    log.info("\n\u2500\u2500 %s %s", title, bar)
 
 
 def _doc_title(doc: Any) -> str:
