@@ -27,7 +27,6 @@ class GenerationAgent(BaseAgent):
         super().__init__("GenerationAgent", llm)
         self.prompt_dir = prompt_dir
         self.zero_shot_template = self._load_template("zero_shot.txt")
-        self.refinement_template = self._load_template("generation_prompt_exp4.txt")
 
     def _load_template(self, filename: str) -> str:
         try:
@@ -50,6 +49,7 @@ class GenerationAgent(BaseAgent):
         max_output_tokens: int = 700,
         system_prompt: str = "",
         use_draft: bool = True,
+        generation_prompt: str = "generation_prompt_exp4.txt",
     ) -> Answer:
         """Generate an answer for a question.
 
@@ -60,6 +60,10 @@ class GenerationAgent(BaseAgent):
                 context-grounded generation. Set to False for high-context
                 tiers (tier-2, tier-3) where a draft anchors the model to
                 parametric knowledge and fights against context grounding.
+            generation_prompt: filename of the generation prompt template to
+                use, relative to prompt_dir. Passed from cfg.generation_prompt
+                by the pipeline so each tier uses its declared prompt.
+                Defaults to generation_prompt_exp4.txt (abstracts / draft path).
         """
         self.logger.info(
             f"generating answer for: {question[:80]} (use_draft={use_draft})"
@@ -84,6 +88,14 @@ class GenerationAgent(BaseAgent):
                 "Aborting -- do not truncate evidence silently."
             )
 
+        # Load the generation prompt declared by the tier's routing config.
+        template = self._load_template(generation_prompt)
+        if not template:
+            raise RuntimeError(
+                f"GenerationAgent.generate(): generation prompt '{generation_prompt}' "
+                "not found or empty. Cannot proceed."
+            )
+
         if use_draft:
             # step 1: zero-shot draft (question only)
             zero_prompt = self.zero_shot_template.replace("{question}", question)
@@ -92,9 +104,9 @@ class GenerationAgent(BaseAgent):
             # skip draft -- context-grounded generation only
             draft = ""
 
-        # step 2: refine with context + ontology
-        refine_prompt = self._build_refinement_prompt(
-            question, draft, text_context, ontology, use_draft=use_draft
+        # step 2: context-grounded generation (with or without draft)
+        refine_prompt = self._build_generation_prompt(
+            template, question, draft, text_context, ontology, use_draft=use_draft
         )
         final_answer = self._call_llm(
             refine_prompt, max_tokens=max_output_tokens, system=system_prompt
@@ -103,20 +115,18 @@ class GenerationAgent(BaseAgent):
         refs     = self._extract_references(final_answer)
         fmt_refs = self._extract_formatted_references(final_answer)
 
-        if not fmt_refs and text_context:
-            fmt_refs = self._extract_references_from_context(text_context)
-
         return Answer(answer=final_answer, references=refs, formatted_references=fmt_refs)
 
-    def _build_refinement_prompt(
+    def _build_generation_prompt(
         self,
+        template: str,
         question: str,
         draft: str,
         context: str,
         ontology: Optional[DynamicOntology],
         use_draft: bool = True,
     ) -> str:
-        prompt = self.refinement_template
+        prompt = template
         prompt = prompt.replace("{question}", question)
         # When use_draft=False the draft is empty string; replace placeholder
         # so templates that include {draft_answer} don't break.
@@ -199,22 +209,4 @@ class GenerationAgent(BaseAgent):
                 break
             if line.startswith("[") and "]" in line and "[EVIDENCE]" not in line:
                 refs.append(line)
-        return refs
-
-    @staticmethod
-    def _extract_references_from_context(context: str) -> List[str]:
-        if "[VALIDATED REFERENCES]" not in context:
-            return []
-        refs: List[str] = []
-        in_section = False
-        for line in context.split("\n"):
-            line = line.strip()
-            if line.startswith("[VALIDATED REFERENCES]"):
-                in_section = True
-                continue
-            if in_section and line:
-                if line.startswith("[") and "]" in line:
-                    refs.append(line)
-            elif in_section and not line:
-                break
         return refs

@@ -303,12 +303,19 @@ class Pipeline:
                 )
                 refine_agent.set_documents_block(documents_block)
                 query_hint = self._build_query_hint(question, profile)
+                # Pass only post-filter docs (full + abstract, not dropped) as
+                # aql_results_str so _format_documents_for_references() fetches
+                # OpenAlex metadata for the correct set of documents and builds
+                # a clean [VALIDATED REFERENCES] block in enriched_context.
+                # Dropped docs are excluded: they were never shown to the
+                # refinement model and must not appear as citable references.
+                filtered_aql = self._format_kg_context(full_docs + abstract_docs)
                 refined = refine_agent.process_context(
                     question=query_hint,
                     structured_context="",
                     ontology=ontology,
                     include_ontology=True,
-                    aql_results_str=None,
+                    aql_results_str=filtered_aql,
                     context_filter="full",
                 )
         except Exception as refine_exc:
@@ -376,6 +383,7 @@ class Pipeline:
                 max_output_tokens=cfg.max_output_tokens,
                 system_prompt=cfg.system_prompt_modifier,
                 use_draft=cfg.use_draft,
+                generation_prompt=cfg.generation_prompt,
             )
         except Exception as gen_exc:
             gen_msg = str(gen_exc).lower()
