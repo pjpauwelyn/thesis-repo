@@ -309,19 +309,35 @@ def log_generation(
     answer_obj: Any,        # generation_agent.Answer | None
     elapsed: float = 0.0,
 ) -> None:
-    """Log generation output with reference count and tuning hints."""
+    """Log generation output size and inline citation count.
+
+    Reads Answer.cited_indices (populated by generate() before pipeline.py
+    appends the Python-built ## References block) so the count is always
+    accurate.  Falls back to len(formatted_references) for older Answer
+    objects that predate cited_indices.
+    """
     if answer_obj is None:
         log.warning("  \u2717 generation  returned None")
         return
 
-    answer   = getattr(answer_obj, "answer", "") or ""
-    fmt_refs = getattr(answer_obj, "formatted_references", []) or []
-    refs     = getattr(answer_obj, "references", []) or []
-    n_chars  = len(answer)
+    answer        = getattr(answer_obj, "answer", "") or ""
+    cited_indices = getattr(answer_obj, "cited_indices", None)
+    fmt_refs      = getattr(answer_obj, "formatted_references", []) or []
+    n_chars       = len(answer)
+
+    # Use cited_indices as the authoritative citation count; fall back to
+    # formatted_references for backward compat with tests that inspect the
+    # Answer object directly.
+    if cited_indices is not None:
+        n_cited = len(cited_indices)
+    else:
+        n_cited = len(fmt_refs)
 
     log.info(
-        "  \u2713 generation %d chars  %d refs  (%.1fs)",
-        n_chars, len(fmt_refs) or len(refs), elapsed,
+        "  \u2713 generation %d chars  cited=[%s]  (%.1fs)",
+        n_chars,
+        ",".join(str(i) for i in sorted(cited_indices)) if cited_indices else "none",
+        elapsed,
     )
 
     # tuning flags
@@ -330,16 +346,19 @@ def log_generation(
             "  \u26a0 generation answer short (%d chars) -- prompt or context may need tuning",
             n_chars,
         )
-    if not fmt_refs and not refs:
-        log.warning("  \u26a0 generation no references extracted -- check reference parsing")
+    if n_cited == 0:
+        log.warning(
+            "  \u26a0 generation no inline [N] markers -- "
+            "pipeline will attach all available docs as references"
+        )
 
-    # full answer + refs to file
-    ref_block = "\n".join(fmt_refs or refs) if (fmt_refs or refs) else "(none)"
+    # full answer to file
     log.debug(
-        "[generation] %d chars  elapsed=%.2fs\nanswer:\n%s\nreferences:\n%s",
-        n_chars, elapsed,
-        textwrap.indent(answer, "  "),
-        textwrap.indent(ref_block, "  "),
+        "[generation] %d chars  cited=%s  elapsed=%.2fs\nanswer:\n%s",
+        n_chars,
+        sorted(cited_indices) if cited_indices else [],
+        elapsed,
+        textwrap.indent(answer[:800], "  "),
     )
 
 
@@ -417,12 +436,9 @@ def _warn_routing_flags(
 ) -> None:
     """Emit WARNING log lines for actionable routing situations.
 
-    Called immediately after the INFO routing line in log_profile_and_route().
     Two situations are flagged:
       1. safety-tier3 fired (profiler confidence was below the floor or None)
-         -- indicates a question the profiler could not parse reliably.
       2. Confidence is valid but below 0.70 (borderline routing territory)
-         -- worth noting in test logs as a tuning signal.
     Neither flag changes any pipeline behaviour; they are observability only.
     """
     rule       = getattr(cfg, "rule_hit", "") or ""
