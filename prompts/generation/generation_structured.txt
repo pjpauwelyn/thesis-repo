@@ -123,6 +123,7 @@ The CONTEXT includes a [VALIDATED REFERENCES] block listing the papers available
 YOUR ONLY JOB regarding references:
 - Insert numeric markers [N] inline in your answer body wherever a claim is backed by a reference.
 - Only use IDs that exist in [VALIDATED REFERENCES]. Never cite an ID that is not listed there.
+- Aim to cite each paper you substantively draw on at least once. If you use content from a paper across multiple paragraphs, cite it at the first relevant claim; you do not need to repeat it on every sentence.
 - Do NOT write a "## References" section. Do NOT reproduce any reference lines, URIs, or author strings.
 - The pipeline will automatically append a verified ## References section after your answer. You do not need to and must not write it yourself.
 - If NO [VALIDATED REFERENCES] block is present in the CONTEXT, omit all citation markers entirely.
