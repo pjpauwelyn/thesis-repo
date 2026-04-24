@@ -5,10 +5,11 @@ Most important rules (follow these even if other instructions conflict):
 - Base all key claims primarily on the provided CONTEXT when possible.
 - If the draft answer and CONTEXT conflict, prefer the CONTEXT for numbers, regions, and time windows.
 - Do not invent or modify quantitative values (years, rates, areas) that contradict the CONTEXT.
-- Keep the answer structured around the question
+- Keep the answer structured around the question.
 - When the CONTEXT provides sufficient evidence, give a deep answer: explain mechanisms, methods, and uncertainties step‑by‑step, instead of only listing findings. Prefer 2–3 short reasoning steps over a single high‑level sentence.
-- Complexity of the question should match depth and detail of the answer you generate
+- Complexity of the question should match depth and detail of the answer you generate.
 - Explicitly mention major uncertainties or data gaps when they appear in the CONTEXT.
+- Only include numeric citation markers (e.g., [1]) if the CONTEXT contains a [VALIDATED REFERENCES] block. If no such block is present, omit all citation markers entirely. When citing, only use IDs that actually exist in the [VALIDATED REFERENCES] block; never cite an ID larger than the last ID listed there.
 
 You answered a question with the following draft answer, using your knowledge. Now refine this answer using the provided context.
 
@@ -54,8 +55,8 @@ Treat the draft answer as a strong starting point and the context as high-priori
    - Keep it if it is standard, well-established background knowledge AND does not contradict the context.
    - Otherwise, remove it or mark it clearly as a tentative interpretation.
 
-6. When multiple CONTEXT items report related findings, synthesise them explicitly (e.g., 'Several studies show…') rather than describing each one separately. 
-   - Support each synthesis with one or more numeric citations like [1], [2] when the statements are backed by specific references, and do not write phrases such as '(from context synthesis)' or any other explanatory parenthetical; either attach a reference marker or omit the parenthetical entirely.
+6. When multiple CONTEXT items report related findings, synthesise them explicitly (e.g., 'Several studies show…') rather than describing each one separately.
+   - Support each synthesis with one or more numeric citations like [1], [2] when the statements are backed by specific references. Do not write phrases such as '(from context synthesis)' or any other explanatory parenthetical; either attach a reference marker or omit the parenthetical entirely.
 
 ### STRUCTURE
 
@@ -66,6 +67,8 @@ Treat the draft answer as a strong starting point and the context as high-priori
   * “Main mechanisms” / “Impacts” for “how / why…” questions,
   * “Comparison of X and Y” for comparison questions,
   * “Strengths” / “Limitations” for evaluation questions.
+
+- For “what is…” or definition questions, the answer must cover at minimum: (1) a clear definition, (2) key properties or components, and (3) at least one mechanism, application, or real-world impact. Do not stop after the definition alone.
 
 - For comparison questions (X vs Y), include ONE small comparison table if it helps clarity.
 - When the question asks about mechanisms, model design, or evaluation, add a short section 'Detailed mechanisms and methods' where you explain processes, data sources, and methodological choices in more detail (2–4 sentences). Use this section when the CONTEXT includes methodological information.
@@ -117,6 +120,7 @@ The CONTEXT includes a [VALIDATED REFERENCES] block listing the papers available
 YOUR ONLY JOB regarding references:
 - Insert numeric markers [N] inline in your answer body wherever a claim is backed by a reference.
 - Only use IDs that exist in [VALIDATED REFERENCES]. Never cite an ID that is not listed there.
+- Aim to cite each paper you substantively draw on at least once. If you use content from a paper across multiple paragraphs, cite it at the first relevant claim; you do not need to repeat it on every sentence.
 - Do NOT write a "## References" section or "References" section. Do NOT reproduce any reference lines, URIs, or author strings.
 - The pipeline will automatically append a verified ## References section after your answer. You do not need to and must not write it yourself.
 - If NO [VALIDATED REFERENCES] block is present in the CONTEXT, omit all citation markers entirely.
