@@ -1,7 +1,7 @@
 """3-phase adaptive pipeline test suite.
 
 phase 1: profile + tier routing on all questions  (inspection only -- no assertions)
-phase 2: document filter dry-run on up to 10 questions with docs
+phase 2: document filter dry-run on up to 20 questions with docs
 phase 3: full-pipeline generation on 5 representative questions (smoke assertions)
 
 Run all phases:
@@ -116,8 +116,8 @@ _PIPELINE = Pipeline()
 # ---------------------------------------------------------------------------
 
 def test_phase1_profiles() -> None:
-    """Profile every question and write routing decisions to tests/output/.
-    No assertions -- purely for inspection."""
+    """profile every question and write routing decisions to tests/output/.
+    no assertions -- purely for inspection."""
     if not _ROWS:
         pytest.skip("no DLR CSV found")
 
@@ -171,16 +171,16 @@ def test_phase1_profiles() -> None:
 
 
 # ---------------------------------------------------------------------------
-# phase 2: document filter dry-run
+# phase 2: document filter dry-run (20 questions)
 # ---------------------------------------------------------------------------
 
 def test_phase2_filter() -> None:
-    """Run filter_documents on up to 10 questions that have docs.
-    Asserts: at least min_keep docs survive the filter."""
+    """run filter_documents on up to 20 questions that have docs.
+    asserts: at least min_keep docs survive the filter."""
     if not _ROWS:
         pytest.skip("no DLR CSV found")
 
-    rows_with_docs = [r for r in _ROWS if _parse_docs(r)][:10]
+    rows_with_docs = [r for r in _ROWS if _parse_docs(r)][:20]
     if not rows_with_docs:
         pytest.skip("no rows with non-empty aql_results found")
 
@@ -203,25 +203,45 @@ def test_phase2_filter() -> None:
                 "q_index":        i,
                 "question":       question,
                 "tier":           cfg.rule_hit,
+                "q_type":         profile.question_type,
                 "filter_summary": filter_summary,
             }
             jf.write(json.dumps(record) + "\n")
 
             n_kept = filter_summary.get("n_full", 0) + filter_summary.get("n_abstract", 0)
             tf.write(
-                f"Q{i}: {question[:80]}\n"
-                f"  tier={cfg.rule_hit} | "
-                f"full={filter_summary.get('n_full',0)}  "
-                f"abstract={filter_summary.get('n_abstract',0)}  "
-                f"dropped={filter_summary.get('n_drop',0)}  "
-                f"(of {filter_summary.get('n_total',0)})\n"
+                f"Q{i} [{cfg.rule_hit} | {profile.question_type}]: "
+                f"{question[:90]}\n"
+                f"  full={filter_summary.get('n_full', 0)}  "
+                f"abstract={filter_summary.get('n_abstract', 0)}  "
+                f"dropped={filter_summary.get('n_drop', 0)}  "
+                f"(of {filter_summary.get('n_total', 0)})\n"
             )
-            for t in filter_summary.get("full_titles", []):
-                tf.write(f"    + {t}\n")
-            for t in filter_summary.get("abstract_titles", []):
-                tf.write(f"    ~ {t}\n")
-            for t in filter_summary.get("drop_titles", []):
-                tf.write(f"    - {t}\n")
+
+            # full docs — marked with +
+            for entry in filter_summary.get("full_titles", []):
+                title = entry if isinstance(entry, str) else entry.get("title", "?")
+                sim   = entry.get("sim", "") if isinstance(entry, dict) else ""
+                flag  = entry.get("title_match", "") if isinstance(entry, dict) else ""
+                sim_str = f" sim={sim:.3f}" if sim != "" else ""
+                tf.write(f"    [FULL]     {title}{sim_str}{flag}\n")
+
+            # abstract docs — marked with ~
+            for entry in filter_summary.get("abstract_titles", []):
+                title = entry if isinstance(entry, str) else entry.get("title", "?")
+                sim   = entry.get("sim", "") if isinstance(entry, dict) else ""
+                flag  = entry.get("title_match", "") if isinstance(entry, dict) else ""
+                sim_str = f" sim={sim:.3f}" if sim != "" else ""
+                tf.write(f"    [ABSTRACT] {title}{sim_str}{flag}\n")
+
+            # dropped docs — marked with -
+            for entry in filter_summary.get("drop_titles", []):
+                title = entry if isinstance(entry, str) else entry.get("title", "?")
+                sim   = entry.get("sim", "") if isinstance(entry, dict) else ""
+                flag  = entry.get("title_match", "") if isinstance(entry, dict) else ""
+                sim_str = f" sim={sim:.3f}" if sim != "" else ""
+                tf.write(f"    [DROP]     {title}{sim_str}{flag}\n")
+
             tf.write("---\n")
 
             assert n_kept >= cfg.doc_filter_min_keep or n_kept == len(docs), (
@@ -240,8 +260,8 @@ def test_phase2_filter() -> None:
 def _pick_questions_by_tier(
     target_counts: Dict[str, int],
 ) -> List[Tuple[str, str, str]]:
-    """Return list of (question, aql_results_str, tier_hit).
-    Reads tier assignments from phase1 output if available; otherwise
+    """return list of (question, aql_results_str, tier_hit).
+    reads tier assignments from phase1 output if available; otherwise
     runs inline profiling so the test is self-contained."""
     phase1_path = OUTPUT_DIR / "phase1_profiles.jsonl"
     selected: List[Tuple[str, str, str]] = []
@@ -286,13 +306,13 @@ def _pick_questions_by_tier(
 
 @pytest.mark.timeout(480)
 def test_phase3_generation() -> None:
-    """Run full pipeline on ~5 questions, one per tier where possible.
-    Asserts: non-empty answer, valid rule_hit, answer length > 50 chars.
+    """run full pipeline on ~5 questions, one per tier where possible.
+    asserts: non-empty answer, valid rule_hit, answer length > 50 chars.
 
-    Timeout set to 480s to accommodate mistralai/mistral-large generation
+    timeout set to 480s to accommodate mistralai/mistral-large generation
     (timeout_generate_s=360 in tier-3 / safety-tier3) plus test overhead.
 
-    target_counts reflects actual Phase 1 distribution:
+    target_counts reflects actual phase 1 distribution:
       tier-m    x2  (dominant path, 64% of dataset -- deserves double coverage)
       tier-1-def x1 (5 questions available)
       tier-2a   x1  (quantitative)
