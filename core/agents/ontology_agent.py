@@ -108,6 +108,18 @@ _QUESTION_STOPWORDS = frozenset({
     "other", "such", "more", "also", "both", "each", "than", "then",
 })
 
+# phrases that indicate the question specifies a geological or long timescale
+# as the scope of inquiry. when detected, a mandatory constraint block is
+# injected into the filter prompt to prevent the LLM from using the timescale
+# qualifier as a drop criterion for mechanistically relevant papers.
+_TIMESCALE_SCOPE_PHRASES = frozenset({
+    "geological timescale", "geological timescales",
+    "geologic timescale", "geologic timescales",
+    "over long timescales", "over long time scales",
+    "over millions of years", "over geological time",
+    "on geological timescales", "on geologic timescales",
+})
+
 
 class OntologyAgent(BaseAgent):
     def __init__(self, llm, prompt_dir: str = "prompts/ontology"):
@@ -595,13 +607,32 @@ class OntologyAgent(BaseAgent):
                 "always choose 'abstract' over 'drop'.\n"
             )
 
+        # --- timescale scope block (fires when question names a geological/long
+        #     timescale as context). prevents the LLM from using the timescale
+        #     qualifier as a drop criterion for mechanistically relevant papers. ---
+        q_lower = question.lower()
+        timescale_block = ""
+        if any(phrase in q_lower for phrase in _TIMESCALE_SCOPE_PHRASES):
+            timescale_block = (
+                "\n⚠ TIMESCALE-SCOPED QUESTION — MANDATORY CONSTRAINT:\n"
+                "This question mentions a geological or long timescale "
+                "(e.g. 'geological timescales') as the context for the phenomenon.\n"
+                "This is background framing, NOT a filter on paper timescale.\n"
+                "Papers that study the named mechanisms (e.g. tectonic activity, "
+                "geomagnetic field variation, earthquake coupling) at any timescale "
+                "— including historical, instrumental, or event-scale — are directly "
+                "relevant and must NOT be dropped on timescale grounds alone.\n"
+                "Classify such papers as 'abstract' or 'full', never 'drop'.\n"
+            )
+
         prompt = (
             f"You are a document relevance filter for a scientific RAG pipeline.\n\n"
             f"Question: {question}\n\n"
             f"Question type: {q_type or 'unspecified'}\n"
             f"Routing tier: {rule_hit} ({tier_label})\n"
             f"{tier_desc}\n"
-            f"{comparison_block}\n"
+            f"{comparison_block}"
+            f"{timescale_block}\n"
             f"Ontology AV-pairs (all pairs, ranked by centrality):\n{ontology_lines}\n\n"
             f"{profile_dim_line}\n\n"
             f"Each document has a pre-computed similarity score (sim, 0-1) and optional\n"
@@ -664,8 +695,8 @@ class OntologyAgent(BaseAgent):
             f'  - At least {min_total} combined "full"+"abstract" required.\n\n'
             f"Documents:\n{doc_list}\n\n"
             f"Return ONLY valid JSON:\n"
-            f'{{"documents": [{{"classification": "full"|"abstract"|"drop", '
-            f'"reason": "<one sentence>"}}, ...]}}\n'
+            f'{{\"documents\": [{{\"classification\": \"full\"|\"abstract\"|\"drop\", '
+            f'\"reason\": \"<one sentence>\"}}, ...]}}\n'
             f"No prose outside the JSON. The list length must equal {n}."
         )
 
