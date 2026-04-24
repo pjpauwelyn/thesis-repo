@@ -4,7 +4,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from core.agents.base_agent import BaseAgent
 from core.utils.data_models import DynamicOntology
@@ -20,6 +20,9 @@ class Answer:
     answer: str
     references: List[str] = field(default_factory=list)
     formatted_references: List[str] = field(default_factory=list)
+    # set of 1-based doc indices the LLM cited inline, e.g. {1, 3, 4}
+    # populated by generate(); used by pipeline.py to build verified refs
+    cited_indices: Set[int] = field(default_factory=set)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
@@ -109,14 +112,85 @@ class GenerationAgent(BaseAgent):
         refine_prompt = self._build_generation_prompt(
             template, question, draft, text_context, ontology, use_draft=use_draft
         )
-        final_answer = self._call_llm(
+        raw_answer = self._call_llm(
             refine_prompt, max_tokens=max_output_tokens, system=system_prompt
         )
 
-        refs     = self._extract_references(final_answer)
-        fmt_refs = self._extract_formatted_references(final_answer)
+        # Strip any ## References section the LLM may have written despite
+        # the prompt instruction not to.  The pipeline appends a verified
+        # ## References block built from the known-good doc list, so any
+        # LLM-produced section would duplicate or conflict with it.
+        answer_body = self._strip_references_section(raw_answer)
 
-        return Answer(answer=final_answer, references=refs, formatted_references=fmt_refs)
+        # Extract which doc indices the LLM cited inline so the pipeline
+        # can build a filtered, verified reference list.
+        cited = self._extract_cited_indices(answer_body)
+
+        self.logger.info(
+            "generation produced %d chars, cited indices: %s",
+            len(answer_body),
+            sorted(cited) if cited else "none",
+        )
+        if not cited:
+            self.logger.warning(
+                "generation no inline [N] markers found -- "
+                "pipeline will attach all available references"
+            )
+
+        # Keep legacy extraction for backward compat (tests that inspect
+        # Answer.references / Answer.formatted_references directly).
+        refs     = self._extract_references(raw_answer)
+        fmt_refs = self._extract_formatted_references(raw_answer)
+
+        return Answer(
+            answer=answer_body,
+            references=refs,
+            formatted_references=fmt_refs,
+            cited_indices=cited,
+        )
+
+    # ------------------------------------------------------------------
+    # cited_indices extraction
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_cited_indices(answer_body: str) -> Set[int]:
+        """Return the set of 1-based integer doc indices cited inline.
+
+        Scans only the answer body (after _strip_references_section has
+        removed any ## References block), so stray numbers in a reference
+        list do not inflate the set.
+
+        Matches [N] and [N, M] and [N][M] patterns.
+        """
+        return {int(m) for m in re.findall(r"\[(\d+)\]", answer_body)}
+
+    # ------------------------------------------------------------------
+    # references section stripping
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _strip_references_section(text: str) -> str:
+        """Remove everything from the first '## References' heading onward.
+
+        Handles the same LLM formatting variations as _find_references_section.
+        Returns the original text unchanged if no heading is found.
+        """
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            stripped = line.strip().lstrip("#").strip().strip("*_ ")
+            if (
+                "references" in stripped.lower()
+                and not stripped.lstrip("*_ ").startswith("[")
+            ):
+                # Keep everything before this line, strip trailing blank lines.
+                body = "\n".join(lines[:i]).rstrip()
+                return body
+        return text
+
+    # ------------------------------------------------------------------
+    # prompt building
+    # ------------------------------------------------------------------
 
     def _build_generation_prompt(
         self,
@@ -160,6 +234,10 @@ class GenerationAgent(BaseAgent):
 
         return prompt
 
+    # ------------------------------------------------------------------
+    # LLM call
+    # ------------------------------------------------------------------
+
     def _call_llm(
         self, prompt: str, max_tokens: int = 700, system: str = ""
     ) -> str:
@@ -178,18 +256,14 @@ class GenerationAgent(BaseAgent):
             )
         return text
 
+    # ------------------------------------------------------------------
+    # legacy reference extraction (kept for backward compat)
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _find_references_section(text: str) -> Optional[int]:
-        """Return the line index of the '## References' heading, or None.
-
-        Handles common LLM formatting variations:
-          - leading '#' markers (## / ###)
-          - markdown bold/italic wrappers (**## References**, *References*)
-          - surrounding whitespace
-        Does NOT match lines that start with '[' (inline citation markers).
-        """
+        """Return the line index of the '## References' heading, or None."""
         for i, line in enumerate(text.split("\n")):
-            # strip leading '#' (heading markers) and then markdown bold/italic
             stripped = line.strip()
             stripped = stripped.lstrip("#").strip()
             stripped = stripped.strip("*_ ")
@@ -201,11 +275,7 @@ class GenerationAgent(BaseAgent):
         return None
 
     def _extract_references(self, answer: str) -> List[str]:
-        """Extract plain reference strings from the ## References section.
-
-        Falls back to a body scan anchored on 'openalex.org/W' when the
-        section header is absent or the section yields no entries.
-        """
+        """Extract plain reference strings (legacy; pipeline.py is now authoritative)."""
         lines = answer.split("\n")
         start = self._find_references_section(answer)
 
@@ -223,9 +293,6 @@ class GenerationAgent(BaseAgent):
             if refs:
                 return refs
 
-        # Fallback: scan the full answer body.
-        # Only accept lines that contain a real OpenAlex URI so fabricated
-        # references (no URI in {documents}) cannot slip through.
         fallback: List[str] = []
         for line in lines:
             stripped = line.strip()
@@ -239,16 +306,7 @@ class GenerationAgent(BaseAgent):
         return fallback
 
     def _extract_formatted_references(self, answer: str) -> List[str]:
-        """Extract formatted '[N] Author...' reference lines from the answer.
-
-        Primary path: parse from the ## References section.
-        Fallback: scan the full answer body for lines matching
-          [N] ...openalex.org/W...
-        The openalex.org/W anchor ensures only URIs that were present in
-        the refinement context ({documents}) are captured — the LLM cannot
-        hallucinate a URI that passes this filter if the refinement prompt
-        only contained verified URIs.
-        """
+        """Extract formatted '[N] Author...' lines (legacy; pipeline.py is now authoritative)."""
         lines = answer.split("\n")
         start = self._find_references_section(answer)
 
@@ -260,8 +318,6 @@ class GenerationAgent(BaseAgent):
                     break
                 if not stripped:
                     continue
-                # Normalise "N. Author..." → "[N] Author..." so both numbered-list
-                # and bracket-prefixed formats are captured.
                 normalised = re.sub(r"^(\d+)\.\s+", r"[\1] ", stripped)
                 if (
                     normalised.startswith("[")
@@ -272,9 +328,6 @@ class GenerationAgent(BaseAgent):
             if refs:
                 return refs
 
-        # Fallback: scan the full answer body.
-        # Anchored to openalex.org/W — only lines whose URI came from the
-        # refinement context ({documents}) are captured.
         fallback: List[str] = []
         for line in lines:
             stripped = line.strip()
