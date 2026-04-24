@@ -82,7 +82,31 @@ _COMPARISON_TYPES = frozenset({"comparison", "method_eval"})
 
 # centrality threshold above which an av-pair value/attribute match in a doc
 # title is flagged as [title-match] in the prompt to help the llm decide full.
-_TITLE_MATCH_CENTRALITY = 0.65
+# lowered from 0.65 → 0.50 so that moderately-central terms (e.g. "sea ice"
+# in a cryosphere carbon-flux question) also trigger the flag.
+_TITLE_MATCH_CENTRALITY = 0.50
+
+# words that signal adversarial/null-result framing in a doc title.
+# docs matching any of these are flagged [retain-adversarial] before the llm
+# sees them — the flag overrides the llm's title-level prior so the model
+# cannot silently drop contrarian-framed papers that are primary evidence.
+_ADVERSARIAL_TITLE_WORDS = frozenset({
+    "inexplicable", "implausible", "no evidence", "absence of",
+    "refutes", "unlikely", "challenges", "contradicts",
+})
+
+# minimum number of question content-words (length >= 5, non-stopword) that
+# must appear verbatim in a doc title to fire the [question-term-match] flag.
+_QUESTION_TERM_MATCH_MIN = 2
+
+# common function words filtered out before question-term matching so that
+# generic terms like "earth" or "about" do not inflate hit counts.
+_QUESTION_STOPWORDS = frozenset({
+    "what", "which", "where", "when", "does", "this", "that", "with",
+    "from", "have", "been", "their", "there", "about", "over", "into",
+    "under", "between", "through", "during", "earth", "these", "those",
+    "other", "such", "more", "also", "both", "each", "than", "then",
+})
 
 
 class OntologyAgent(BaseAgent):
@@ -509,7 +533,7 @@ class OntologyAgent(BaseAgent):
         # --- build title-match set for high-centrality av-pairs ---
         # a doc gets [title-match] in the listing if a high-centrality pair's
         # value or attribute appears verbatim (case-insensitive) in its title.
-        # this gives the llm a concrete signal when breaking full/abstract ties.
+        # threshold lowered to 0.50 so moderately-central terms also fire.
         high_cent_terms = [
             t.strip().lower()
             for av in av_pairs
@@ -518,18 +542,36 @@ class OntologyAgent(BaseAgent):
             if t and len(t.strip()) >= 4
         ]
 
-        # --- document list with sim scores + title-match flag ---
+        # --- pre-compute question content-words for [question-term-match] ---
+        q_content_words = [
+            w for w in re.findall(r"[a-z]{5,}", question.lower())
+            if w not in _QUESTION_STOPWORDS
+        ]
+
+        # --- document list with sim scores + multi-flag injection ---
         doc_lines: List[str] = []
         for idx, doc in enumerate(docs):
             title = doc.get("title", "Unknown")
             sim = sim_by_idx.get(idx, 0.0)
             title_lower = title.lower()
-            flag = (
-                " [title-match]"
-                if any(term in title_lower for term in high_cent_terms)
-                else ""
-            )
-            doc_lines.append(f"{idx + 1}. {title}{flag}\n   sim={sim:.3f}")
+
+            flags: List[str] = []
+
+            # [title-match]: high-centrality ontology term in title
+            if any(term in title_lower for term in high_cent_terms):
+                flags.append("[title-match]")
+
+            # [retain-adversarial]: contrarian/null-result framing in title
+            if any(word in title_lower for word in _ADVERSARIAL_TITLE_WORDS):
+                flags.append("[retain-adversarial]")
+
+            # [question-term-match]: >=2 question content-words in title
+            qtm_hits = sum(1 for w in q_content_words if w in title_lower)
+            if qtm_hits >= _QUESTION_TERM_MATCH_MIN:
+                flags.append("[question-term-match]")
+
+            flag_str = (" " + " ".join(flags)) if flags else ""
+            doc_lines.append(f"{idx + 1}. {title}{flag_str}\n   sim={sim:.3f}")
         doc_list = "\n".join(doc_lines)
 
         # --- tier guidance ---
@@ -562,15 +604,21 @@ class OntologyAgent(BaseAgent):
             f"{comparison_block}\n"
             f"Ontology AV-pairs (all pairs, ranked by centrality):\n{ontology_lines}\n\n"
             f"{profile_dim_line}\n\n"
-            f"Each document has a pre-computed similarity score (sim, 0-1) and an optional\n"
-            f"[title-match] flag when a high-centrality ontology concept appears verbatim\n"
-            f"in the document title:\n"
-            f"  sim         -- tf-idf cosine similarity of title+abstract vs question text.\n"
-            f"                 Unbiased starting hypothesis. Use it to form an initial view,\n"
-            f"                 then reason against the full ontology and question intent.\n"
-            f"  [title-match] -- a high-centrality concept from the ontology appears directly\n"
-            f"                 in this document's title. Strong prior for 'full' unless the\n"
-            f"                 broader context of the abstract reveals a different focus.\n"
+            f"Each document has a pre-computed similarity score (sim, 0-1) and optional\n"
+            f"flags computed before this prompt:\n"
+            f"  sim                    -- tf-idf cosine similarity of title+abstract vs\n"
+            f"                            question text. Unbiased starting hypothesis.\n"
+            f"                            Use it to form an initial view, then reason\n"
+            f"                            against the full ontology and question intent.\n"
+            f"  [title-match]          -- a high-centrality ontology concept appears\n"
+            f"                            verbatim in this title. Strong prior for 'full'.\n"
+            f"  [retain-adversarial]   -- title uses contrarian/null-result framing\n"
+            f"                            (e.g. 'inexplicable', 'no evidence', 'refutes').\n"
+            f"                            This paper is primary evidence — classify as\n"
+            f"                            'abstract' or 'full', NOT 'drop'.\n"
+            f"  [question-term-match]  -- ≥2 content-words from the question appear\n"
+            f"                            verbatim in this title. Do not drop this paper\n"
+            f"                            without a very specific, concrete reason.\n"
             f"  - A paper can score low on sim yet be conceptually central to the question.\n"
             f"  - A paper can score high on sim due to shared surface vocabulary while\n"
             f"    addressing a clearly different phenomenon.\n\n"
@@ -601,11 +649,8 @@ class OntologyAgent(BaseAgent):
             f"               (b) you can state a specific, concrete reason it is off-topic.\n"
             f"               Sharing a domain label with one side of the question does NOT\n"
             f"               justify drop if that domain is named in the question.\n"
-            f"               A paper whose title or abstract expresses doubt, contradiction,\n"
-            f"               or reports a null/negative result regarding a mechanism named\n"
-            f"               in the question is primary evidence — do NOT drop it. Papers\n"
-            f"               that challenge a mechanism are as relevant as papers that\n"
-            f"               confirm it.\n"
+            f"               A [retain-adversarial]-flagged paper uses contrarian framing —\n"
+            f"               it is primary evidence; do NOT drop it.\n"
             f"               A stated timescale or spatial scope in the question does NOT\n"
             f"               justify dropping a paper that provides mechanistic evidence at\n"
             f"               a different timescale or adjacent region — use 'abstract'.\n"
