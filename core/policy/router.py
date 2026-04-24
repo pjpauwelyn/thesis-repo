@@ -114,15 +114,35 @@ class Router:
         )
 
     def _matches(self, when: Dict[str, Any], p: QuestionProfile) -> bool:
+        """evaluate a when: block — all top-level keys must pass.
+
+        Supports:
+          field: {op: value}          plain scalar comparison
+          question_type: {in: [...]}  membership test
+          any: {k: v, ...}            flat-dict OR  (legacy tier-2b style)
+          any: [{k: v}, {k: v}, ...]  list-of-dicts OR  (new style, supports nesting)
+          all: [{k: v}, {k: v}, ...]  list-of-dicts AND block
+          always: true                unconditional match (fallback)
+        """
         for key, cond in when.items():
             if key == "always":
                 return bool(cond)
             if key == "any":
-                if not any(self._eval(k, v, p) for k, v in cond.items()):
+                # support both flat-dict (legacy) and list-of-dicts (new)
+                items = cond if isinstance(cond, list) else [{k: v} for k, v in cond.items()]
+                if not any(self._matches_block(block, p) for block in items):
+                    return False
+            elif key == "all":
+                items = cond if isinstance(cond, list) else [{k: v} for k, v in cond.items()]
+                if not all(self._matches_block(block, p) for block in items):
                     return False
             elif not self._eval(key, cond, p):
                 return False
         return True
+
+    def _matches_block(self, block: Dict[str, Any], p: QuestionProfile) -> bool:
+        """evaluate a single flat condition block — all keys must pass."""
+        return all(self._eval(k, v, p) for k, v in block.items())
 
     def _eval(self, field: str, cond: Any, p: QuestionProfile) -> bool:
         if isinstance(cond, dict) and "in" in cond:

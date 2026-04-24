@@ -1,4 +1,4 @@
-# adaptive routing rules (set5 → v5)
+# adaptive routing rules (set5 → v6)
 #
 # evaluated top-to-bottom; first match wins.
 # the final fallback rule is always reached if nothing else matches.
@@ -16,13 +16,22 @@
 # --------------------------
 # tier-1-def / tier-1 : abstracts + small — definitional/factual or low
 #   complexity; no PDF fetch needed, short output is sufficient.
-# tier-m              : medium everywhere — mid-complexity catch-all.
-# tier-2a             : high quant standalone — medium refinement + medium
+# tier-m              : medium everywhere — explanatory catch-all.
+#   UPPER BOUND REMOVED: tier-m is now the catch-all for ALL complexity >= 0.40
+#   questions that were not caught by tier-3 or tier-2a. Explanatory mechanism
+#   questions at cx=0.80 with low methodological_depth belong here, not tier-3.
+#   mistral-medium + excerpts_narrow + use_draft=True is the right pipeline for
+#   "How does X work?" questions regardless of how complex the explanation is.
+# tier-2a             : high quant, low meth — medium refinement + medium
 #   generation for numeric extraction and focused synthesis.
 # tier-2b             : quant + focal — large refinement for spatial/temporal
 #   numeric fidelity; medium generation.
-# tier-3              : complex mechanism/comparison — large refinement
-#   + large generation (OpenRouter) for coherent 1400-token synthesis.
+# tier-3              : genuine methodology synthesis ONLY.
+#   Gate: methodological_depth >= 0.55, OR (cx >= 0.75 AND meth >= 0.45),
+#   OR (type in comparison/method_eval AND meth >= 0.45).
+#   Rationale: full-text (35k tokens) dilutes explanatory answers; the extra
+#   context only helps when the question genuinely requires cross-paper
+#   methodology evaluation. large model justified only for this subset.
 #
 # Per-call timeouts (model-aware)
 # --------------------------------
@@ -32,7 +41,7 @@
 # Measured baselines (Mistral API, Apr 2026):
 #   small  : TTFT ~0.3s,  ~130 tok/s  → 700 tok ≈ 6s   → 60s ceiling
 #   medium : TTFT ~1.3s,  ~53 tok/s   → 700 tok ≈ 15s  → 150s ceiling
-#   large  : TTFT ~30s,   ~47 tok/s   → 1400 tok ≈ 60s → 360s ceiling
+#   large  : TTFT ~30s,   ~47 tok/s   → 1000 tok ≈ 50s → 360s ceiling
 #
 # NOTE: safety-tier3 (confidence < 0.60) is handled directly in router.py
 # and does NOT appear here. Its timeouts match tier-3 (large everywhere).
@@ -45,11 +54,11 @@
 # tier-2b     : before tier-3 — quant-focal beats complex-type so a
 #               high-quant focal question uses large-refine+medium-gen
 #               rather than large everywhere.
-# tier-3      : complex type check.
-# tier-2a     : standalone quant catch.
-# tier-m      : mid-complexity catch-all [0.40, 0.60).
-# tier-1      : low complexity <0.40 (ceiling raised from 0.35 to absorb
-#               profiler drift zone 0.35-0.40).
+# tier-3      : methodology synthesis gate (meth-driven, not cx-driven).
+# tier-2a     : standalone quant catch (meth guard prevents stealing tier-3
+#               questions that happen to have high quant).
+# tier-m      : catch-all for cx >= 0.40 (no upper bound).
+# tier-1      : low complexity <0.40.
 # fallback    : always: true.
 
 rules:
@@ -115,13 +124,41 @@ rules:
       rule_hit:                 tier-2b
       reason:                   "quantitative focal -- large refinement for spatial/temporal fidelity, medium generation"
 
-# tier-3: complex mechanism / method-eval / comparison
-# Large model for both agents: refinement must parse dense full-text evidence
-# and generation must synthesise coherent 1400-token responses.
+# tier-3: genuine methodology synthesis
+# Fires ONLY when the question requires cross-paper methodology evaluation,
+# not merely for high complexity. The meth gate is the primary signal.
+#
+# Gate (any one of these must be true):
+#   a) methodological_depth >= 0.55  (strong method-eval signal regardless of type)
+#   b) complexity >= 0.75 AND meth >= 0.45  (very complex + moderate method grounding)
+#   c) type in comparison/method_eval AND meth >= 0.45  (comparative synthesis needed)
+#
+# Why not complexity alone:
+#   A mechanism question at cx=0.80 and meth=0.25 (e.g. "How does InSAR resolve
+#   surface displacement?") is an explanatory question — medium model + excerpts_narrow
+#   + use_draft=True is the right pipeline. Flooding it with 35k tokens of dense
+#   paper text and a 1000-token output budget causes rambling over-hedged answers.
+#   Only when the question genuinely needs to evaluate or compare methods across
+#   papers does the large model + full excerpts earn their cost.
+#
+# max_output_tokens: 1000 (reduced from 1400)
+#   The real length governor is the generation prompt's paragraph structure, not
+#   this ceiling. 1000 tokens is sufficient for a well-structured comparative
+#   analysis (approx 700-750 words). Setting it to 1400 was a hold-over from
+#   when tier-3 caught all cx >= 0.60 questions and needed headroom for long
+#   explanations. With tier-3 now reserved for synthesis-only questions, 1000 is
+#   appropriate and prevents over-long responses on a slow/expensive model.
   - name: tier_3
     when:
-      complexity: {ge: 0.60}
       question_type: {in: [mechanism, method_eval, comparison]}
+      any:
+        - methodological_depth: {ge: 0.55}
+        - all:
+            complexity: {ge: 0.75}
+            methodological_depth: {ge: 0.45}
+        - all:
+            question_type: {in: [comparison, method_eval]}
+            methodological_depth: {ge: 0.45}
     config:
       model_name:               mistralai/mistral-large
       refinement_model_name:    mistralai/mistral-large
@@ -132,7 +169,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_fulltext.txt
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
-      max_output_tokens:        1400
+      max_output_tokens:        1000
       system_prompt_modifier:   "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' — do not present it as a cited fact."
       doc_filter_min_keep:      7
       scope_filter:             false
@@ -141,12 +178,15 @@ rules:
       timeout_generate_s:       360
       use_draft:                false
       rule_hit:                 tier-3
-      reason:                   "complex mechanism/comparison -- large refinement + large generation"
+      reason:                   "methodology synthesis (meth>=0.55 OR cx>=0.75+meth>=0.45 OR comparison/method_eval+meth>=0.45)"
 
 # tier-2a: standalone high quantitativity (no strong spatial/temporal focus)
+# methodological_depth guard: prevents capturing questions that also have high
+# meth — those should be evaluated by tier-3 first.
   - name: tier_2a
     when:
       quantitativity: {ge: 0.55}
+      methodological_depth: {lt: 0.55}
     config:
       model_name:               mistral-medium-latest
       refinement_model_name:    mistral-medium-latest
@@ -166,14 +206,22 @@ rules:
       timeout_generate_s:       150
       use_draft:                false
       rule_hit:                 tier-2a
-      reason:                   "high quantitativity -- medium refinement + medium generation for numeric extraction"
+      reason:                   "high quantitativity + low meth -- medium for numeric extraction"
 
-# tier-m: mid-complexity catch-all [0.40, 0.60)
-# Lower bound raised from 0.35 to 0.40 to match the raised tier-1 ceiling.
+# tier-m: explanatory catch-all for complexity >= 0.40
+# UPPER BOUND REMOVED. This is now the correct home for ALL explanatory
+# mechanism questions regardless of complexity score, as long as they were
+# not caught by tier-3 (high meth) or tier-2a (high quant).
+#
+# Why this is right for cx=0.80 mechanism questions with low meth:
+#   mistral-medium + excerpts_narrow + use_draft=True:
+#   - draft gives structure to the explanation
+#   - narrow excerpts provide grounded claims without flooding the context
+#   - medium model handles explanatory prose quality perfectly well
+#   - avoids the full-text dilution problem observed in experiments
   - name: tier_m
     when:
       complexity: {ge: 0.40}
-      complexity_lt: {lt: 0.60}
     config:
       model_name:               mistral-medium-latest
       evidence_mode:            excerpts_narrow
@@ -192,7 +240,7 @@ rules:
       timeout_generate_s:       150
       use_draft:                true
       rule_hit:                 tier-m
-      reason:                   "mid-complexity [0.40, 0.60) -- medium for both agents"
+      reason:                   "explanatory catch-all (cx>=0.40, low meth/quant) -- medium everywhere"
 
 # tier-1: simple / low-complexity -- abstracts only, no PDF fetch
 # Ceiling raised from 0.35 to 0.40 to absorb the profiler drift zone.

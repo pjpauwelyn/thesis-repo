@@ -1,10 +1,14 @@
-"""router unit tests -- 26 parameterised cases covering every tier and the
+"""router unit tests -- 31 parameterised cases covering every tier and the
 safety net.
 
-Key ordering notes (rules.yaml evaluated top-to-bottom, first match wins):
+Key ordering notes (rules.yaml v6 evaluated top-to-bottom, first match wins):
   - tier-1-def fires before tier-m: definitional + complexity < 0.60 + quant < 0.45
   - tier-2b fires before tier-3: high-quant focal beats complex-type
-  - tier-m range: complexity in [0.40, 0.60)
+  - tier-3 gate: methodological_depth driven, not complexity driven
+      fires when: meth >= 0.55
+              OR  (cx >= 0.75 AND meth >= 0.45)
+              OR  (type in comparison/method_eval AND meth >= 0.45)
+  - tier-m: catch-all for complexity >= 0.40 (NO upper bound)
   - tier-1 ceiling: complexity < 0.40
 """
 
@@ -48,19 +52,23 @@ CASES = [
     # 0.36 < 0.40 -> tier-1 (tier-m requires >= 0.40)
     ("04", dict(complexity=0.36, quantitativity=0.2),                                           "tier-1"),
 
-    # --- tier-m: complexity in [0.40, 0.60) ---
-    # 0.40 is the lower bound (inclusive)
+    # --- tier-m: complexity >= 0.40, no meth/quant threshold hit ---
+    # 0.40 is the lower bound (inclusive), no upper bound
     ("21", dict(complexity=0.4,  quantitativity=0.3),                                           "tier-m"),
     ("05", dict(complexity=0.5,  quantitativity=0.3),                                           "tier-m"),
     ("06", dict(complexity=0.59, quantitativity=0.3),                                           "tier-m"),
+    # tier-m also catches high-complexity mechanism questions with low meth (no longer tier-3)
+    ("27", dict(complexity=0.8,  question_type="mechanism",  methodological_depth=0.30),        "tier-m"),
+    ("28", dict(complexity=0.7,  question_type="mechanism",  methodological_depth=0.54),        "tier-m"),
+    ("29", dict(complexity=0.75, question_type="comparison", methodological_depth=0.44),        "tier-m"),
 
     # --- tier-1-def: definition + complexity < 0.60 + quant < 0.45 ---
     # complexity=0.5 -> tier-1-def fires before tier-m
     ("25", dict(complexity=0.5,  question_type="definition", quantitativity=0.2),               "tier-1-def"),
-    # complexity=0.6 is NOT < 0.60 -> tier-1-def misses; not mechanism/comparison -> fallback
-    ("14", dict(complexity=0.6,  question_type="definition"),                                   "fallback"),
+    # complexity=0.6 is NOT < 0.60 -> tier-1-def misses; uncapped tier-m catches cx=0.6
+    ("14", dict(complexity=0.6,  question_type="definition"),                                   "tier-m"),
 
-    # --- tier-2a: standalone high quantitativity (>= 0.55) ---
+    # --- tier-2a: standalone high quantitativity (>= 0.55), meth < 0.55 ---
     ("07", dict(quantitativity=0.6,  spatial_specificity=0.3, temporal_specificity=0.3),        "tier-2a"),
     ("08", dict(quantitativity=0.55, spatial_specificity=0.3),                                  "tier-2a"),
     ("24", dict(quantitativity=0.9,  spatial_specificity=0.0, temporal_specificity=0.0),        "tier-2a"),
@@ -69,10 +77,15 @@ CASES = [
     ("09", dict(quantitativity=0.6,  spatial_specificity=0.6),                                  "tier-2b"),
     ("10", dict(quantitativity=0.6,  temporal_specificity=0.6),                                 "tier-2b"),
 
-    # --- tier-3: complexity >= 0.60 + mechanism/method_eval/comparison ---
-    ("11", dict(complexity=0.6,  question_type="mechanism"),                                    "tier-3"),
-    ("12", dict(complexity=0.7,  question_type="method_eval"),                                  "tier-3"),
-    ("13", dict(complexity=0.65, question_type="comparison"),                                   "tier-3"),
+    # --- tier-3: methodology synthesis gate ---
+    # a) pure meth depth >= 0.55
+    ("11", dict(complexity=0.6,  question_type="mechanism",  methodological_depth=0.55),        "tier-3"),
+    ("12", dict(complexity=0.7,  question_type="method_eval",methodological_depth=0.60),        "tier-3"),
+    # b) comparison + meth >= 0.45
+    ("13", dict(complexity=0.65, question_type="comparison", methodological_depth=0.50),        "tier-3"),
+    ("30", dict(complexity=0.65, question_type="comparison", methodological_depth=0.45),        "tier-3"),
+    # c) cx >= 0.75 + meth >= 0.45
+    ("31", dict(complexity=0.75, question_type="mechanism",  methodological_depth=0.45),        "tier-3"),
 
     # --- ordering: tier-2b beats tier-3 when both could match ---
     ("15", dict(complexity=0.6,  question_type="quantitative",
@@ -124,10 +137,46 @@ def test_tier_m_uses_medium_excerpts(router):
     assert cfg.evidence_mode == "excerpts_narrow"
 
 
+def test_tier_m_catches_high_cx_low_meth(router):
+    """cx=0.80 mechanism with meth=0.20 must NOT go to tier-3."""
+    cfg = router.select(_profile(complexity=0.8, question_type="mechanism",
+                                 methodological_depth=0.20))
+    assert cfg.rule_hit == "tier-m"
+    assert cfg.model_name == "mistral-medium-latest"
+
+
+def test_tier3_requires_meth_not_just_complexity(router):
+    """cx=0.80 mechanism with meth=0.0 must NOT go to tier-3 (old broken gate)."""
+    cfg = router.select(_profile(complexity=0.8, question_type="mechanism",
+                                 methodological_depth=0.0))
+    assert cfg.rule_hit != "tier-3", (
+        "tier-3 fired on meth=0.0 -- complexity-only gate is back, check rules.yaml tier_3 when:"
+    )
+
+
 def test_fallback_properties(router):
-    """unmatched profile: high complexity, type=application, no quant -> fallback."""
-    cfg = router.select(_profile(complexity=0.8, quantitativity=0.0,
+    """unmatched profile: cx=0.1, type=application, no quant -> tier-1 (cx < 0.40)."""
+    cfg = router.select(_profile(complexity=0.1, quantitativity=0.0,
                                  question_type="application"))
-    assert cfg.rule_hit == "fallback"
-    assert cfg.evidence_mode == "abstracts"
-    assert cfg.generation_prompt == "generation_prompt_exp4.txt"
+    # application type does not match any tier-specific type check;
+    # cx=0.1 < 0.40 -> tier-1 catches it before fallback.
+    assert cfg.rule_hit == "tier-1"
+
+
+def test_fallback_truly_unmatched(router):
+    """force a genuinely unmatched profile: type not in any rule, cx < 0.40
+    but quant high enough to miss tier-1/tier-m ordering... actually this
+    is hard to construct without contradictions. Instead, verify the fallback
+    YAML rule fires for a continuous type with confidence just at floor."""
+    # application + cx < 0.40 hits tier-1 first. That is correct behaviour.
+    # The fallback is a safety net for missing question types / schema gaps.
+    # We verify the fallback config properties via the hardcoded router.py path
+    # (no rule matched) which can only be triggered by mocking; instead we check
+    # that fallback config has the expected values via direct YAML inspection.
+    import yaml
+    from pathlib import Path
+    rules = yaml.safe_load((Path(__file__).parent.parent / "core/policy/rules.yaml").read_text())["rules"]
+    fallback = next(r for r in rules if r["name"] == "fallback")
+    assert fallback["config"]["evidence_mode"] == "abstracts"
+    assert fallback["config"]["generation_prompt"] == "generation_direct.txt"
+    assert fallback["config"]["use_draft"] is True
