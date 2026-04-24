@@ -136,6 +136,12 @@ class GenerationAgent(BaseAgent):
             context.strip() if context else "No additional context available.",
         )
 
+        # Strip unfilled directive placeholders used in generation_structured.txt.
+        # These are currently not populated by the pipeline; removing them keeps
+        # the prompt clean without altering any instructions.
+        prompt = prompt.replace("{answer_shape_directives}", "")
+        prompt = prompt.replace("{synthesis_mode_directives}", "")
+
         if ontology and ontology.attribute_value_pairs:
             ont_lines = [
                 f"- {av.attribute}: {av.value} ({av.description})"
