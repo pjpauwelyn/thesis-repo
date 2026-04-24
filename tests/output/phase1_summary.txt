@@ -1,286 +1,76 @@
-Q001: How do variations in cryospheric indicators, such as glacier retreat and sea ice
-  type=mechanism    complexity=0.85  quant=0.60  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q002: How do cryospheric indicators compare to land surface/agriculture indicators in 
-  type=comparison   complexity=0.75  quant=0.40  conf=0.90  tier=tier-3  shape=comparison_table
-  numeric_emphasis=False
----
-Q003: What are cryospheric indicators and how do they influence Earth's climate?
-  type=mechanism    complexity=0.80  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q004: How does the melting of glaciers and ice sheets influence global sea level and t
-  type=mechanism    complexity=0.80  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q005: What is the relationship between cryospheric changes, such as glacier melt and s
-  type=mechanism    complexity=0.85  quant=0.40  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q006: How do variations in Earth's geomagnetic field correlate with tectonic plate mov
-  type=mechanism    complexity=0.80  quant=0.60  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q007: How do satellite-based geodetic measurements compare to ground-based geodetic te
-  type=comparison   complexity=0.75  quant=0.40  conf=0.95  tier=tier-3  shape=comparison_table
-  numeric_emphasis=False
----
-Q008: What is geomagnetism and how does it influence the Earth's surface and interior?
-  type=mechanism    complexity=0.75  quant=0.30  conf=0.95  tier=tier-2  shape=structured_long
-  numeric_emphasis=False
----
-Q009: How does tectonic activity influence the Earth's geomagnetic field over geologic
-  type=mechanism    complexity=0.85  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q010: What is the relationship between tectonic plate motion and variations in Earth's
-  type=mechanism    complexity=0.80  quant=0.40  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q011: How do variations in solar activity influence the dynamics of the Earth's ionosp
-  type=mechanism    complexity=0.85  quant=0.60  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q012: How do variations in solar activity during solar maximum and solar minimum diffe
-  type=mechanism    complexity=0.85  quant=0.70  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q013: What is solar activity and how does it influence the Earth's ionosphere?
-  type=mechanism    complexity=0.75  quant=0.40  conf=0.95  tier=tier-2  shape=structured_long
-  numeric_emphasis=False
----
-Q014: How does solar activity influence the dynamics of the Earth's ionosphere and mag
-  type=mechanism    complexity=0.85  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q015: What is the relationship between solar activity levels and variations in ionosph
-  type=mechanism    complexity=0.80  quant=0.60  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q016: How do variations in soil composition, surface radiative properties, and the pre
-  type=mechanism    complexity=0.85  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q017: How do the surface radiative properties of permafrost regions compare to those o
-  type=comparison   complexity=0.75  quant=0.40  conf=0.90  tier=tier-3  shape=comparison_table
-  numeric_emphasis=False
----
-Q018: What are the radiative properties of the land surface that influence the scatter
-  type=definition   complexity=0.40  quant=0.30  conf=0.95  tier=tier-1  shape=direct_paragraph
-  numeric_emphasis=False
----
-Q019: How does the reflectivity of frozen ground influence surface radiative propertie
-  type=mechanism    complexity=0.70  quant=0.40  conf=0.90  tier=tier-2  shape=structured_long
-  numeric_emphasis=False
----
-Q020: What is the relationship between surface radiative properties and the rate of th
-  type=mechanism    complexity=0.80  quant=0.40  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q021: How can variations in sensor characteristics influence the accuracy and resoluti
-  type=mechanism    complexity=0.85  quant=0.70  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q022: How do the accuracy and resolution of LIDAR-based measurements compare to radar-
-  type=comparison   complexity=0.75  quant=0.60  conf=0.90  tier=tier-3  shape=comparison_table
-  numeric_emphasis=True
----
-Q023: What is LIDAR and how does it measure the properties of distant targets?
-  type=mechanism    complexity=0.70  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q024: How does the wavelength of light influence the accuracy of distance measurements
-  type=continuous   complexity=0.50  quant=0.30  conf=None  tier=safety-tier3  shape=short_explainer
-  numeric_emphasis=False
----
-Q025: What is the relationship between LIDAR sensor characteristics and the accuracy o
-  type=mechanism    complexity=0.80  quant=0.70  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q026: How do variations in groundwater chemistry influence the quality of surface wate
-  type=mechanism    complexity=0.85  quant=0.60  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q027: How do the chemical characteristics of groundwater compare to those of surface w
-  type=comparison   complexity=0.75  quant=0.60  conf=0.90  tier=tier-3  shape=comparison_table
-  numeric_emphasis=True
----
-Q028: What is the role of groundwater in the terrestrial hydrosphere?
-  type=definition   complexity=0.30  quant=0.20  conf=0.95  tier=tier-1  shape=direct_paragraph
-  numeric_emphasis=False
----
-Q029: How does groundwater contamination influence the chemical characteristics of nea
-  type=mechanism    complexity=0.80  quant=0.50  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q030: What is the relationship between groundwater chemical composition and the meltin
-  type=mechanism    complexity=0.80  quant=0.50  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q031: How do variations in ocean circulation patterns influence the spatial distributi
-  type=mechanism    complexity=0.85  quant=0.70  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q032: How do the effectiveness and accuracy of different methodologies for measuring o
-  type=comparison   complexity=0.80  quant=0.70  conf=0.90  tier=tier-3  shape=comparison_table
-  numeric_emphasis=True
----
-Q033: What is ocean circulation and how does it influence the movement of water in the
-  type=mechanism    complexity=0.70  quant=0.30  conf=0.95  tier=tier-2  shape=structured_long
-  numeric_emphasis=False
----
-Q034: How does ocean circulation influence the distribution of chemical constituents i
-  type=mechanism    complexity=0.80  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q035: What is the relationship between ocean circulation patterns and the distribution
-  type=mechanism    complexity=0.80  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q036: How do variations in vegetation structure influence the genomic and metabolomic 
-  type=mechanism    complexity=0.85  quant=0.40  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q037: How do transcriptomics-based analyses compare to traditional vegetation surveys 
-  type=comparison   complexity=0.75  quant=0.40  conf=0.90  tier=tier-3  shape=comparison_table
-  numeric_emphasis=False
----
-Q038: What is the role of omics in understanding ecological dynamics within the biosph
-  type=definition   complexity=0.45  quant=0.20  conf=0.90  tier=tier-2  shape=direct_paragraph
-  numeric_emphasis=False
----
-Q039: How does vegetation structure influence the genomic diversity of plant species i
-  type=mechanism    complexity=0.85  quant=0.40  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q040: What is the relationship between vegetation diversity and genomic variation in p
-  type=mechanism    complexity=0.80  quant=0.40  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q041: What are the potential interactions between soil management practices and crop n
-  type=mechanism    complexity=0.80  quant=0.40  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q042: How do precision irrigation techniques compare to traditional irrigation methods
-  type=comparison   complexity=0.75  quant=0.65  conf=0.90  tier=tier-3  shape=comparison_table
-  numeric_emphasis=True
----
-Q043: What is agricultural engineering?
-  type=definition   complexity=0.15  quant=0.00  conf=0.95  tier=tier-1  shape=direct_paragraph
-  numeric_emphasis=False
----
-Q044: How does soil management influence crop yield in agricultural plant science?
-  type=mechanism    complexity=0.80  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q045: What is the relationship between soil moisture levels and crop yield variability
-  type=mechanism    complexity=0.75  quant=0.65  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q046: How do variations in atmospheric temperature influence cloud formation and air q
-  type=mechanism    complexity=0.85  quant=0.40  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q047: How do satellite-based measurements compare to ground-based observations in asse
-  type=comparison   complexity=0.75  quant=0.60  conf=0.90  tier=tier-3  shape=comparison_table
-  numeric_emphasis=True
----
-Q048: What is the role of atmospheric temperature in the formation of clouds?
-  type=mechanism    complexity=0.75  quant=0.40  conf=0.95  tier=tier-2  shape=structured_long
-  numeric_emphasis=False
----
-Q049: How does the concentration of air pollutants influence the formation and charact
-  type=mechanism    complexity=0.85  quant=0.50  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q050: What is the relationship between cloud cover variability and changes in atmosphe
-  type=mechanism    complexity=0.85  quant=0.60  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q051: How do variations in ice core gas concentrations, land sediment deposits, and oc
-  type=comparison   complexity=0.85  quant=0.70  conf=0.90  tier=tier-3  shape=comparison_table
-  numeric_emphasis=True
----
-Q052: How do ice core records compare to ocean sediment records in reconstructing atmo
-  type=comparison   complexity=0.75  quant=0.70  conf=0.95  tier=tier-3  shape=comparison_table
-  numeric_emphasis=True
----
-Q053: What is the significance of ice core records in studying past climates?
-  type=definition   complexity=0.40  quant=0.30  conf=0.95  tier=tier-1  shape=direct_paragraph
-  numeric_emphasis=False
----
-Q054: How do variations in atmospheric gas concentrations preserved in ice core record
-  type=mechanism    complexity=0.85  quant=0.70  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q055: What is the relationship between atmospheric greenhouse gas concentrations in ic
-  type=mechanism    complexity=0.85  quant=0.70  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=True
----
-Q056: What are the key factors influencing the rate of seasonal changes in sea ice ext
-  type=mechanism    complexity=0.85  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q057: How do the accuracy and resolution of satellite altimetry compare to ground-base
-  type=comparison   complexity=0.75  quant=0.80  conf=0.90  tier=tier-3  shape=comparison_table
-  numeric_emphasis=True
----
-Q058: What is the role of sea ice in regulating Earth's climate?
-  type=mechanism    complexity=0.80  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q059: How does the melting of sea ice influence ocean circulation patterns?
-  type=mechanism    complexity=0.80  quant=0.40  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q060: What is the relationship between changes in sea ice extent and the stability of 
-  type=mechanism    complexity=0.85  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q061: How do variations in climate change response strategies impact public health out
-  type=mechanism    complexity=0.85  quant=0.40  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q062: How do adaptation strategies to climate change differ in their effectiveness at 
-  type=comparison   complexity=0.85  quant=0.70  conf=0.90  tier=tier-3  shape=comparison_table
-  numeric_emphasis=True
----
-Q063: What is the role of climate change adaptation in mitigating risks to human settl
-  type=mechanism    complexity=0.70  quant=0.20  conf=0.90  tier=tier-2  shape=structured_long
-  numeric_emphasis=False
----
-Q064: How does climate change influence public health outcomes in human settlements?
-  type=mechanism    complexity=0.85  quant=0.40  conf=0.95  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q065: What is the relationship between climate change responses, such as mitigation st
-  type=mechanism    complexity=0.80  quant=0.40  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q066: How do genetic analyses contribute to identifying evolutionary relationships amo
-  type=mechanism    complexity=0.75  quant=0.40  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q067: How do genetic analysis methods compare to traditional physical characteristic-b
-  type=comparison   complexity=0.75  quant=0.30  conf=0.95  tier=tier-3  shape=comparison_table
-  numeric_emphasis=False
----
-Q068: What is biological classification and how are organisms grouped within it?
-  type=definition   complexity=0.40  quant=0.10  conf=0.95  tier=tier-1  shape=direct_paragraph
-  numeric_emphasis=False
----
-Q069: How does genetic variation influence the classification of invertebrates within 
-  type=mechanism    complexity=0.75  quant=0.30  conf=0.90  tier=tier-3  shape=structured_long
-  numeric_emphasis=False
----
-Q070: What is the relationship between genetic similarities and ecological niches in t
-  type=comparison   complexity=0.75  quant=0.40  conf=0.90  tier=tier-3  shape=comparison_table
-  numeric_emphasis=False
----
+  type=mechanism    complexity=0.80  quant=0.50  meth=0.30  conf=0.90  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.70  quant=0.65  meth=0.40  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.65  quant=0.35  meth=0.20  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.50  meth=0.20  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.30  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.80  quant=0.55  meth=0.40  conf=0.90  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.70  quant=0.50  meth=0.60  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.20  meth=0.15  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.85  quant=0.30  meth=0.40  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.85  quant=0.30  meth=0.40  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.80  quant=0.40  meth=0.30  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.80  quant=0.55  meth=0.25  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.55  quant=0.25  meth=0.10  conf=0.92  tier=tier-m  use_draft=True
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.30  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.30  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.25  conf=0.90  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.70  quant=0.40  meth=0.30  conf=0.90  tier=tier-3  use_draft=False
+  type=definition   complexity=0.35  quant=0.20  meth=0.10  conf=0.92  tier=tier-1-def  use_draft=True
+  type=mechanism    complexity=0.65  quant=0.40  meth=0.30  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.25  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.75  quant=0.45  meth=0.60  conf=0.92  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.65  quant=0.55  meth=0.40  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.45  quant=0.40  meth=0.35  conf=0.95  tier=tier-m  use_draft=True
+  type=mechanism    complexity=0.70  quant=0.55  meth=0.40  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.65  meth=0.50  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.30  conf=0.90  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.65  quant=0.70  meth=0.40  conf=0.92  tier=tier-2b  use_draft=False
+  type=definition   complexity=0.35  quant=0.15  meth=0.10  conf=0.92  tier=tier-1-def  use_draft=True
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.35  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.75  quant=0.40  meth=0.40  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.80  quant=0.40  meth=0.25  conf=0.90  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.80  quant=0.55  meth=0.70  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.65  quant=0.30  meth=0.10  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.30  meth=0.10  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.20  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.85  quant=0.40  meth=0.30  conf=0.92  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.70  quant=0.40  meth=0.60  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.65  quant=0.30  meth=0.40  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.30  meth=0.40  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.40  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.65  quant=0.35  meth=0.35  conf=0.90  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.65  quant=0.55  meth=0.30  conf=0.92  tier=tier-3  use_draft=False
+  type=definition   complexity=0.20  quant=0.05  meth=0.05  conf=0.98  tier=tier-1-def  use_draft=True
+  type=mechanism    complexity=0.65  quant=0.45  meth=0.30  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.65  quant=0.55  meth=0.35  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.35  conf=0.90  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.65  quant=0.40  meth=0.50  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.65  quant=0.30  meth=0.10  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.75  quant=0.40  meth=0.30  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.75  quant=0.40  meth=0.30  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.85  quant=0.55  meth=0.60  conf=0.92  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.70  quant=0.50  meth=0.40  conf=0.90  tier=tier-3  use_draft=False
+  type=definition   complexity=0.35  quant=0.25  meth=0.10  conf=0.92  tier=tier-1-def  use_draft=True
+  type=mechanism    complexity=0.80  quant=0.40  meth=0.30  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.85  quant=0.55  meth=0.40  conf=0.95  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.80  quant=0.40  meth=0.30  conf=0.92  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.70  quant=0.75  meth=0.60  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.65  quant=0.30  meth=0.10  conf=0.92  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.25  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.40  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.80  quant=0.40  meth=0.30  conf=0.90  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.75  quant=0.40  meth=0.50  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.65  quant=0.30  meth=0.25  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.25  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.35  conf=0.90  tier=tier-3  use_draft=False
+  type=mechanism    complexity=0.70  quant=0.30  meth=0.40  conf=0.92  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.70  quant=0.30  meth=0.60  conf=0.90  tier=tier-3  use_draft=False
+  type=definition   complexity=0.35  quant=0.10  meth=0.15  conf=0.95  tier=tier-1-def  use_draft=True
+  type=mechanism    complexity=0.70  quant=0.40  meth=0.30  conf=0.90  tier=tier-3  use_draft=False
+  type=comparison   complexity=0.75  quant=0.35  meth=0.45  conf=0.90  tier=tier-3  use_draft=False
 
 Tier distribution:
-  safety-tier3: 1
-  tier-1: 5
-  tier-2: 7
-  tier-3: 57
+  tier-1-def: 5
+  tier-2b: 1
+  tier-3: 62
+  tier-m: 2

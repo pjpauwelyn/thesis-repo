@@ -116,7 +116,7 @@ rules:
       complexity: {ge: 0.60}
       question_type: {in: [mechanism, method_eval, comparison]}
     config:
-      model_name:               mistral-large-latest
+      model_name:               mistralai/mistral-large
       refinement_model_name:    mistral-medium-latest
       evidence_mode:            excerpts_full
       top_k_per_doc:            6
