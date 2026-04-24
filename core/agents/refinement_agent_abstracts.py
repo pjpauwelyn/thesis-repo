@@ -142,14 +142,29 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
         return "\n".join(lines)
 
     def _format_documents_for_references(self, documents: List[Dict[str, Any]]) -> str:
+        """Build a clean numbered reference list for the {documents} prompt slot.
+
+        Every document that survived the filter gets a line.  OpenAlex metadata
+        is fetched when possible; if the fetch fails we still emit a fallback
+        line so the LLM never sees a gap in the reference list that it might
+        fill with a fabricated URI.
+
+        A doc is skipped only when BOTH title and URI are absent (nothing to
+        identify it).
+        """
         if not documents:
             return "All document information is contained within the AQL results section"
 
         formatted: List[str] = []
         for i, doc in enumerate(documents, 1):
-            title = doc.get("title_or_name") or doc.get("title", f"Document {i}")
-            uri = doc.get("uri", "")
-            if not title or not uri:
+            title = doc.get("title_or_name") or doc.get("title") or ""
+            uri   = doc.get("uri") or doc.get("id") or ""
+
+            if not title and not uri:
+                self.logger.warning(
+                    "_format_documents_for_references: doc %d has no title or URI — skipping",
+                    i,
+                )
                 continue
 
             metadata = None
@@ -157,10 +172,18 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
                 metadata = OpenAlexClient.fetch_metadata(uri)
 
             if metadata:
-                metadata["position"] = i
-                formatted.append(format_reference_from_metadata(metadata))
+                ref_meta = dict(metadata)
+                ref_meta["position"] = i
+                formatted.append(format_reference_from_metadata(ref_meta))
             else:
-                ref = f"[{i}] {title}. {uri}." if uri else f"[{i}] {title}."
+                # Fetch failed or URI is non-OpenAlex: always emit a fallback line
+                # so there is no gap in the numbered list that the LLM might fill.
+                fallback_title = title or "Unknown title"
+                ref = (
+                    f"[{i}] {fallback_title}. {uri}."
+                    if uri
+                    else f"[{i}] {fallback_title}."
+                )
                 formatted.append(ref)
 
         return "\n".join(formatted)
