@@ -180,56 +180,110 @@ class GenerationAgent(BaseAgent):
 
     @staticmethod
     def _find_references_section(text: str) -> Optional[int]:
+        """Return the line index of the '## References' heading, or None.
+
+        Handles common LLM formatting variations:
+          - leading '#' markers (## / ###)
+          - markdown bold/italic wrappers (**## References**, *References*)
+          - surrounding whitespace
+        Does NOT match lines that start with '[' (inline citation markers).
+        """
         for i, line in enumerate(text.split("\n")):
+            # strip leading '#' (heading markers) and then markdown bold/italic
             stripped = line.strip()
+            stripped = stripped.lstrip("#").strip()
+            stripped = stripped.strip("*_ ")
             if (
-                ("References" in stripped or "REFERENCES" in stripped)
-                and not stripped.startswith("[")
+                "references" in stripped.lower()
+                and not stripped.lstrip("*_ ").startswith("[")
             ):
                 return i
         return None
 
     def _extract_references(self, answer: str) -> List[str]:
+        """Extract plain reference strings from the ## References section.
+
+        Falls back to a body scan anchored on 'openalex.org/W' when the
+        section header is absent or the section yields no entries.
+        """
         lines = answer.split("\n")
         start = self._find_references_section(answer)
-        if start is None:
-            return []
-        refs: List[str] = []
-        for line in lines[start + 1:]:
+
+        if start is not None:
+            refs: List[str] = []
+            for line in lines[start + 1:]:
+                stripped = line.strip()
+                if stripped.startswith("##") and refs:
+                    break
+                if not stripped:
+                    continue
+                cleaned = stripped.strip("-\u2022* []")
+                if cleaned and "No author" not in cleaned and "[EVIDENCE]" not in cleaned:
+                    refs.append(" ".join(cleaned.split()))
+            if refs:
+                return refs
+
+        # Fallback: scan the full answer body.
+        # Only accept lines that contain a real OpenAlex URI so fabricated
+        # references (no URI in {documents}) cannot slip through.
+        fallback: List[str] = []
+        for line in lines:
             stripped = line.strip()
-            # Stop when a new ## section heading appears after refs have started.
-            # Do NOT stop on blank lines -- the model separates entries with
-            # blank lines, so a bare `break` on empty string drops everything
-            # after the first entry.
-            if stripped.startswith("##") and refs:
-                break
-            if not stripped:
-                continue
             cleaned = stripped.strip("-\u2022* []")
-            if cleaned and "No author" not in cleaned and "[EVIDENCE]" not in cleaned:
-                refs.append(" ".join(cleaned.split()))
-        return refs
+            if (
+                cleaned
+                and "openalex.org/W" in cleaned
+                and "[EVIDENCE]" not in cleaned
+            ):
+                fallback.append(" ".join(cleaned.split()))
+        return fallback
 
     def _extract_formatted_references(self, answer: str) -> List[str]:
+        """Extract formatted '[N] Author...' reference lines from the answer.
+
+        Primary path: parse from the ## References section.
+        Fallback: scan the full answer body for lines matching
+          [N] ...openalex.org/W...
+        The openalex.org/W anchor ensures only URIs that were present in
+        the refinement context ({documents}) are captured — the LLM cannot
+        hallucinate a URI that passes this filter if the refinement prompt
+        only contained verified URIs.
+        """
         lines = answer.split("\n")
         start = self._find_references_section(answer)
-        if start is None:
-            return []
-        refs: List[str] = []
-        for line in lines[start + 1:]:
+
+        if start is not None:
+            refs: List[str] = []
+            for line in lines[start + 1:]:
+                stripped = line.strip()
+                if stripped.startswith("##") and refs:
+                    break
+                if not stripped:
+                    continue
+                # Normalise "N. Author..." → "[N] Author..." so both numbered-list
+                # and bracket-prefixed formats are captured.
+                normalised = re.sub(r"^(\d+)\.\s+", r"[\1] ", stripped)
+                if (
+                    normalised.startswith("[")
+                    and "]" in normalised
+                    and "[EVIDENCE]" not in normalised
+                ):
+                    refs.append(normalised)
+            if refs:
+                return refs
+
+        # Fallback: scan the full answer body.
+        # Anchored to openalex.org/W — only lines whose URI came from the
+        # refinement context ({documents}) are captured.
+        fallback: List[str] = []
+        for line in lines:
             stripped = line.strip()
-            # Stop when a new ## section heading appears after refs have started.
-            # Do NOT stop on blank lines -- the model separates entries with
-            # blank lines, so a bare `break` on empty string drops everything
-            # after the first entry.
-            if stripped.startswith("##") and refs:
-                break
-            if not stripped:
-                continue
-            # Normalise "N. Author..." → "[N] Author..." so both numbered-list
-            # and bracket-prefixed formats are captured by the parser.
-            # The generation model sometimes uses "1. Author" instead of "[1] Author".
             normalised = re.sub(r"^(\d+)\.\s+", r"[\1] ", stripped)
-            if normalised.startswith("[") and "]" in normalised and "[EVIDENCE]" not in normalised:
-                refs.append(normalised)
-        return refs
+            if (
+                normalised.startswith("[")
+                and "]" in normalised
+                and "openalex.org/W" in normalised
+                and "[EVIDENCE]" not in normalised
+            ):
+                fallback.append(normalised)
+        return fallback
