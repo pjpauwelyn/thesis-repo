@@ -14,7 +14,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from core.policy.router import Router
 from core.utils.data_models import (
@@ -83,14 +83,9 @@ class Pipeline:
         ontology, profile = ont_agent.process_with_profile(question)
 
         # Single automatic retry on profiler parse failure.
-        # confidence == 0.0 is the sentinel OntologyAgent sets when the LLM
-        # returns malformed JSON.  One retry is cheap (small model, fast) and
-        # recovers the majority of transient JSON-wrapping blips without
-        # touching the failure counter.  If the retry also fails the counter
-        # is incremented below and safety-tier3 fallback applies as before.
         if profile.confidence is not None and profile.confidence == 0.0:
             log.warning(
-                "profiler parse failure on first attempt — retrying once for '%s...'",
+                "profiler parse failure on first attempt -- retrying once for '%s...'",
                 question[:60],
             )
             ontology, profile = ont_agent.process_with_profile(question)
@@ -152,21 +147,14 @@ class Pipeline:
         Pass precomputed_route to skip a redundant profiling LLM call when
         the caller has already run profile_and_route().
 
-        Failure contract
-        ----------------
-        Hard RuntimeError (re-raised, stops the question):
-          - No documents available at all (no evidence, nothing to generate).
-          - Context length exceeded during refinement or generation (the prompt
-            is too large — this is a code/config bug that must be fixed, not
-            silently swallowed; answer quality would be degraded).
-          - Abstract fallback also empty (no usable text anywhere).
-
-        Soft failure (returns PipelineResult with answer=""):
-          - Generation LLM returns None after exhausted retries (transient API
-            outage or persistent rate-limit).  Worker stays alive; caller /
-            test harness records the empty answer and continues.
-          - Refinement produces empty context and abstract fallback succeeds
-            (generation continues on raw abstracts with a WARNING).
+        Reference contract (post-generation, Python-side)
+        -------------------------------------------------
+        After generation the pipeline calls _build_verified_references() which
+        constructs formatted_references entirely from the known-good doc list
+        (full_docs + abstract_docs) filtered to the indices cited by the LLM.
+        The LLM's own ## References output (if any) is stripped by the agent
+        before we receive the answer body.  This makes references deterministic
+        and hallucination-proof: the LLM only writes [N] markers inline.
         """
         from core.agents.generation_agent import GenerationAgent
         from core.agents.refinement_agent_abstracts import RefinementAgentAbstracts
@@ -274,9 +262,6 @@ class Pipeline:
             log_excerpt_stats(log, {}, elapsed=0.0)
 
         # -- 5. refinement ----------------------------------------------------
-        # Refinement output can be long (full [VALIDATED REFERENCES] block +
-        # [TOPICS] + [CAVEATS]). Use 2000 tokens to avoid silent truncation of
-        # the reference block that generation_agent.py relies on.
         refine_llm = self._llm(
             cfg.refinement_model_name or cfg.model_name,
             cfg.temperature_refine,
@@ -307,12 +292,6 @@ class Pipeline:
                 )
                 refine_agent.set_documents_block(documents_block)
                 query_hint = self._build_query_hint(question, profile)
-                # Pass only post-filter docs (full + abstract, not dropped) as
-                # aql_results_str so _format_documents_for_references() fetches
-                # OpenAlex metadata for the correct set of documents and builds
-                # a clean [VALIDATED REFERENCES] block in enriched_context.
-                # Dropped docs are excluded: they were never shown to the
-                # refinement model and must not appear as citable references.
                 filtered_aql = self._format_kg_context(full_docs + abstract_docs)
                 refined = refine_agent.process_context(
                     question=query_hint,
@@ -324,8 +303,6 @@ class Pipeline:
                 )
         except Exception as refine_exc:
             refine_msg = str(refine_exc).lower()
-            # Context overload is a hard config/code bug — re-raise immediately.
-            # Continuing would produce a truncated, quality-degraded answer.
             if "context length exceeded" in refine_msg:
                 raise RuntimeError(
                     f"Pipeline.run(): context length exceeded during refinement for "
@@ -334,9 +311,8 @@ class Pipeline:
                     "Reduce per_doc_budget / global_budget in rules.yaml or "
                     "switch to a larger context model."
                 ) from refine_exc
-            # All other refinement exceptions: log and fall through to abstract fallback.
             log.error(
-                "refinement raised an exception for '%s...' (rule=%s): %s — "
+                "refinement raised an exception for '%s...' (rule=%s): %s -- "
                 "attempting abstract fallback",
                 question[:60], cfg.rule_hit, refine_exc,
             )
@@ -346,9 +322,6 @@ class Pipeline:
         log_refinement(log, enriched_context, elapsed=time.perf_counter() - t0)
 
         if not enriched_context.strip():
-            # Refinement returned empty context (LLM call failed or produced
-            # nothing).  Fall back to concatenated raw abstracts so generation
-            # can still produce a partial answer rather than crashing the worker.
             fallback_ctx = "\n\n".join(
                 d.get("abstract", "") for d in (full_docs + abstract_docs)
                 if d.get("abstract", "").strip()
@@ -360,7 +333,7 @@ class Pipeline:
                     "Aborting generation."
                 )
             log.warning(
-                "refinement returned empty context for '%s...' (rule=%s) — "
+                "refinement returned empty context for '%s...' (rule=%s) -- "
                 "falling back to %d raw abstracts for generation",
                 question[:60], cfg.rule_hit,
                 len([d for d in (full_docs + abstract_docs) if d.get("abstract", "").strip()]),
@@ -368,9 +341,6 @@ class Pipeline:
             enriched_context = fallback_ctx
 
         # -- 6. generation ----------------------------------------------------
-        # Use cfg.max_output_tokens so each tier's declared budget is honoured.
-        # Previously _llm() was called with the default max_tokens=1400,
-        # silently ignoring rules.yaml values (tier-m=1600, tier-3=1400).
         gen_llm = self._llm(
             cfg.model_name,
             cfg.temperature_generate,
@@ -395,8 +365,6 @@ class Pipeline:
             )
         except Exception as gen_exc:
             gen_msg = str(gen_exc).lower()
-            # Context overload during generation — hard-fail, same rationale as
-            # refinement: truncated output would silently degrade answer quality.
             if "context length exceeded" in gen_msg:
                 raise RuntimeError(
                     f"Pipeline.run(): context length exceeded during generation for "
@@ -412,13 +380,10 @@ class Pipeline:
 
         log_generation(log, answer_obj, elapsed=time.perf_counter() - t0)
 
-        # Guard: generation LLM exhausted retries and returned None.
-        # Return an empty PipelineResult so parallel workers stay alive and the
-        # test harness can record the failure without killing the whole run.
         if answer_obj is None or not getattr(answer_obj, "answer", "").strip():
             log.error(
                 "generation returned no answer for '%s...' "
-                "(rule=%s, model=%s) — returning empty result",
+                "(rule=%s, model=%s) -- returning empty result",
                 question[:60], cfg.rule_hit, cfg.model_name,
             )
             return PipelineResult(
@@ -432,8 +397,28 @@ class Pipeline:
                 kg_source=kg_source,
             )
 
-        # Log session profiler failure count after every question so operators
-        # can spot misrouting early without waiting for the run to finish.
+        # -- 7. build verified references (Python-side, hallucination-proof) --
+        # The LLM answer body contains [N] inline markers.  We build the
+        # ## References section here from the known-good doc list so the
+        # output is always correct regardless of LLM behaviour.
+        all_docs = full_docs + abstract_docs
+        cited_indices = getattr(answer_obj, "cited_indices", set())
+        fmt_refs, plain_refs = self._build_verified_references(
+            all_docs, cited_indices
+        )
+
+        # Append ## References to the answer body.
+        answer_text = answer_obj.answer
+        if fmt_refs:
+            refs_block = "\n\n## References\n" + "\n".join(fmt_refs)
+            answer_text = answer_text.rstrip() + refs_block
+        else:
+            log.warning(
+                "_build_verified_references returned empty list for '%s...' "
+                "(rule=%s, n_docs=%d, cited=%s)",
+                question[:60], cfg.rule_hit, len(all_docs), sorted(cited_indices),
+            )
+
         with self._counter_lock:
             failure_count = self._profiler_parse_failures
         if failure_count > 0:
@@ -445,9 +430,9 @@ class Pipeline:
             )
 
         return PipelineResult(
-            answer=answer_obj.answer,
-            references=answer_obj.references,
-            formatted_references=answer_obj.formatted_references,
+            answer=answer_text,
+            references=plain_refs,
+            formatted_references=fmt_refs,
             profile=profile,
             pipeline_config=cfg,
             enriched_context=enriched_context,
@@ -456,6 +441,92 @@ class Pipeline:
             kg_docs_used=len(full_docs) + len(abstract_docs),
             kg_source=kg_source,
         )
+
+    # ------------------------------------------------------------------
+    # verified reference builder (Python-side, no LLM involvement)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_verified_references(
+        docs: List[Dict[str, Any]],
+        cited_indices: Set[int],
+    ) -> Tuple[List[str], List[str]]:
+        """Build formatted_references and references from the known-good doc list.
+
+        Args:
+            docs: ordered list of documents (full + abstract, 1-indexed).
+            cited_indices: set of 1-based integers the LLM cited inline.
+                If empty, ALL docs are used (graceful fallback for old prompts
+                or questions where the LLM wrote no markers).
+
+        Returns:
+            (formatted_references, plain_references) both as List[str].
+            formatted_references: '[N] Author (Year). *Title*. URI.' lines.
+            plain_references:     'Author (Year). Title. URI.' lines (no [N]).
+
+        OpenAlex metadata is fetched when the URI is available; on failure the
+        doc's title and URI from the KG are used as a reliable fallback.
+        This guarantees every cited doc gets a reference line.
+        """
+        from core.utils.openalex_client import OpenAlexClient, format_reference_from_metadata
+
+        # If the LLM cited nothing, attach all docs so the section is not empty.
+        if not cited_indices:
+            indices_to_use = set(range(1, len(docs) + 1))
+        else:
+            # Clamp to valid range (LLM occasionally writes [0] or out-of-range).
+            indices_to_use = {
+                i for i in cited_indices if 1 <= i <= len(docs)
+            }
+            if not indices_to_use:
+                # All cited indices out of range -- fall back to all docs.
+                log.warning(
+                    "_build_verified_references: all cited indices %s out of range "
+                    "(n_docs=%d) -- attaching all docs",
+                    sorted(cited_indices), len(docs),
+                )
+                indices_to_use = set(range(1, len(docs) + 1))
+
+        formatted: List[str] = []
+        plain: List[str] = []
+
+        for i in sorted(indices_to_use):
+            doc = docs[i - 1]  # docs is 0-indexed, cited_indices is 1-based
+            title = doc.get("title_or_name") or doc.get("title") or ""
+            uri   = doc.get("uri") or doc.get("id") or ""
+
+            if not title and not uri:
+                log.warning(
+                    "_build_verified_references: doc %d has no title or URI -- skipping", i
+                )
+                continue
+
+            metadata = None
+            if uri and "openalex.org" in uri:
+                metadata = OpenAlexClient.fetch_metadata(uri)
+
+            if metadata:
+                meta = dict(metadata)
+                meta["position"] = i
+                line = format_reference_from_metadata(meta)
+                formatted.append(line)
+                # plain: strip leading '[N] ' bracket
+                plain.append(re.sub(r"^\[\d+\]\s*", "", line))
+            else:
+                # Fallback: use KG data directly -- always reliable
+                fallback_title = title or "Unknown title"
+                if uri:
+                    line = f"[{i}] {fallback_title}. {uri}."
+                else:
+                    line = f"[{i}] {fallback_title}."
+                formatted.append(line)
+                plain.append(re.sub(r"^\[\d+\]\s*", "", line))
+
+        return formatted, plain
+
+    # ------------------------------------------------------------------
+    # document filter
+    # ------------------------------------------------------------------
 
     def _filter_documents(
         self,
