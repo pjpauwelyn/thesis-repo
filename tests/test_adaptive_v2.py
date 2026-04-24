@@ -2,7 +2,8 @@
 
 phase 1: profile + tier routing on all questions  (inspection only -- no assertions)
 phase 2: document filter dry-run on up to 20 questions with docs
-phase 3: full-pipeline generation on 15 representative questions (smoke assertions)
+phase 3: full-pipeline generation on all questions that have docs
+         (append/resume: already-completed questions are skipped on restart)
 
 Run all phases:
     pytest tests/test_adaptive_v2.py -v -s
@@ -20,7 +21,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pytest
 
@@ -218,7 +219,6 @@ def test_phase2_filter() -> None:
                 f"(of {filter_summary.get('n_total', 0)})\n"
             )
 
-            # full docs -- marked with +
             for entry in filter_summary.get("full_titles", []):
                 title = entry if isinstance(entry, str) else entry.get("title", "?")
                 sim   = entry.get("sim", "") if isinstance(entry, dict) else ""
@@ -226,7 +226,6 @@ def test_phase2_filter() -> None:
                 sim_str = f" sim={sim:.3f}" if sim != "" else ""
                 tf.write(f"    [FULL]     {title}{sim_str}{flag}\n")
 
-            # abstract docs -- marked with ~
             for entry in filter_summary.get("abstract_titles", []):
                 title = entry if isinstance(entry, str) else entry.get("title", "?")
                 sim   = entry.get("sim", "") if isinstance(entry, dict) else ""
@@ -234,7 +233,6 @@ def test_phase2_filter() -> None:
                 sim_str = f" sim={sim:.3f}" if sim != "" else ""
                 tf.write(f"    [ABSTRACT] {title}{sim_str}{flag}\n")
 
-            # dropped docs -- marked with -
             for entry in filter_summary.get("drop_titles", []):
                 title = entry if isinstance(entry, str) else entry.get("title", "?")
                 sim   = entry.get("sim", "") if isinstance(entry, dict) else ""
@@ -254,15 +252,60 @@ def test_phase2_filter() -> None:
 
 
 # ---------------------------------------------------------------------------
-# phase 3: full-pipeline generation (15-question smoke test)
+# phase 3 helpers
 # ---------------------------------------------------------------------------
+
+def _load_completed_questions(jsonl_path: Path) -> Set[str]:
+    """Return the set of question strings already saved in the JSONL output.
+
+    Used to skip completed questions when resuming an interrupted run.
+    Returns an empty set if the file does not exist.
+    """
+    done: Set[str] = set()
+    if not jsonl_path.exists():
+        return done
+    try:
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    q = rec.get("question", "").strip()
+                    if q:
+                        done.add(q)
+                except json.JSONDecodeError:
+                    pass
+    except Exception as exc:
+        log.warning("could not read existing phase3 output (%s) -- starting fresh", exc)
+        return set()
+    return done
+
+
+def _pick_all_questions_with_docs() -> List[Tuple[str, str]]:
+    """Return (question, aql_results_str) for every row that has aql_results.
+
+    Preserves CSV order. Used by test_phase3_generation for the full run.
+    """
+    result: List[Tuple[str, str]] = []
+    for row in _ROWS:
+        q   = _get_question(row)
+        aql = row.get("aql_results", "") or ""
+        if q and aql.strip():
+            result.append((q, aql))
+    return result
+
 
 def _pick_questions_by_tier(
     target_counts: Dict[str, int],
 ) -> List[Tuple[str, str, str]]:
-    """return list of (question, aql_results_str, tier_hit).
-    reads tier assignments from phase1 output if available; otherwise
-    runs inline profiling so the test is self-contained."""
+    """Return a sample of (question, aql_results_str, tier_hit) spread across
+    tiers.  Used for small targeted smoke tests.
+
+    Reads tier assignments from phase1 output if available; otherwise
+    runs inline profiling so the test is self-contained.
+    """
     phase1_path = OUTPUT_DIR / "phase1_profiles.jsonl"
     selected: List[Tuple[str, str, str]] = []
 
@@ -304,45 +347,72 @@ def _pick_questions_by_tier(
     return selected
 
 
-@pytest.mark.timeout(1800)
+# ---------------------------------------------------------------------------
+# phase 3: full-pipeline generation (all questions with docs, append/resume)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.timeout(7200)
 def test_phase3_generation() -> None:
-    """run full pipeline on 15 questions spread across all tiers.
-    asserts: non-empty answer, valid rule_hit, answer length > 50 chars.
+    """Run full pipeline on every question that has aql_results docs.
 
-    timeout set to 1800s (30 min) to accommodate 15 full-pipeline calls
-    including up to 4 tier-3 mistral-large generations (~360s each).
+    APPEND / RESUME behaviour
+    -------------------------
+    On first run: creates phase3_answers.jsonl and phase3_answers_readable.txt
+    fresh.
+    On restart after interruption: reads phase3_answers.jsonl to find
+    already-completed questions and skips them.  New results are appended so
+    no completed work is lost.
 
-    target_counts:
-      tier-m     x6  (dominant path, ~61% of dataset)
-      tier-3     x4  (comparison/method_eval synthesis)
-      tier-2a    x2  (quantitative)
-      tier-1-def x2  (definitional)
-      tier-2b    x1  (quantitative focal)
+    Assertions (per question)
+    -------------------------
+    - answer length > 50 chars
+    - rule_hit is a valid tier string
+
+    Timeout: 7200s (2 h) for ~70 questions including tier-3 (~360s each).
     """
     if not _ROWS:
         pytest.skip("no DLR CSV found")
 
-    target_counts = {
-        "tier-m":     6,
-        "tier-3":     4,
-        "tier-2a":    2,
-        "tier-1-def": 2,
-        "tier-2b":    1,
-    }
-    questions = _pick_questions_by_tier(target_counts)
-    if not questions:
-        pytest.skip("could not select representative questions")
+    all_questions = _pick_all_questions_with_docs()
+    if not all_questions:
+        pytest.skip("no rows with non-empty aql_results found")
 
     jsonl_path = OUTPUT_DIR / "phase3_answers.jsonl"
     txt_path   = OUTPUT_DIR / "phase3_answers_readable.txt"
 
+    # ------------------------------------------------------------------
+    # resume: load already-completed questions
+    # ------------------------------------------------------------------
+    completed: Set[str] = _load_completed_questions(jsonl_path)
+    n_skip = len(completed)
+    if n_skip:
+        log.info(
+            "phase3 resume: %d questions already completed, %d remaining",
+            n_skip, len(all_questions) - n_skip,
+        )
+
     valid_tiers = {"tier-1", "tier-1-def", "tier-2", "tier-2a", "tier-2b",
                    "tier-3", "tier-m", "safety-tier3", "fallback"}
 
-    with open(jsonl_path, "w", encoding="utf-8") as jf, \
-         open(txt_path,   "w", encoding="utf-8") as tf:
+    # open both outputs in append mode so existing content is preserved
+    with open(jsonl_path, "a", encoding="utf-8") as jf, \
+         open(txt_path,   "a", encoding="utf-8") as tf:
 
-        for i, (question, aql_results_str, expected_tier) in enumerate(questions, start=1):
+        # write a run header so individual runs are distinguishable in the txt
+        import datetime
+        run_ts = datetime.datetime.now().isoformat(timespec="seconds")
+        if n_skip:
+            tf.write(f"\n{'#'*60}\n# RESUMED RUN  {run_ts}  skip={n_skip}\n{'#'*60}\n\n")
+        else:
+            tf.write(f"{'#'*60}\n# NEW RUN  {run_ts}\n{'#'*60}\n\n")
+
+        n_done = 0
+        n_failed = 0
+
+        for i, (question, aql_results_str) in enumerate(all_questions, start=1):
+            if question.strip() in completed:
+                continue  # already saved -- skip
+
             docs: List[Dict[str, Any]] = []
             for row in _ROWS:
                 if _get_question(row) == question:
@@ -363,16 +433,34 @@ def test_phase3_generation() -> None:
             except Exception as exc:
                 status = "error"
                 err_msg = str(exc)
+                n_failed += 1
                 log_question_end(log, i, status, time.perf_counter() - t0, err_msg)
-                raise
+                # write a failure record so the question is not re-attempted
+                # on the next run (avoids infinite retries on hard failures)
+                fail_record = {
+                    "q_index":              i,
+                    "question":             question,
+                    "expected_tier":        "unknown",
+                    "actual_tier":          "error",
+                    "use_draft":            None,
+                    "answer":               f"[ERROR] {err_msg[:200]}",
+                    "enriched_context_chars": 0,
+                    "excerpt_stats":        {},
+                    "references":           [],
+                    "formatted_references": [],
+                }
+                jf.write(json.dumps(fail_record) + "\n")
+                jf.flush()
+                raise  # still fail the test so pytest reports it
 
             elapsed = time.perf_counter() - t0
             log_question_end(log, i, status, elapsed)
+            n_done += 1
 
             record = {
                 "q_index":                i,
                 "question":               question,
-                "expected_tier":          expected_tier,
+                "expected_tier":          "N/A",  # no tier target in full-run mode
                 "actual_tier":            ans.rule_hit,
                 "use_draft":              ans.pipeline_config.use_draft if ans.pipeline_config else None,
                 "answer":                 ans.answer,
@@ -382,10 +470,11 @@ def test_phase3_generation() -> None:
                 "formatted_references":   ans.formatted_references,
             }
             jf.write(json.dumps(record) + "\n")
+            jf.flush()  # flush after every question so progress is not lost
 
             tf.write("=" * 60 + "\n")
             tf.write(
-                f"Q{i} [expected={expected_tier} actual={ans.rule_hit} "
+                f"Q{i} [actual={ans.rule_hit} "
                 f"use_draft={ans.pipeline_config.use_draft if ans.pipeline_config else '?'}]: "
                 f"{question}\n"
             )
@@ -398,6 +487,7 @@ def test_phase3_generation() -> None:
                 f"excerpts={ans.excerpt_stats.get('n_excerpts', 0)}\n"
             )
             tf.write("=" * 60 + "\n\n")
+            tf.flush()  # flush after every question
 
             assert len(ans.answer) > 50, (
                 f"answer too short ({len(ans.answer)} chars) for: {question[:60]}"
@@ -406,5 +496,8 @@ def test_phase3_generation() -> None:
                 f"unexpected rule_hit '{ans.rule_hit}' for: {question[:60]}"
             )
 
-    log.info("phase 3 complete")
-    print(f"\nPhase 3 output: {txt_path}")
+    log.info(
+        "phase 3 complete: %d new, %d skipped (already done), %d failed",
+        n_done, n_skip, n_failed,
+    )
+    print(f"\nPhase 3 output: {txt_path}  (new={n_done} skip={n_skip} fail={n_failed})")
