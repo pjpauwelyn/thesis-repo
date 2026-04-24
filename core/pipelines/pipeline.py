@@ -274,9 +274,13 @@ class Pipeline:
             log_excerpt_stats(log, {}, elapsed=0.0)
 
         # -- 5. refinement ----------------------------------------------------
+        # Refinement output can be long (full [VALIDATED REFERENCES] block +
+        # [TOPICS] + [CAVEATS]). Use 2000 tokens to avoid silent truncation of
+        # the reference block that generation_agent.py relies on.
         refine_llm = self._llm(
             cfg.refinement_model_name or cfg.model_name,
             cfg.temperature_refine,
+            max_tokens=2000,
             timeout_s=cfg.timeout_refine_s,
         )
 
@@ -364,9 +368,13 @@ class Pipeline:
             enriched_context = fallback_ctx
 
         # -- 6. generation ----------------------------------------------------
+        # Use cfg.max_output_tokens so each tier's declared budget is honoured.
+        # Previously _llm() was called with the default max_tokens=1400,
+        # silently ignoring rules.yaml values (tier-m=1600, tier-3=1400).
         gen_llm = self._llm(
             cfg.model_name,
             cfg.temperature_generate,
+            max_tokens=cfg.max_output_tokens,
             timeout_s=cfg.timeout_generate_s,
         )
         gen_agent = GenerationAgent(

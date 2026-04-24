@@ -2,7 +2,7 @@
 
 phase 1: profile + tier routing on all questions  (inspection only -- no assertions)
 phase 2: document filter dry-run on up to 20 questions with docs
-phase 3: full-pipeline generation on 5 representative questions (smoke assertions)
+phase 3: full-pipeline generation on 15 representative questions (smoke assertions)
 
 Run all phases:
     pytest tests/test_adaptive_v2.py -v -s
@@ -218,7 +218,7 @@ def test_phase2_filter() -> None:
                 f"(of {filter_summary.get('n_total', 0)})\n"
             )
 
-            # full docs — marked with +
+            # full docs -- marked with +
             for entry in filter_summary.get("full_titles", []):
                 title = entry if isinstance(entry, str) else entry.get("title", "?")
                 sim   = entry.get("sim", "") if isinstance(entry, dict) else ""
@@ -226,7 +226,7 @@ def test_phase2_filter() -> None:
                 sim_str = f" sim={sim:.3f}" if sim != "" else ""
                 tf.write(f"    [FULL]     {title}{sim_str}{flag}\n")
 
-            # abstract docs — marked with ~
+            # abstract docs -- marked with ~
             for entry in filter_summary.get("abstract_titles", []):
                 title = entry if isinstance(entry, str) else entry.get("title", "?")
                 sim   = entry.get("sim", "") if isinstance(entry, dict) else ""
@@ -234,7 +234,7 @@ def test_phase2_filter() -> None:
                 sim_str = f" sim={sim:.3f}" if sim != "" else ""
                 tf.write(f"    [ABSTRACT] {title}{sim_str}{flag}\n")
 
-            # dropped docs — marked with -
+            # dropped docs -- marked with -
             for entry in filter_summary.get("drop_titles", []):
                 title = entry if isinstance(entry, str) else entry.get("title", "?")
                 sim   = entry.get("sim", "") if isinstance(entry, dict) else ""
@@ -254,7 +254,7 @@ def test_phase2_filter() -> None:
 
 
 # ---------------------------------------------------------------------------
-# phase 3: full-pipeline generation (smoke test)
+# phase 3: full-pipeline generation (15-question smoke test)
 # ---------------------------------------------------------------------------
 
 def _pick_questions_by_tier(
@@ -304,25 +304,31 @@ def _pick_questions_by_tier(
     return selected
 
 
-@pytest.mark.timeout(480)
+@pytest.mark.timeout(1800)
 def test_phase3_generation() -> None:
-    """run full pipeline on ~5 questions, one per tier where possible.
+    """run full pipeline on 15 questions spread across all tiers.
     asserts: non-empty answer, valid rule_hit, answer length > 50 chars.
 
-    timeout set to 480s to accommodate mistralai/mistral-large generation
-    (timeout_generate_s=360 in tier-3 / safety-tier3) plus test overhead.
+    timeout set to 1800s (30 min) to accommodate 15 full-pipeline calls
+    including up to 4 tier-3 mistral-large generations (~360s each).
 
-    target_counts reflects actual phase 1 distribution:
-      tier-m    x2  (dominant path, 64% of dataset -- deserves double coverage)
-      tier-1-def x1 (5 questions available)
-      tier-2a   x1  (quantitative)
-      tier-3    x1  (methodology synthesis)
-    tier-1 removed (0 questions in current dataset).
+    target_counts:
+      tier-m     x6  (dominant path, ~61% of dataset)
+      tier-3     x4  (comparison/method_eval synthesis)
+      tier-2a    x2  (quantitative)
+      tier-1-def x2  (definitional)
+      tier-2b    x1  (quantitative focal)
     """
     if not _ROWS:
         pytest.skip("no DLR CSV found")
 
-    target_counts = {"tier-1-def": 1, "tier-m": 2, "tier-2a": 1, "tier-3": 1}
+    target_counts = {
+        "tier-m":     6,
+        "tier-3":     4,
+        "tier-2a":    2,
+        "tier-1-def": 2,
+        "tier-2b":    1,
+    }
     questions = _pick_questions_by_tier(target_counts)
     if not questions:
         pytest.skip("could not select representative questions")
