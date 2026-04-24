@@ -15,33 +15,64 @@ load_dotenv()
 DEFAULT_MODEL = os.getenv("PIPELINE_MODEL", "mistral-small-latest")
 
 # Per-model Mistral client timeout defaults (milliseconds).
+# Also covers mistralai/-prefixed OpenRouter aliases for the same models.
 _MODEL_TIMEOUT_MS: dict = {
-    "mistral-small-latest":  90_000,
-    "mistral-medium-latest": 180_000,
-    "mistral-large-latest":  420_000,
+    "mistral-small-latest":             90_000,
+    "mistralai/mistral-small-latest":   90_000,
+    "mistral-medium-latest":            180_000,
+    "mistralai/mistral-medium-latest":  180_000,
+    "mistral-large-latest":             480_000,
+    "mistralai/mistral-large-latest":   480_000,
 }
 _DEFAULT_TIMEOUT_MS = int(os.getenv("MISTRAL_TIMEOUT_MS", "300000"))
 
+# OpenRouter default timeout (seconds).  480s = TTFT ~30s + 1400 tok @47 tok/s
+# + 180s headroom for heavy parallel load.  Rules.yaml timeout_generate_s
+# overrides this per-tier via get_llm_model(timeout_s=...).
+_OPENROUTER_DEFAULT_TIMEOUT_S = int(os.getenv("OPENROUTER_TIMEOUT_S", "480"))
+
 _log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Error classification tokens
+# ---------------------------------------------------------------------------
 
 # Transient API / network errors — safe to retry with exponential back-off.
 _API_RETRYABLE_TOKENS = (
-    "429", "rate limit", "too many requests", "timeout",
-    "connection", "service unavailable", "disconnected",
+    # HTTP status signals
+    "429", "rate limit", "too many requests",
+    # Network / transport
+    "timeout", "connection", "service unavailable", "disconnected",
     "server disconnected", "remote protocol", "read error",
     "broken pipe", "reset by peer", "eof", "incomplete read",
-    "bad gateway", "gateway timeout", "overloaded", "capacity",
-    "server error", "internal error", "empty stream",
+    # HTTP gateway errors
+    "bad gateway", "gateway timeout",
+    # Provider capacity
+    "overloaded", "capacity", "server error", "internal error",
+    # Streaming
+    "empty stream",
+    # OpenRouter-specific transients — provider temporarily unavailable
+    "no available model",
+    "provider returned error",
+    "upstream error",
+    "model is currently",       # "model is currently unavailable"
 )
 
-# Local Python bugs — return None immediately, no retry.
-# Retrying these wastes up to 8× exponential back-off (~4 min) on real bugs.
+# Local Python bugs or unrecoverable API errors — return None immediately,
+# no retry.  Retrying wastes up to 8× exponential back-off (~4 min) on real
+# bugs or permanent auth/billing failures.
 _CODE_ERROR_TOKENS = (
+    # Python exceptions
     "nonetype",
     "subscriptable",
     "object has no attribute",
     "attributeerror",
     "typeerror",
+    # Permanent API failures — retrying will never help
+    "invalid api key",
+    "authentication",
+    "credits",                  # out of OpenRouter credits
+    "context length exceeded",  # prompt is too long — must fix at call site
 )
 
 
@@ -106,7 +137,7 @@ class MistralLLMWrapper:
                 msg = str(e).lower()
                 status = getattr(e, "status_code", None) or getattr(e, "http_status", None)
 
-                # Local code bug — bail immediately, no retry.
+                # Local code bug or permanent API failure — bail immediately.
                 if any(tok in msg for tok in _CODE_ERROR_TOKENS):
                     _log.error(
                         "llm call aborted — local code error (will not retry): %s", e
@@ -145,13 +176,28 @@ class MistralLLMWrapper:
 
 
 class OpenRouterLLMWrapper:
-    """wrapper for openrouter-hosted models via openai-compatible api."""
+    """Wrapper for OpenRouter-hosted models via the OpenAI-compatible API.
 
-    def __init__(self, client, model: str, temperature: float = 0.3, max_tokens: int = 1400):
+    Uses streaming by default to avoid gateway timeouts on long generations
+    (critical for mistral-large with 1400 output tokens and ~30s TTFT).
+    timeout_s is applied as the OpenAI client socket deadline and defaults to
+    _OPENROUTER_DEFAULT_TIMEOUT_S (480s), but is overridden per-tier via
+    rules.yaml → timeout_generate_s / timeout_refine_s.
+    """
+
+    def __init__(
+        self,
+        client,
+        model: str,
+        temperature: float = 0.3,
+        max_tokens: int = 1400,
+        timeout_s: int = _OPENROUTER_DEFAULT_TIMEOUT_S,
+    ):
         self.client = client
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.timeout_s = timeout_s
 
     def invoke(self, prompt_text: str, force_json: bool = False) -> Optional[Union[dict, str]]:
         from core.utils.logger import log_llm_retry, log_llm_failure
@@ -164,19 +210,30 @@ class OpenRouterLLMWrapper:
 
         for attempt in range(8):
             try:
-                resp = self.client.chat.completions.create(
+                parts: list = []
+                for chunk in self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
                     temperature=self.temperature,
                     max_tokens=self.max_tokens,
-                )
-                content = resp.choices[0].message.content or ""
+                    stream=True,
+                    timeout=self.timeout_s,
+                ):
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        parts.append(delta)
+                content = "".join(parts)
+                if not content:
+                    raise RuntimeError("empty stream response")
                 return self._parse_output(content, force_json=force_json)
+
             except Exception as e:
                 msg = str(e).lower()
                 status = getattr(e, "status_code", None)
 
-                # Local code bug — bail immediately, no retry.
+                # Local code bug or permanent API failure — bail immediately.
                 if any(tok in msg for tok in _CODE_ERROR_TOKENS):
                     _log.error(
                         "llm call aborted — local code error (will not retry): %s", e
@@ -220,10 +277,17 @@ def get_llm_model(
     max_tokens: int = 1400,
     timeout_s: Optional[int] = None,
 ) -> Union[MistralLLMWrapper, OpenRouterLLMWrapper]:
-    """create an llm wrapper.
+    """Create and return an LLM wrapper for the given model.
 
-    timeout_s  — per-call socket timeout in seconds.  When None the model-
-                 specific default from _MODEL_TIMEOUT_MS is used.
+    Routing:
+      - Models with a provider prefix (mistralai/, qwen/, google/, openrouter/)
+        → OpenRouterLLMWrapper using OPENROUTER_API_KEY
+      - All others → MistralLLMWrapper using MISTRAL_API_KEY
+
+    timeout_s — per-call socket timeout in seconds.
+      When None the model-specific default from _MODEL_TIMEOUT_MS (Mistral) or
+      _OPENROUTER_DEFAULT_TIMEOUT_S (OpenRouter) is used.  Pass the value from
+      cfg.timeout_generate_s / cfg.timeout_refine_s to honour rules.yaml limits.
     """
     if model.startswith(("qwen/", "openrouter/", "mistralai/", "google/")):
         from openai import OpenAI
@@ -231,8 +295,19 @@ def get_llm_model(
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY not found in .env")
         base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        client = OpenAI(api_key=api_key, base_url=base_url)
-        return OpenRouterLLMWrapper(client, model=model, temperature=temperature, max_tokens=max_tokens)
+        effective_timeout = timeout_s or _OPENROUTER_DEFAULT_TIMEOUT_S
+        client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=effective_timeout,
+        )
+        return OpenRouterLLMWrapper(
+            client,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout_s=effective_timeout,
+        )
 
     api_key = os.getenv("MISTRAL_API_KEY")
     if not api_key:
