@@ -578,6 +578,9 @@ class OntologyAgent(BaseAgent):
             f'  "abstract" -- DEFAULT. Use when the paper is plausibly relevant or provides\n'
             f"               supporting context, but the full text is unlikely to add\n"
             f"               specific evidence beyond what the abstract reveals.\n"
+            f"               This includes papers that test a mechanism named in the\n"
+            f"               question and report a null, negative, or contradictory result\n"
+            f"               — these are evidence, not noise.\n"
             f'  "full"     -- Use when you are confident that:\n'
             f"               (a) this paper likely contains specific data, methods, or\n"
             f"                   arguments that directly address what the question asks, AND\n"
@@ -603,6 +606,9 @@ class OntologyAgent(BaseAgent):
             f"               in the question is primary evidence — do NOT drop it. Papers\n"
             f"               that challenge a mechanism are as relevant as papers that\n"
             f"               confirm it.\n"
+            f"               A stated timescale or spatial scope in the question does NOT\n"
+            f"               justify dropping a paper that provides mechanistic evidence at\n"
+            f"               a different timescale or adjacent region — use 'abstract'.\n"
             f"               Do not drop a paper because its conclusion differs from the\n"
             f"               question's implied premise.\n"
             f"               When in doubt between 'drop' and 'abstract', choose 'abstract'.\n\n"
