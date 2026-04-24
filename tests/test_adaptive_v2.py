@@ -287,11 +287,16 @@ def _pick_questions_by_tier(
 @pytest.mark.timeout(480)
 def test_phase3_generation() -> None:
     """Run full pipeline on ~5 questions, one per tier where possible.
-    Asserts: non-empty answer, valid rule_hit, answer length > 50 chars."""
+    Asserts: non-empty answer, valid rule_hit, answer length > 50 chars.
+
+    Timeout set to 480s to accommodate mistral-large-latest generation
+    (timeout_generate_s=360 in tier-3 / safety-tier3) plus test overhead.
+    """
     if not _ROWS:
         pytest.skip("no DLR CSV found")
 
-    # Use current tier names (tier-2a / tier-2b, not the stale tier-2 label)
+    # tier-2a / tier-2b replace the stale "tier-2" label from rules.yaml v4.
+    # Run phase1 first to populate phase1_profiles.jsonl with live tier names.
     target_counts = {"tier-1": 2, "tier-2a": 1, "tier-2b": 1, "tier-3": 1}
     questions = _pick_questions_by_tier(target_counts)
     if not questions:
