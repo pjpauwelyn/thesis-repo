@@ -9,7 +9,6 @@ Most important rules (follow these even if other instructions conflict):
 - When the CONTEXT provides sufficient evidence, give a deep answer: explain mechanisms, methods, and uncertainties step‑by‑step, instead of only listing findings. Prefer 2–3 short reasoning steps over a single high‑level sentence.
 - Complexity of the question should match depth and detail of the answer you generate
 - Explicitly mention major uncertainties or data gaps when they appear in the CONTEXT.
-- Use at least one numeric citation marker (e.g., ) when the CONTEXT provides VALIDATED REFERENCES, and include a matching References section.
 
 You answered a question with the following draft answer, using your knowledge. Now refine this answer using the provided context.
 
@@ -55,8 +54,8 @@ Treat the draft answer as a strong starting point and the context as high-priori
    - Keep it if it is standard, well-established background knowledge AND does not contradict the context.
    - Otherwise, remove it or mark it clearly as a tentative interpretation.
 
-6. When multiple CONTEXT items report related findings, synthesise them explicitly (e.g., ‘Several studies show…’) rather than describing each one separately. 
-   - Support each synthesis with one or more numeric citations like,  when the statements are backed by specific references, and do not write phrases such as ‘(from context synthesis)’ or any other explanatory parenthetical; either attach a reference marker or omit the parenthetical entirely.
+6. When multiple CONTEXT items report related findings, synthesise them explicitly (e.g., 'Several studies show…') rather than describing each one separately. 
+   - Support each synthesis with one or more numeric citations like [1], [2] when the statements are backed by specific references, and do not write phrases such as '(from context synthesis)' or any other explanatory parenthetical; either attach a reference marker or omit the parenthetical entirely.
 
 ### STRUCTURE
 
@@ -69,9 +68,9 @@ Treat the draft answer as a strong starting point and the context as high-priori
   * “Strengths” / “Limitations” for evaluation questions.
 
 - For comparison questions (X vs Y), include ONE small comparison table if it helps clarity.
-- When the question asks about mechanisms, model design, or evaluation, add a short section ‘Detailed mechanisms and methods’ where you explain processes, data sources, and methodological choices in more detail (2–4 sentences). Use this section when the CONTEXT includes methodological information.
-- If the context includes important caveats or confidence information, add a short “Uncertainties and limitations” paragraph (2–4 sentences).
-- When the question has clear real-world or modelling relevance (e.g., climate projections, EO mission design, risk, policy), end with a brief “Implications” paragraph (2–4 sentences) that summarises what the answer means for models, monitoring, or decisions, without adding new technical details.
+- When the question asks about mechanisms, model design, or evaluation, add a short section 'Detailed mechanisms and methods' where you explain processes, data sources, and methodological choices in more detail (2–4 sentences). Use this section when the CONTEXT includes methodological information.
+- If the context includes important caveats or confidence information, add a short "Uncertainties and limitations" paragraph (2–4 sentences).
+- When the question has clear real-world or modelling relevance (e.g., climate projections, EO mission design, risk, policy), end with a brief "Implications" paragraph (2–4 sentences) that summarises what the answer means for models, monitoring, or decisions, without adding new technical details.
 
 ### USE OF NUMBERS AND SCOPE
 
@@ -95,7 +94,6 @@ Treat the draft answer as a strong starting point and the context as high-priori
   * Focus the answer on that region.
   * Use global behaviour only as supporting context.
 
-
 ### UNCERTAINTY AND CAVEATS
 
 - Use the caveats and confidence information from the CONTEXT:
@@ -107,21 +105,20 @@ Treat the draft answer as a strong starting point and the context as high-priori
 
 - Write in clear, neutral, research-appropriate language.
 - Be informative but not verbose; avoid repeating the same numbers or phrases unnecessarily.
-- Do NOT copy internal context headers or markers such as “[ONTOLOGY SUMMARY]”, “[TOPICS AND INFORMATION]”, “[CAVEATS & GAPS]”, “Generation guidance”, topic labels, or any other bracketed labels from the context.
+- Do NOT copy internal context headers or markers such as "[ONTOLOGY SUMMARY]", "[TOPICS AND INFORMATION]", "[CAVEATS & GAPS]", "Generation guidance", topic labels, or any other bracketed labels from the context.
 - The ONLY bracketed items you may output are simple numeric citation markers like [1], [2].
 - Do NOT mention AQL, knowledge graphs, models, prompts, or any internal pipeline details.
 - Provide ONLY the final refined answer, with no meta-commentary about the process.
 
-### CITATIONS
+### CITATIONS — INLINE MARKERS ONLY
 
-- The CONTEXT includes a [VALIDATED REFERENCES] section with formatted references (e.g., [1] Author et al. (Year). *Title*. URI.).
-- You should use these references for citations in your answer when relevant and useful. You can use references from you draft answer if they are still relevant based on the context.
-- Insert numeric markers like [1], [2] in the text for key claims, matching the references provided in the context.
-- You MUST add a "References" section at the end of your answer, listing the references used in the same format as provided in the context.
+The CONTEXT includes a [VALIDATED REFERENCES] block listing the papers available for citation.
 
-### IMPORTANT FOR REFERENCING
-- Do NOT fabricate/hallucinate references or use placeholders.
-- Referenced papers should be be aligned with the context.
-- Use the exact format provided in the [VALIDATED REFERENCES] section.
+YOUR ONLY JOB regarding references:
+- Insert numeric markers [N] inline in your answer body wherever a claim is backed by a reference.
+- Only use IDs that exist in [VALIDATED REFERENCES]. Never cite an ID that is not listed there.
+- Do NOT write a "## References" section or "References" section. Do NOT reproduce any reference lines, URIs, or author strings.
+- The pipeline will automatically append a verified ## References section after your answer. You do not need to and must not write it yourself.
+- If NO [VALIDATED REFERENCES] block is present in the CONTEXT, omit all citation markers entirely.
 
-Now write the final refined answer.
+Now write the final refined answer (answer body only — no ## References section).
