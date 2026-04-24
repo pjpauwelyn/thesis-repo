@@ -114,9 +114,9 @@ class Router:
         )
 
     def _matches(self, when: Dict[str, Any], p: QuestionProfile) -> bool:
-        """evaluate a when: block — all top-level keys must pass.
+        """evaluate a when: block -- all top-level keys must pass.
 
-        Supports:
+        supports:
           field: {op: value}          plain scalar comparison
           question_type: {in: [...]}  membership test
           any: {k: v, ...}            flat-dict OR  (legacy tier-2b style)
@@ -128,13 +128,12 @@ class Router:
             if key == "always":
                 return bool(cond)
             if key == "any":
-                # support both flat-dict (legacy) and list-of-dicts (new)
                 items = cond if isinstance(cond, list) else [{k: v} for k, v in cond.items()]
                 if not any(self._matches_block(block, p) for block in items):
                     return False
             elif key == "all":
                 items = cond if isinstance(cond, list) else [{k: v} for k, v in cond.items()]
-                if not all(self._matches_block(block, p) for block in items)
+                if not all(self._matches_block(block, p) for block in items):
                     return False
             elif not self._eval(key, cond, p):
                 return False
@@ -143,24 +142,22 @@ class Router:
     def _matches_block(self, block: Dict[str, Any], p: QuestionProfile) -> bool:
         """evaluate a single condition block.
 
-        A block may itself contain all:/any: combinators (nested inside an any:
-        list item).  Delegate back to _matches so the full evaluator handles them
+        a block may itself contain all:/any: combinators (nested inside an any:
+        list item). delegate back to _matches so the full evaluator handles them
         rather than calling _eval on 'all' or 'any' as if they were profile
         field names (which would always return False and silently break the gate).
 
-        Example that was broken before this fix:
+        example that was broken before this fix:
 
           any:
             - all:
                 question_type: {in: [comparison, method_eval]}
                 methodological_depth: {ge: 0.45}
 
-        The list item is {'all': {'question_type': ..., 'methodological_depth': ...}}.
-        Old _matches_block called _eval('all', {...}, p) -> getattr(p, 'all') -> None
+        the list item is {'all': {'question_type': ..., 'methodological_depth': ...}}.
+        old _matches_block called _eval('all', {...}, p) -> getattr(p, 'all') -> None
         -> False, so the whole any: always evaluated to False for this branch.
         """
-        # if the block contains any combinator keys, delegate to the full _matches
-        # evaluator which knows how to handle all:/any:/always:.
         if any(k in block for k in ("all", "any", "always")):
             return self._matches(block, p)
         return all(self._eval(k, v, p) for k, v in block.items())
