@@ -84,7 +84,7 @@ Supporting attributes found:
 # Topic name 1
 Findings: 1–3 key findings. For every numeric claim, quote the exact value and unit from the excerpt and attach [doc N, Section, p. P]. Prefer Results-section numbers; supplement with Methods for the instrument/algorithm.
 Evidence: Short citation (e.g., "Author et al., 2020") AND the doc index, e.g., "Smith et al., 2020 [doc 3]".
-Mechanisms / methods: Brief description of the measurement approach or main drivers, quoting the relevant Methods-section detail where available (e.g., "Trend derived from Sentinel‑1 backscatter at 10 m; Theil–Sen regression [doc 3, Methods, p. 4]").
+Mechanisms / methods: Brief description of the measurement approach or main drivers, quoting the relevant Methods-section detail where available (e.g., "Trend derived from Sentinel‑1 backscatter at 10 m; Theil–Sen regression [doc 3, Methods, p. 4]").
 Scope: Geographic: {region or "global"} | Temporal: {years}.
 Confidence: {0–1} with 1 short reason grounded in the excerpts (e.g., "direct in-situ measurements with n=240 plots [doc 3, Methods, p. 3]").
 Limitations: 1–2 specific caveats drawn from the Discussion/Limitations excerpts when available.
@@ -98,26 +98,18 @@ Topic name 3 (optional)
 
 
 [VALIDATED REFERENCES]
+List ONLY the references you used in [TOPICS AND INFORMATION] above.
+Copy each reference EXACTLY as it appears in the numbered list below — character for character.
+Do NOT invent, modify, or reconstruct any reference. Do NOT add Scope/Limitations/Use fields here.
+Do NOT include references that were not cited in [TOPICS AND INFORMATION].
+Each entry MUST be on a single line in EXACTLY this format:
+
+[N] Author et al. (Year). *Title*. https://openalex.org/WXXXXXXXXXX.
+
+If a reference has no OpenAlex URI (fetch failed), copy the fallback line as-is.
+Do NOT write [URI], [unknown], or any placeholder — copy verbatim or omit entirely.
+
 {documents}
-
-For each reference above that you choose to include in the final context, provide the following details:
-- Scope: Geographic and temporal scope of the study (prefer Methods-section wording when available).
-- Key contribution: Main finding or contribution, citing verbatim numeric values from FULL-TEXT EXCERPTS with [Section, p. P]. If only the abstract is available, say "(abstract only)".
-- Limitations: Key limitations or caveats (prefer Discussion/Conclusion excerpts).
-- Use: How this reference should be used in the answer (e.g., primary trend reference, mechanism reference, contrasting method).
-
-REQUIRED OUTPUT FORMAT (copy this exactly):
-1. Author et al. (Year). *Title*. URI.
-   Scope: Geographic: Region | Temporal: Period
-   Key contribution: Main finding with verbatim numbers and [Section, p. P] tags.
-   Limitations: Key limitations.
-   Use: How to use this reference.
-
-DO NOT INVENT OR MODIFY ANY REFERENCE INFORMATION.
-Copy each URI EXACTLY as it appears in the {documents} list above — character for character. Do not paraphrase, reconstruct, or generate any URI from memory.
-ONLY INCLUDE REFERENCES IN THE FINAL CONTEXT IF THEY ARE RELEVANT TO THE ONTOLOGY AND ARE DIRECTLY USEFUL TO ANSWER THE QUESTION.
-
-RE-SCAN FOCUS: Prioritize matches to QUERY {query} and ONTOLOGY {ontology}
 
 [CAVEATS & GAPS]
 Ontology coverage:
