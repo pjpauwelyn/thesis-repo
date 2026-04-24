@@ -13,7 +13,6 @@ Most important rules (follow these even if other instructions conflict):
 - Complexity of the question should match depth and detail of the answer you generate.
 - Explicitly mention major uncertainties or data gaps when they appear in the CONTEXT.
 - Only include numeric citation markers (e.g., [1]) if the CONTEXT contains a [VALIDATED REFERENCES] block. If no such block is present, omit all citation markers entirely -- do not invent or use placeholder references. When citing, only use IDs that actually exist in the [VALIDATED REFERENCES] block; never cite an ID larger than the last ID listed there.
-- URI RULE: NEVER write the literal string [URI] anywhere in your answer or ## References section. Copy every URI exactly as it appears in [VALIDATED REFERENCES] (e.g., https://openalex.org/W1234567890). If a URI is missing from the block, omit that reference entirely rather than writing a placeholder.
 
 You answered a question with the following draft answer, using your knowledge. Now refine this answer using the provided context.
 
@@ -111,18 +110,21 @@ Treat the draft answer as a strong starting point and the context as high-priori
 - Write in clear, neutral, research-appropriate language.
 - Be informative but not verbose; avoid repeating the same numbers or phrases unnecessarily.
 - Do NOT copy internal context headers or markers such as "[ONTOLOGY SUMMARY]", "[TOPICS AND INFORMATION]", "[CAVEATS & GAPS]", "Generation guidance", topic labels, or any other bracketed labels from the context.
-- The ONLY bracketed items you may output are simple numeric citation markers like [1], [2], and the ## References section at the end.
+- The ONLY bracketed items you may output are simple numeric citation markers like [1], [2].
 - Do NOT mention AQL, knowledge graphs, models, prompts, or any internal pipeline details.
 - Provide ONLY the final refined answer, with no meta-commentary about the process.
 
 {synthesis_mode_directives}
 
-### CITATIONS
+### CITATIONS — INLINE MARKERS ONLY
 
-- The CONTEXT includes a [VALIDATED REFERENCES] section with formatted references (e.g., [1] Author et al. (Year). *Title*. https://openalex.org/WXXXXXXXX.).
-- Use these references for citations in your answer when relevant. Insert numeric markers [1], [2] in the text for key claims, matching the references in [VALIDATED REFERENCES].
-- You MUST add a "## References" section at the end of your answer, listing only the references you cited. Copy each reference line character-for-character from [VALIDATED REFERENCES] -- do not reformat, abbreviate, or substitute any part of the URI.
-- Do NOT fabricate, guess, or modify any reference. Do NOT cite an ID that does not exist in [VALIDATED REFERENCES].
-- If NO [VALIDATED REFERENCES] block is present in the CONTEXT, omit all citation markers and the ## References section entirely.
+The CONTEXT includes a [VALIDATED REFERENCES] block listing the papers available for citation.
 
-Now write the final refined answer.
+YOUR ONLY JOB regarding references:
+- Insert numeric markers [N] inline in your answer body wherever a claim is backed by a reference.
+- Only use IDs that exist in [VALIDATED REFERENCES]. Never cite an ID that is not listed there.
+- Do NOT write a "## References" section. Do NOT reproduce any reference lines, URIs, or author strings.
+- The pipeline will automatically append a verified ## References section after your answer. You do not need to and must not write it yourself.
+- If NO [VALIDATED REFERENCES] block is present in the CONTEXT, omit all citation markers entirely.
+
+Now write the final refined answer (answer body only — no ## References section).
