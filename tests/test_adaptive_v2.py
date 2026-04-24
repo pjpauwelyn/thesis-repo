@@ -289,15 +289,20 @@ def test_phase3_generation() -> None:
     """Run full pipeline on ~5 questions, one per tier where possible.
     Asserts: non-empty answer, valid rule_hit, answer length > 50 chars.
 
-    Timeout set to 480s to accommodate mistral-large-latest generation
+    Timeout set to 480s to accommodate mistralai/mistral-large generation
     (timeout_generate_s=360 in tier-3 / safety-tier3) plus test overhead.
+
+    target_counts reflects actual Phase 1 distribution:
+      tier-m    x2  (dominant path, 64% of dataset -- deserves double coverage)
+      tier-1-def x1 (5 questions available)
+      tier-2a   x1  (quantitative)
+      tier-3    x1  (methodology synthesis)
+    tier-1 removed (0 questions in current dataset).
     """
     if not _ROWS:
         pytest.skip("no DLR CSV found")
 
-    # tier-2a / tier-2b replace the stale "tier-2" label from rules.yaml v4.
-    # Run phase1 first to populate phase1_profiles.jsonl with live tier names.
-    target_counts = {"tier-1": 2, "tier-2a": 1, "tier-2b": 1, "tier-3": 1}
+    target_counts = {"tier-1-def": 1, "tier-m": 2, "tier-2a": 1, "tier-3": 1}
     questions = _pick_questions_by_tier(target_counts)
     if not questions:
         pytest.skip("could not select representative questions")

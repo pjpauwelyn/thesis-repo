@@ -40,8 +40,8 @@ class Router:
                 profile.quantitativity,
             )
             return PipelineConfig(
-                model_name="mistral-large-latest",
-                refinement_model_name="mistral-large-latest",
+                model_name="mistralai/mistral-large",
+                refinement_model_name="mistralai/mistral-large",
                 evidence_mode="excerpts_full",
                 top_k_per_doc=10,
                 per_doc_budget=9000,
@@ -134,7 +134,7 @@ class Router:
                     return False
             elif key == "all":
                 items = cond if isinstance(cond, list) else [{k: v} for k, v in cond.items()]
-                if not all(self._matches_block(block, p) for block in items):
+                if not all(self._matches_block(block, p) for block in items)
                     return False
             elif not self._eval(key, cond, p):
                 return False

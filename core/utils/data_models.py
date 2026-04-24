@@ -137,7 +137,11 @@ class PipelineConfig(BaseModel):
     timeout_generate_s: int = 120
 
     # generation caps
-    gen_context_cap: int = 60_000
+    # 307_200 chars = 76_800 tokens = 60% of the 128k window.
+    # Matches _CONTEXT_WINDOW_60PCT_CHARS in generation_agent.py and
+    # _CONTEXT_CAP_CHARS in router.py — those are the source of truth;
+    # this default must stay in sync with them.
+    gen_context_cap: int = 307_200
     max_output_tokens: int = 700
     system_prompt_modifier: str = ""
 
