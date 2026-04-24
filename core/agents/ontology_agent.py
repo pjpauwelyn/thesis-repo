@@ -80,6 +80,10 @@ _SIMPLE_RULE_HITS = frozenset({"tier-1", "tier-1-def"})
 
 _COMPARISON_TYPES = frozenset({"comparison", "method_eval"})
 
+# tiers that benefit from up to 3 abstract top-ups when the LLM over-drops.
+# all other tiers get at most 2 to keep the abstract pool lean.
+_GENEROUS_TOPUP_TIERS = frozenset({"tier-3", "tier-2a", "safety-tier3"})
+
 # centrality threshold above which an av-pair value/attribute match in a doc
 # title is flagged as [title-match] in the prompt to help the llm decide full.
 # lowered from 0.65 → 0.50 so that moderately-central terms (e.g. "sea ice"
@@ -376,7 +380,7 @@ class OntologyAgent(BaseAgent):
 
         returns a list of (score, original_index, doc) sorted by score desc,
         with original index as stable tiebreak. used only by _lexical_fallback
-        and _abstracts_topup (safety-net paths).
+        (safety-net path when n_full guardrail fires).
         """
         word_re = re.compile(r"[a-z][a-z0-9\-]{1,}")
 
@@ -414,14 +418,13 @@ class OntologyAgent(BaseAgent):
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
         """rank docs by keyword overlap and split into full/abstract/drop.
 
-        used as fallback when the llm filter fails or violates guardrails.
-        if all scores are 0 (empty ontology), document order is used as
-        tiebreak -- no worse than the old all-full fallback but respects budget.
+        used only when the LLM fails to produce enough 'full' classifications
+        (n_full < min_full). if all scores are 0 (empty ontology), document
+        order is used as tiebreak.
         """
         scored = self._lexical_score(docs, ontology)
 
-        all_zero = all(s == 0 for s, _, _ in scored)
-        if all_zero:
+        if all(s == 0 for s, _, _ in scored):
             self.logger.warning(
                 "filter_documents lexical_fallback: all scores are 0 "
                 "(empty ontology?) -- using document order as tiebreak"
@@ -493,6 +496,15 @@ class OntologyAgent(BaseAgent):
           min_full  : 2 for simple/definitional tiers, 3 for all others
           min_total : always max(min_keep, n//3)
 
+        two-branch guardrail:
+          - n_full < min_full  -> full lexical fallback (LLM missed too many
+            full docs; its result cannot be trusted)
+          - n_total < min_total only (n_full >= min_full) -> sim-score top-up:
+            promote highest-sim dropped docs to abstract, preserving all of
+            the LLM's full/abstract assignments. tier-dependent cap: generous
+            tiers (tier-3, tier-2a, safety-tier3) allow up to 3 promotions;
+            all others up to 2. falls through to lexical if still under floor.
+
         abstracts top-up (evidence_mode == "abstracts" only):
           after filter resolves, if kept pool < min_keep, best-scoring
           dropped docs are re-promoted via lexical ranking.
@@ -519,7 +531,7 @@ class OntologyAgent(BaseAgent):
         )
         ontology_lines = "\n".join(
             f"  [{i+1}] {getattr(av, 'attribute', '')}: {getattr(av, 'value', '')} "
-            f"— {getattr(av, 'description', '')} "
+            f"\u2014 {getattr(av, 'description', '')} "
             f"(centrality={getattr(av, 'centrality', 0.5):.2f})"
             for i, av in enumerate(av_pairs)
         )
@@ -543,9 +555,6 @@ class OntologyAgent(BaseAgent):
         )
 
         # --- build title-match set for high-centrality av-pairs ---
-        # a doc gets [title-match] in the listing if a high-centrality pair's
-        # value or attribute appears verbatim (case-insensitive) in its title.
-        # threshold lowered to 0.50 so moderately-central terms also fire.
         high_cent_terms = [
             t.strip().lower()
             for av in av_pairs
@@ -569,15 +578,12 @@ class OntologyAgent(BaseAgent):
 
             flags: List[str] = []
 
-            # [title-match]: high-centrality ontology term in title
             if any(term in title_lower for term in high_cent_terms):
                 flags.append("[title-match]")
 
-            # [retain-adversarial]: contrarian/null-result framing in title
             if any(word in title_lower for word in _ADVERSARIAL_TITLE_WORDS):
                 flags.append("[retain-adversarial]")
 
-            # [question-term-match]: >=2 question content-words in title
             qtm_hits = sum(1 for w in q_content_words if w in title_lower)
             if qtm_hits >= _QUESTION_TERM_MATCH_MIN:
                 flags.append("[question-term-match]")
@@ -589,38 +595,36 @@ class OntologyAgent(BaseAgent):
         # --- tier guidance ---
         tier_label, tier_desc = _TIER_GUIDANCE.get(rule_hit, _TIER_GUIDANCE_DEFAULT)
 
-        # --- comparison constraint block (fires for comparison / method_eval) ---
+        # --- comparison constraint block ---
         q_type = getattr(profile, "question_type", "")
         comparison_block = ""
         if q_type in _COMPARISON_TYPES:
             comparison_block = (
-                "\n⚠ COMPARISON / METHOD-EVAL QUESTION — MANDATORY CONSTRAINT:\n"
+                "\n\u26a0 COMPARISON / METHOD-EVAL QUESTION \u2014 MANDATORY CONSTRAINT:\n"
                 "This question explicitly compares or contrasts two or more distinct "
                 "domains, methods, or indicator sets.\n"
                 "You MUST retain evidence from EACH named side of the comparison in "
                 "your kept set (full + abstract).\n"
                 "A kept set that covers only one side is a filter failure.\n"
                 "Low sim scores on papers from the secondary domain are expected "
-                "when the question vocabulary is weighted toward the primary domain — "
+                "when the question vocabulary is weighted toward the primary domain \u2014 "
                 "do NOT use a low sim score alone as justification for 'drop'.\n"
                 "When uncertain whether a paper addresses a named comparison target, "
                 "always choose 'abstract' over 'drop'.\n"
             )
 
-        # --- timescale scope block (fires when question names a geological/long
-        #     timescale as context). prevents the LLM from using the timescale
-        #     qualifier as a drop criterion for mechanistically relevant papers. ---
+        # --- timescale scope block ---
         q_lower = question.lower()
         timescale_block = ""
         if any(phrase in q_lower for phrase in _TIMESCALE_SCOPE_PHRASES):
             timescale_block = (
-                "\n⚠ TIMESCALE-SCOPED QUESTION — MANDATORY CONSTRAINT:\n"
+                "\n\u26a0 TIMESCALE-SCOPED QUESTION \u2014 MANDATORY CONSTRAINT:\n"
                 "This question mentions a geological or long timescale "
                 "(e.g. 'geological timescales') as the context for the phenomenon.\n"
                 "This is background framing, NOT a filter on paper timescale.\n"
                 "Papers that study the named mechanisms (e.g. tectonic activity, "
                 "geomagnetic field variation, earthquake coupling) at any timescale "
-                "— including historical, instrumental, or event-scale — are directly "
+                "\u2014 including historical, instrumental, or event-scale \u2014 are directly "
                 "relevant and must NOT be dropped on timescale grounds alone.\n"
                 "Classify such papers as 'abstract' or 'full', never 'drop'.\n"
             )
@@ -645,9 +649,9 @@ class OntologyAgent(BaseAgent):
             f"                            verbatim in this title. Strong prior for 'full'.\n"
             f"  [retain-adversarial]   -- title uses contrarian/null-result framing\n"
             f"                            (e.g. 'inexplicable', 'no evidence', 'refutes').\n"
-            f"                            This paper is primary evidence — classify as\n"
+            f"                            This paper is primary evidence \u2014 classify as\n"
             f"                            'abstract' or 'full', NOT 'drop'.\n"
-            f"  [question-term-match]  -- ≥2 content-words from the question appear\n"
+            f"  [question-term-match]  -- \u22652 content-words from the question appear\n"
             f"                            verbatim in this title. Do not drop this paper\n"
             f"                            without a very specific, concrete reason.\n"
             f"  - A paper can score low on sim yet be conceptually central to the question.\n"
@@ -659,7 +663,7 @@ class OntologyAgent(BaseAgent):
             f"               specific evidence beyond what the abstract reveals.\n"
             f"               This includes papers that test a mechanism named in the\n"
             f"               question and report a null, negative, or contradictory result\n"
-            f"               — these are evidence, not noise.\n"
+            f"               \u2014 these are evidence, not noise.\n"
             f'  "full"     -- Use when you are confident that:\n'
             f"               (a) this paper likely contains specific data, methods, or\n"
             f"                   arguments that directly address what the question asks, AND\n"
@@ -668,29 +672,29 @@ class OntologyAgent(BaseAgent):
             f"               A paper that directly measures, models, or empirically tests\n"
             f"               any mechanism or process named in the question qualifies for\n"
             f"               'full' even if its primary timescale, scale, or framing differs\n"
-            f"               from the question's — mechanistic evidence is always relevant.\n"
+            f"               from the question's \u2014 mechanistic evidence is always relevant.\n"
             f"               A stated timescale or spatial scope in the question (e.g.\n"
             f"               'geological timescales', 'permafrost regions') defines the\n"
             f"               question's focus but does NOT exclude papers providing\n"
             f"               mechanistic evidence at shorter timescales or adjacent regions\n"
-            f"               — classify them as 'abstract' or 'full', not 'drop'.\n"
+            f"               \u2014 classify them as 'abstract' or 'full', not 'drop'.\n"
             f'  "drop"     -- Use ONLY when ALL of the following are true:\n'
             f"               (a) the paper does not address ANY concept or domain explicitly\n"
             f"                   named in the question,\n"
             f"               (b) you can state a specific, concrete reason it is off-topic.\n"
             f"               Sharing a domain label with one side of the question does NOT\n"
             f"               justify drop if that domain is named in the question.\n"
-            f"               A [retain-adversarial]-flagged paper uses contrarian framing —\n"
+            f"               A [retain-adversarial]-flagged paper uses contrarian framing \u2014\n"
             f"               it is primary evidence; do NOT drop it.\n"
             f"               A stated timescale or spatial scope in the question does NOT\n"
             f"               justify dropping a paper that provides mechanistic evidence at\n"
-            f"               a different timescale or adjacent region — use 'abstract'.\n"
+            f"               a different timescale or adjacent region \u2014 use 'abstract'.\n"
             f"               Do not drop a paper because its conclusion differs from the\n"
             f"               question's implied premise.\n"
             f"               When in doubt between 'drop' and 'abstract', choose 'abstract'.\n\n"
             f"For each document provide a one-sentence reason for your classification.\n"
-            f"This is used for pipeline debugging and thesis evaluation — be specific.\n\n"
-            f"Hard constraints (safety net — do not target these as goals):\n"
+            f"This is used for pipeline debugging and thesis evaluation \u2014 be specific.\n\n"
+            f"Hard constraints (safety net \u2014 do not target these as goals):\n"
             f'  - At least {min_full} "full" classifications required.\n'
             f'  - At least {min_total} combined "full"+"abstract" required.\n\n'
             f"Documents:\n{doc_list}\n\n"
@@ -753,15 +757,46 @@ class OntologyAgent(BaseAgent):
 
             n_full  = classifications.count("full")
             n_total = n_full + classifications.count("abstract")
+
             self.logger.info(
                 "filter_documents guardrail: n_full=%d (min %d), n_total=%d (min %d)",
                 n_full, min_full, n_total, min_total,
             )
-            if n_full < min_full or n_total < min_total:
+
+            # --- two-branch guardrail ---
+            if n_full < min_full:
+                # LLM failed to find enough full docs — its result is unreliable.
+                # Fall back to full lexical ranking.
                 raise ValueError(
                     f"guardrail violated: n_full={n_full} (min {min_full}), "
                     f"n_total={n_total} (min {min_total})"
                 )
+
+            if n_total < min_total:
+                # LLM found enough full docs but over-dropped to abstract.
+                # Preserve the LLM's work; promote the highest-sim dropped docs
+                # back to abstract to satisfy the floor without a full re-rank.
+                needed = min_total - n_total
+                drop_indices = [
+                    i for i, c in enumerate(classifications) if c == "drop"
+                ]
+                drop_indices.sort(key=lambda i: sim_by_idx.get(i, 0.0), reverse=True)
+                topup_cap = 3 if rule_hit in _GENEROUS_TOPUP_TIERS else 2
+                promote_n = min(needed, topup_cap, len(drop_indices))
+                for i in drop_indices[:promote_n]:
+                    classifications[i] = "abstract"
+                promoted = n_total + promote_n
+                self.logger.info(
+                    "filter_documents sim-topup: promoted %d dropped docs to abstract "
+                    "(n_total %d → %d, target %d, tier=%s)",
+                    promote_n, n_total, promoted, min_total, rule_hit,
+                )
+                if promoted < min_total:
+                    # Still under floor after top-up — fall back to lexical.
+                    raise ValueError(
+                        f"guardrail violated after sim-topup: "
+                        f"n_total={promoted} (min {min_total})"
+                    )
 
         except Exception as exc:
             self.logger.warning(
