@@ -44,7 +44,7 @@
 #
 # Measured baselines (Mistral API, Apr 2026):
 #   small  : TTFT ~0.3s,  ~130 tok/s  -> 700 tok ~= 6s   -> 60s ceiling
-#   medium : TTFT ~1.3s,  ~53 tok/s   -> 1200 tok ~= 24s -> 150s ceiling
+#   medium : TTFT ~1.3s,  ~53 tok/s   -> 1600 tok ~= 32s -> 150s ceiling
 #   large  : TTFT ~30s,   ~47 tok/s   -> 1000 tok ~= 50s -> 360s ceiling
 #
 # NOTE: safety-tier3 (confidence < 0.60) is handled directly in router.py
@@ -87,7 +87,7 @@ rules:
       gen_context_cap:          307200
       max_output_tokens:        450
       system_prompt_modifier:   ""
-      doc_filter_min_keep:      6
+      doc_filter_min_keep:      3
       scope_filter:             false
       synthesis_mode:           homogeneous
       timeout_refine_s:         60
@@ -117,7 +117,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_fulltext.txt
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
-      max_output_tokens:        700
+      max_output_tokens:        1400
       system_prompt_modifier:   "Pay particular attention to findings specific to the geographic region and time period named in the question. Supporting context from other regions is acceptable when it is the only available evidence."
       doc_filter_min_keep:      6
       scope_filter:             true
@@ -227,12 +227,12 @@ rules:
 #   - medium model handles explanatory prose quality perfectly well
 #   - avoids the full-text dilution problem observed in experiments
 #
-# max_output_tokens: 1200
-#   Raised from 700. generation_structured.txt instructs 2-4 section headings
-#   + body + Uncertainties + Implications + ## References. At 53 tok/s with
-#   mistral-medium, 700 tokens was exhausted before ## References was written,
-#   causing _extract_formatted_references() to return [] for all tier-m Qs.
-#   1200 tokens ~= 24s; well within the 150s timeout_generate_s ceiling.
+# max_output_tokens: 1600
+#   Raised from 1200. Q1 and Q3 both truncated before ## References at 5826 /
+#   5325 chars. generation_structured.txt prompts for 5 sections + uncertainties
+#   + implications + ## References; this structure exhausts ~1300-1500 tokens
+#   for complex mechanism questions. 1600 tok ≈ 32s at 53 tok/s (mistral-medium),
+#   well within the 150s timeout_generate_s ceiling.
   - name: tier_m
     when:
       complexity: {ge: 0.40}
@@ -245,7 +245,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_fulltext.txt
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
-      max_output_tokens:        1200
+      max_output_tokens:        1600
       system_prompt_modifier:   ""
       doc_filter_min_keep:      6
       scope_filter:             false
