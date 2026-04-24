@@ -26,6 +26,20 @@ Given the question below, return a SINGLE JSON object with EXACTLY two top-level
   "confidence": <float 0-1>
 }
 
+### av-pair rules
+
+Generate up to 8 pairs total. Each pair must capture a distinct concept.
+
+For question_type "comparison" or "method_eval":
+  - identify EACH distinct domain, method, or indicator set being compared.
+  - produce at least 2 pairs PER named domain or side of the comparison.
+  - distribute centrality evenly across domains: if the question names two sides,
+    neither side should hold more than 60% of the total centrality weight.
+  - do NOT front-load all high-centrality pairs onto the more EO-familiar domain.
+
+For all other question types:
+  - rank pairs by conceptual centrality to the question's core information need.
+
 ### scoring rubrics
 
 complexity
@@ -80,9 +94,9 @@ confidence
 ### calibration examples
 
 These examples show the correct score range for typical questions.
-Use them to anchor your scores — do not drift toward the middle.
+Use them to anchor your scores -- do not drift toward the middle.
 
-Example A — simple definition (complexity ~0.15, tier-1 territory):
+Example A -- simple definition (complexity ~0.15, tier-1 territory):
   Question: "What is albedo in remote sensing?"
   profile: {"question_type": "definition", "complexity": 0.15,
             "quantitativity": 0.10, "spatial_specificity": 0.05,
@@ -90,7 +104,7 @@ Example A — simple definition (complexity ~0.15, tier-1 territory):
             "confidence": 0.95}
   Why: single concept, no numbers required, no spatial/temporal scope.
 
-Example B — moderate multi-property definition (complexity ~0.35, tier-1/tier-m boundary):
+Example B -- moderate multi-property definition (complexity ~0.35, tier-1/tier-m boundary):
   Question: "What are the radiative properties of the land surface that influence backscatter?"
   profile: {"question_type": "definition", "complexity": 0.35,
             "quantitativity": 0.25, "spatial_specificity": 0.05,
@@ -99,7 +113,7 @@ Example B — moderate multi-property definition (complexity ~0.35, tier-1/tier-
   Why: definitional but lists multiple interacting surface properties;
        still no numbers required, no specific region.
 
-Example C — moderate continuous/mechanism (complexity ~0.50, tier-m territory):
+Example C -- moderate continuous/mechanism (complexity ~0.50, tier-m territory):
   Question: "How is vegetation phenology changing in response to Arctic warming?"
   profile: {"question_type": "continuous", "complexity": 0.50,
             "quantitativity": 0.35, "spatial_specificity": 0.40,
@@ -107,7 +121,7 @@ Example C — moderate continuous/mechanism (complexity ~0.50, tier-m territory)
             "confidence": 0.82}
   Why: ongoing trend + causal link, broad region, some numbers useful.
 
-Example D — complex mechanism (complexity ~0.75, tier-3 territory):
+Example D -- complex mechanism (complexity ~0.75, tier-3 territory):
   Question: "How do variations in cryospheric indicators such as glacier retreat
              and sea ice extent influence atmospheric circulation patterns and
              precipitation regimes at regional scales?"
@@ -118,12 +132,28 @@ Example D — complex mechanism (complexity ~0.75, tier-3 territory):
   Why: multi-mechanism causal chain across cryosphere, atmosphere, and
        regional hydrology; requires synthesising evidence from several studies.
 
+Example E -- comparison with two named domains (av-pair balance required):
+  Question: "How do cryospheric indicators compare to agricultural indicators
+             in their sensitivity to climate-induced changes in albedo?"
+  question_type: "comparison"
+  pairs (correct -- balanced):
+    {attribute: "cryospheric indicator", value: "glacier retreat", centrality: 0.70}
+    {attribute: "cryospheric indicator", value: "sea ice extent",  centrality: 0.65}
+    {attribute: "agricultural indicator", value: "crop albedo",   centrality: 0.68}
+    {attribute: "agricultural indicator", value: "land use change", centrality: 0.60}
+    {attribute: "albedo sensitivity", value: "climate-induced change", centrality: 0.75}
+  pairs (WRONG -- biased toward one domain):
+    {attribute: "glacier retreat", value: "cryosphere", centrality: 0.90}
+    {attribute: "sea ice", value: "albedo feedback", centrality: 0.85}
+    {attribute: "albedo", value: "surface reflectance", centrality: 0.80}
+    ... (no agricultural pairs)
+
 ### output rules
 
 - Return ONLY valid JSON. No prose before or after, no markdown fences.
 - Both top-level keys MUST be present, even if "pairs" is an empty list.
 - All numeric fields MUST be floats in [0, 1].
-- Do NOT anchor to 0.40-0.55 out of uncertainty — use the examples above
+- Do NOT anchor to 0.40-0.55 out of uncertainty -- use the examples above
   to calibrate. If a question is clearly simple, score it below 0.35.
   If it is clearly complex, score it above 0.65.
 
