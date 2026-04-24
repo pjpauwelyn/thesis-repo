@@ -1,4 +1,4 @@
-# adaptive routing rules (set5 → v7)
+# adaptive routing rules (set5 -> v7)
 #
 # evaluated top-to-bottom; first match wins.
 # the final fallback rule is always reached if nothing else matches.
@@ -9,28 +9,28 @@
 # refinement_model_name: refinement model (omit = use model_name)
 #
 # The profiler (OntologyConstructionAgent) and doc-filter are always
-# mistral-small-latest regardless of tier — they are hardcoded in
+# mistral-small-latest regardless of tier -- they are hardcoded in
 # adaptive_pipeline.py because they are fast structured-output tasks.
 #
 # Model escalation rationale
 # --------------------------
-# tier-1-def / tier-1 : abstracts + small — definitional/factual or low
+# tier-1-def / tier-1 : abstracts + small -- definitional/factual or low
 #   complexity; no PDF fetch needed, short output is sufficient.
-# tier-m              : medium everywhere — explanatory catch-all.
+# tier-m              : medium everywhere -- explanatory catch-all.
 #   UPPER BOUND REMOVED: tier-m is now the catch-all for ALL complexity >= 0.40
 #   questions that were not caught by tier-3 or tier-2a. Explanatory mechanism
 #   questions at cx=0.80 with low methodological_depth belong here, not tier-3.
 #   mistral-medium + excerpts_narrow + use_draft=True is the right pipeline for
 #   "How does X work?" questions regardless of how complex the explanation is.
-# tier-2a             : high quant, low meth — medium refinement + medium
+# tier-2a             : high quant, low meth -- medium refinement + medium
 #   generation for numeric extraction and focused synthesis.
-# tier-2b             : quant + focal — large refinement for spatial/temporal
+# tier-2b             : quant + focal -- large refinement for spatial/temporal
 #   numeric fidelity; medium generation.
 # tier-3              : genuine methodology synthesis ONLY.
 #   Gate (v7): methodological_depth >= 0.55,
 #              OR (cx >= 0.75 AND meth >= 0.45),
 #              OR (type in comparison/method_eval AND meth >= 0.40).
-#   v7 change: branch-c lowered from meth>=0.45 → meth>=0.40 for
+#   v7 change: branch-c lowered from meth>=0.45 -> meth>=0.40 for
 #   comparison/method_eval. Rationale: the profiler uses meth=0.40 as its
 #   canonical 'moderate methodology' value for comparison questions; any
 #   comparison in EO-QA inherently requires cross-paper synthesis.
@@ -43,19 +43,19 @@
 # deadline for each individual LLM call.
 #
 # Measured baselines (Mistral API, Apr 2026):
-#   small  : TTFT ~0.3s,  ~130 tok/s  → 700 tok ≈ 6s   → 60s ceiling
-#   medium : TTFT ~1.3s,  ~53 tok/s   → 700 tok ≈ 15s  → 150s ceiling
-#   large  : TTFT ~30s,   ~47 tok/s   → 1000 tok ≈ 50s → 360s ceiling
+#   small  : TTFT ~0.3s,  ~130 tok/s  -> 700 tok ~= 6s   -> 60s ceiling
+#   medium : TTFT ~1.3s,  ~53 tok/s   -> 1200 tok ~= 24s -> 150s ceiling
+#   large  : TTFT ~30s,   ~47 tok/s   -> 1000 tok ~= 50s -> 360s ceiling
 #
 # NOTE: safety-tier3 (confidence < 0.60) is handled directly in router.py
 # and does NOT appear here. Its timeouts match tier-3 (large everywhere).
 #
 # Rule ordering rationale
 # -----------------------
-# tier-1-def  : first — catch definitional/factual + low-quant before
+# tier-1-def  : first -- catch definitional/factual + low-quant before
 #               any complexity check fires (guards against profiler drift
 #               that scores definitions at 0.38-0.45 instead of <0.35).
-# tier-2b     : before tier-3 — quant-focal beats complex-type so a
+# tier-2b     : before tier-3 -- quant-focal beats complex-type so a
 #               high-quant focal question uses large-refine+medium-gen
 #               rather than large everywhere.
 # tier-3      : methodology synthesis gate (meth-driven, not cx-driven).
@@ -99,7 +99,7 @@ rules:
 # tier-2b: quantitative + spatially or temporally focal
 # Large refinement model: spatial/temporal numeric fidelity requires careful
 # grounding of measured values to the named region/period in the evidence.
-# System prompt is a light nudge — not a hard constraint — so the model can
+# System prompt is a light nudge -- not a hard constraint -- so the model can
 # still use supporting cross-regional context when it is the only evidence.
   - name: tier_2b
     when:
@@ -132,16 +132,16 @@ rules:
 # Fires ONLY when the question requires cross-paper methodology evaluation,
 # not merely for high complexity. The meth gate is the primary signal.
 #
-# Gate (v7 — any one of these must be true):
+# Gate (v7 -- any one of these must be true):
 #   a) methodological_depth >= 0.55  (strong method-eval signal regardless of type)
 #   b) complexity >= 0.75 AND meth >= 0.45  (very complex + moderate method grounding)
 #   c) type in comparison/method_eval AND meth >= 0.40  (v7: lowered from 0.45)
 #
-# v7 rationale for branch-c change (0.45 → 0.40):
+# v7 rationale for branch-c change (0.45 -> 0.40):
 #   Phase 1 profiling showed the profiler uses meth=0.40 as its canonical
 #   'moderate methodology' value for comparison questions. Every comparison
 #   question in EO-QA (comparing sensors, algorithms, or approaches) requires
-#   reading method sections across papers — that is cross-paper synthesis by
+#   reading method sections across papers -- that is cross-paper synthesis by
 #   definition. The 0.05 gap between the old gate (0.45) and the profiler's
 #   output (0.40) was systematic quantization, not genuine signal.
 #   tier-m (excerpts_narrow + use_draft=True) produces draft-anchored surface
@@ -177,7 +177,7 @@ rules:
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
       max_output_tokens:        1000
-      system_prompt_modifier:   "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' — do not present it as a cited fact."
+      system_prompt_modifier:   "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' -- do not present it as a cited fact."
       doc_filter_min_keep:      7
       scope_filter:             false
       synthesis_mode:           homogeneous
@@ -189,7 +189,7 @@ rules:
 
 # tier-2a: standalone high quantitativity (no strong spatial/temporal focus)
 # methodological_depth guard: prevents capturing questions that also have high
-# meth — those should be evaluated by tier-3 first.
+# meth -- those should be evaluated by tier-3 first.
   - name: tier_2a
     when:
       quantitativity: {ge: 0.55}
@@ -204,7 +204,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_fulltext.txt
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
-      max_output_tokens:        700
+      max_output_tokens:        900
       system_prompt_modifier:   "Answer concisely and directly. Lead with the core finding in the first sentence. Verify every numeric claim against the provided context before stating it."
       doc_filter_min_keep:      6
       scope_filter:             false
@@ -226,6 +226,13 @@ rules:
 #   - narrow excerpts provide grounded claims without flooding the context
 #   - medium model handles explanatory prose quality perfectly well
 #   - avoids the full-text dilution problem observed in experiments
+#
+# max_output_tokens: 1200
+#   Raised from 700. generation_structured.txt instructs 2-4 section headings
+#   + body + Uncertainties + Implications + ## References. At 53 tok/s with
+#   mistral-medium, 700 tokens was exhausted before ## References was written,
+#   causing _extract_formatted_references() to return [] for all tier-m Qs.
+#   1200 tokens ~= 24s; well within the 150s timeout_generate_s ceiling.
   - name: tier_m
     when:
       complexity: {ge: 0.40}
@@ -238,7 +245,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_fulltext.txt
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
-      max_output_tokens:        700
+      max_output_tokens:        1200
       system_prompt_modifier:   ""
       doc_filter_min_keep:      6
       scope_filter:             false
