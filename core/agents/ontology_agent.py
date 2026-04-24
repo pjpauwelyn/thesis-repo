@@ -1,7 +1,9 @@
 """constructs a dynamic ontology from a user question via llm calls."""
 
+import math
 import os
 import re
+from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.agents.base_agent import BaseAgent
@@ -15,7 +17,6 @@ from core.utils.data_models import (
 
 # ---------------------------------------------------------------------------
 # tier descriptions used by filter_documents prompt
-# each entry: (label, brief_description)
 # ---------------------------------------------------------------------------
 _TIER_GUIDANCE: Dict[str, Tuple[str, str]] = {
     "tier-1": (
@@ -59,26 +60,25 @@ _TIER_GUIDANCE: Dict[str, Tuple[str, str]] = {
         "uncertain complexity (safety fallback)",
         "The routing confidence was low, so this question was escalated. Treat it "
         "like a tier-2 question: collect solid evidence without over-fetching. "
-        "Lexical and centrality scores are the most reliable signal here.",
+        "Similarity score is the most reliable signal here.",
     ),
     "fallback": (
         "conservative fallback",
-        "No routing rule matched confidently. Use centrality and lexical scores as "
-        "the primary signal. Prefer 'abstract' over 'drop' unless the paper is "
-        "clearly off-topic.",
+        "No routing rule matched confidently. Prefer 'abstract' over 'drop' unless "
+        "the paper is clearly off-topic.",
     ),
 }
 
 _TIER_GUIDANCE_DEFAULT = (
     "moderate",
-    "Use centrality and lexical scores as the primary signal. Prefer 'abstract' "
-    "over 'drop' unless the paper is clearly off-topic.",
+    "Prefer 'abstract' over 'drop' unless the paper is clearly off-topic.",
 )
 
 # rule_hit values that indicate a simple/definitional routing outcome.
-# Used to set min_full=2 instead of 3 (fewer PDFs needed for shallow questions).
-# Checked against rule_hit (reliable) rather than question_type (can be noisy).
+# used to set min_full=2 instead of 3 (fewer pdfs needed for shallow questions).
 _SIMPLE_RULE_HITS = frozenset({"tier-1", "tier-1-def"})
+
+_COMPARISON_TYPES = frozenset({"comparison", "method_eval"})
 
 
 class OntologyAgent(BaseAgent):
@@ -139,9 +139,9 @@ class OntologyAgent(BaseAgent):
         av_pairs: List[AttributeValuePair],
         question: str,
     ) -> List[LogicalRelationship]:
-        """Extract logical relationships between AV-pairs via LLM.
+        """extract logical relationships between av-pairs via llm.
 
-        Only called when include_relationships=True (non-default). The adaptive
+        only called when include_relationships=True (non-default). the adaptive
         pipeline always passes include_relationships=False so this path is
         effectively unused at runtime — it exists for the legacy
         1_pass_with_ontology pipeline type in core/main.py.
@@ -228,9 +228,8 @@ class OntologyAgent(BaseAgent):
 
             raw = resp.get("profile", {}) or {}
             # normalise question_type: strip whitespace and lowercase to guard
-            # against LLM responses like "Mechanism" or "mechanism " that would
-            # silently fail the {in: [...]} check in rules.yaml and cause
-            # tier-3 to never fire.
+            # against llm responses like "Mechanism" or "mechanism " that would
+            # silently fail the {in: [...]} check in rules.yaml.
             raw_qt = (raw.get("question_type") or "continuous").strip().lower()
             profile = QuestionProfile(
                 identity=question,
@@ -273,16 +272,71 @@ class OntologyAgent(BaseAgent):
     # document relevance filter (second LLM pass)
     # ------------------------------------------------------------------
 
+    def _tokenise(self, text: str) -> List[str]:
+        """lowercase word tokens, length >= 2, no punctuation."""
+        return re.findall(r"[a-z][a-z0-9\-]{1,}", text.lower())
+
+    def _question_sim(
+        self,
+        question: str,
+        docs: List[Dict[str, Any]],
+    ) -> List[Tuple[float, int, Dict]]:
+        """tf-idf cosine similarity of each doc's title+abstract against the question.
+
+        returns list of (sim_score, original_index, doc) in original doc order.
+        scores are normalised to [0, 1] by dividing by the per-doc tf-idf magnitude
+        and the question tf-idf magnitude (standard cosine). the question is treated
+        as a pseudo-document so rare question terms get higher idf weight.
+
+        uses stdlib only (math, re, collections) -- no external dependencies.
+        """
+        corpus = [
+            ((doc.get("abstract") or "") + " " + (doc.get("title") or ""))
+            for doc in docs
+        ]
+        q_tokens = self._tokenise(question)
+
+        # build idf over corpus + question as one extra doc
+        df: Counter = Counter()
+        doc_token_lists = [self._tokenise(c) for c in corpus]
+        all_docs = doc_token_lists + [q_tokens]
+        for toks in all_docs:
+            for t in set(toks):
+                df[t] += 1
+
+        n_docs = len(all_docs)
+
+        def idf(term: str) -> float:
+            return math.log((1 + n_docs) / (1 + df.get(term, 0))) + 1.0
+
+        def tfidf_vec(tokens: List[str]) -> Dict[str, float]:
+            tf = Counter(tokens)
+            total = len(tokens) or 1
+            return {t: (c / total) * idf(t) for t, c in tf.items()}
+
+        q_vec = tfidf_vec(q_tokens)
+        q_norm = math.sqrt(sum(v * v for v in q_vec.values())) or 1.0
+
+        results: List[Tuple[float, int, Dict]] = []
+        for idx, (doc, toks) in enumerate(zip(docs, doc_token_lists)):
+            d_vec = tfidf_vec(toks)
+            dot = sum(q_vec.get(t, 0.0) * v for t, v in d_vec.items())
+            d_norm = math.sqrt(sum(v * v for v in d_vec.values())) or 1.0
+            sim = dot / (q_norm * d_norm)
+            results.append((round(sim, 3), idx, doc))
+
+        return results
+
     def _lexical_score(
         self,
         docs: List[Dict[str, Any]],
         ontology: "DynamicOntology",
     ) -> List[Tuple[float, int, Dict]]:
-        """Score docs by keyword overlap with ontology AV-pairs.
+        """score docs by keyword overlap with ontology av-pairs.
 
-        Returns a list of (score, original_index, doc) sorted by score DESC,
-        with original index as stable tiebreak. Used by both _lexical_fallback
-        and _abstracts_topup.
+        returns a list of (score, original_index, doc) sorted by score desc,
+        with original index as stable tiebreak. used only by _lexical_fallback
+        and _abstracts_topup (safety-net paths).
         """
         word_re = re.compile(r"[a-z][a-z0-9\-]{1,}")
 
@@ -311,105 +365,6 @@ class OntologyAgent(BaseAgent):
         scored.sort(key=lambda t: (-t[0], t[1]))
         return scored
 
-    def _semantic_score(
-        self,
-        docs: List[Dict[str, Any]],
-        ontology: "DynamicOntology",
-        profile: "QuestionProfile",
-    ) -> List[Tuple[Dict[str, float], int, Dict]]:
-        """Compute a 3-signal relevance score per doc against the ontology + profile.
-
-        Signals (all 0-1):
-          lex  -- normalised keyword overlap with AV-pair tokens (via _lexical_score)
-          dim  -- profile-dimension alignment; only dimensions with a profile score
-                  >= 0.2 are considered active, so low-weight dims don't add noise
-          cen  -- centrality-weighted AV overlap (high-centrality pair hits count more)
-
-        Returns list of (scores_dict, original_index, doc), in original doc order.
-        The list is NOT sorted -- callers rebuild sorted order themselves so the
-        index mapping to the original docs list is stable.
-        """
-        word_re = re.compile(r"[a-z][a-z0-9\-]{1,}")
-
-        # lex: reuse existing scorer, normalise to [0,1]
-        raw_lex = self._lexical_score(docs, ontology)
-        max_lex = max((s for s, _, _ in raw_lex), default=1.0) or 1.0
-        lex_by_idx = {idx: s / max_lex for s, idx, _ in raw_lex}
-
-        _DIM_KWS: Dict[str, List[str]] = {
-            "spatial": [
-                "region", "area", "spatial", "geographic", "location",
-                "site", "basin", "watershed", "arctic", "tropical",
-                "global", "local", "scale",
-            ],
-            "temporal": [
-                "trend", "decadal", "annual", "seasonal", "interannual",
-                "long-term", "time-series", "period", "historic",
-                "variability", "change",
-            ],
-            "quant": [
-                "measurement", "estimate", "rate", "flux", "concentration",
-                "data", "dataset", "observation", "satellite", "sensor",
-                "numeric", "quantitative", "model", "simulation",
-            ],
-            "method": [
-                "method", "approach", "algorithm", "retrieval", "technique",
-                "framework", "validation", "calibration", "accuracy",
-                "uncertainty", "assessment",
-            ],
-        }
-        _DIM_THRESHOLD = 0.2
-        dim_weights: Dict[str, float] = {}
-        raw_weights = {
-            "spatial":  getattr(profile, "spatial_specificity", 0.1),
-            "temporal": getattr(profile, "temporal_specificity", 0.1),
-            "quant":    getattr(profile, "quantitativity", 0.3),
-            "method":   getattr(profile, "methodological_depth", 0.1),
-        }
-        for dim, w in raw_weights.items():
-            if w >= _DIM_THRESHOLD:
-                dim_weights[dim] = w
-        total_dim_weight = sum(dim_weights.values()) or 1.0
-
-        av_pairs = getattr(ontology, "attribute_value_pairs", [])
-        total_centrality = sum(getattr(av, "centrality", 0.5) for av in av_pairs) or 1.0
-
-        results: List[Tuple[Dict[str, float], int, Dict]] = []
-        for idx, doc in enumerate(docs):
-            text = (
-                (doc.get("abstract") or "") + " " + (doc.get("title") or "")
-            ).lower()
-            tokens = set(word_re.findall(text))
-
-            if dim_weights:
-                dim_score = 0.0
-                for dim, weight in dim_weights.items():
-                    hits = sum(1 for kw in _DIM_KWS[dim] if kw in tokens)
-                    presence = min(hits / 3.0, 1.0)
-                    dim_score += weight * presence
-                dim_score /= total_dim_weight
-            else:
-                dim_score = 0.0
-
-            cen_score = 0.0
-            for av in av_pairs:
-                cent = getattr(av, "centrality", 0.5)
-                val  = (getattr(av, "value", "") or "").strip().lower()
-                attr = (getattr(av, "attribute", "") or "").strip().lower()
-                hit = (val and val in text) or (attr and attr in tokens)
-                if hit:
-                    cen_score += cent
-            cen_score = min(cen_score / total_centrality, 1.0)
-
-            scores = {
-                "lex": round(lex_by_idx.get(idx, 0.0), 2),
-                "dim": round(dim_score, 2),
-                "cen": round(cen_score, 2),
-            }
-            results.append((scores, idx, doc))
-
-        return results
-
     def _lexical_fallback(
         self,
         docs: List[Dict[str, Any]],
@@ -417,10 +372,10 @@ class OntologyAgent(BaseAgent):
         min_full: int,
         min_total: int,
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        """Rank docs by keyword overlap and split into full/abstract/drop.
+        """rank docs by keyword overlap and split into full/abstract/drop.
 
-        Used as fallback when the LLM filter fails or violates guardrails.
-        If all scores are 0 (empty ontology), document order is used as
+        used as fallback when the llm filter fails or violates guardrails.
+        if all scores are 0 (empty ontology), document order is used as
         tiebreak -- no worse than the old all-full fallback but respects budget.
         """
         scored = self._lexical_score(docs, ontology)
@@ -451,11 +406,11 @@ class OntologyAgent(BaseAgent):
         ontology: "DynamicOntology",
         min_keep: int,
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        """Top up the kept pool (full + abstract) to min_keep by promoting
+        """top up the kept pool (full + abstract) to min_keep by promoting
         the highest-scoring dropped docs back into abstract_docs.
 
-        Called only in abstracts evidence mode, where the full/abstract split
-        is irrelevant (no PDF fetch either way) and the only thing that matters
+        called only in abstracts evidence mode, where the full/abstract split
+        is irrelevant (no pdf fetch either way) and the only thing that matters
         is the total number of docs available for refinement.
         """
         kept = len(full_docs) + len(abstract_docs)
@@ -484,64 +439,54 @@ class OntologyAgent(BaseAgent):
         evidence_mode: str = "excerpts_narrow",
         rule_hit: str = "fallback",
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        """Hybrid semantic + LLM document relevance filter.
+        """llm-based document relevance filter with ontology-grounded reasoning.
 
-        Each document is scored on three pre-computed signals (lex, dim, cen)
-        derived from the ontology and question profile. These scores are
-        forwarded to the LLM as orientation -- the LLM reasons about what the
-        question genuinely needs and classifies each doc as:
+        each document receives a tf-idf cosine similarity score against the
+        question text (unbiased orientation signal), then the llm reasons over
+        the full ontology av-pairs + question profile to classify each doc as:
 
-          "full"     -- fetch PDF + excerpts
-          "abstract" -- abstract only; DEFAULT when relevance is plausible
+          "full"     -- fetch pdf + excerpts
+          "abstract" -- abstract only; default when relevance is plausible
           "drop"     -- clearly off-topic; would introduce noise
 
-        The LLM is steered by a tier description (from rule_hit) that
-        characterises how much evidence depth this question type needs.
-        It must justify each classification with a one-sentence reason.
-
-        Guardrail floors (safety net, invisible to LLM):
+        guardrail floors (safety net, not shown as targets to the llm):
           min_full  : 2 for simple/definitional tiers, 3 for all others
           min_total : always max(min_keep, n//3)
 
-        Abstracts top-up (evidence_mode == "abstracts" only):
-          After filter resolves, if kept pool < min_keep, best-scoring
+        abstracts top-up (evidence_mode == "abstracts" only):
+          after filter resolves, if kept pool < min_keep, best-scoring
           dropped docs are re-promoted via lexical ranking.
 
-        Returns (full_docs, abstract_docs, drop_docs).
+        returns (full_docs, abstract_docs, drop_docs).
         """
         if not docs:
             return [], [], []
 
-        pairs = sorted(
-            getattr(ontology, "attribute_value_pairs", []),
-            key=lambda av: getattr(av, "centrality", 0.0),
-            reverse=True,
-        )[:5]
-        top_concepts = "\n".join(
-            f"  {getattr(av, 'attribute', '')}: {getattr(av, 'value', '')} "
-            f"(centrality={getattr(av, 'centrality', 0.5):.2f})"
-            for av in pairs
-        )
-
         n = len(docs)
-        # is_simple drives min_full=2 (fewer PDFs for shallow questions).
-        # Checked against rule_hit (reliable) rather than question_type
-        # to avoid Pydantic Literal validation noise on profiler edge cases.
         is_simple = rule_hit in _SIMPLE_RULE_HITS
         min_full  = 2 if is_simple else 3
         min_total = max(min_keep, n // 3)
 
-        sem_scores = self._semantic_score(docs, ontology, profile)
-        doc_lines: List[str] = []
-        for scores, idx, doc in sorted(sem_scores, key=lambda t: t[1]):
-            title = docs[idx].get("title", "Unknown")
-            doc_lines.append(
-                f"{idx + 1}. {title}\n"
-                f"   scores: lex={scores['lex']:.2f}  "
-                f"dim={scores['dim']:.2f}  cen={scores['cen']:.2f}"
-            )
-        doc_list = "\n".join(doc_lines)
+        # --- similarity scores (question text as reference, no ontology bias) ---
+        sim_scores = self._question_sim(question, docs)
+        sim_by_idx = {idx: sim for sim, idx, _ in sim_scores}
 
+        # --- full ontology block for the prompt ---
+        av_pairs = sorted(
+            getattr(ontology, "attribute_value_pairs", []),
+            key=lambda av: getattr(av, "centrality", 0.0),
+            reverse=True,
+        )
+        ontology_lines = "\n".join(
+            f"  [{i+1}] {getattr(av, 'attribute', '')}: {getattr(av, 'value', '')} "
+            f"— {getattr(av, 'description', '')} "
+            f"(centrality={getattr(av, 'centrality', 0.5):.2f})"
+            for i, av in enumerate(av_pairs)
+        )
+        if not ontology_lines:
+            ontology_lines = "  (no av-pairs extracted)"
+
+        # --- active profile dimensions ---
         _active_dims = {
             "spatial":        getattr(profile, "spatial_specificity", 0.1),
             "temporal":       getattr(profile, "temporal_specificity", 0.1),
@@ -554,58 +499,89 @@ class OntologyAgent(BaseAgent):
         profile_dim_line = (
             "Active question dimensions (>=0.2): " + ", ".join(active_dim_parts)
             if active_dim_parts
-            else "No strongly active dimensions -- treat as a general conceptual question."
+            else "No strongly active dimensions — treat as a general conceptual question."
         )
 
+        # --- document list with sim scores, in original order ---
+        doc_lines: List[str] = []
+        for idx, doc in enumerate(docs):
+            title = doc.get("title", "Unknown")
+            sim = sim_by_idx.get(idx, 0.0)
+            doc_lines.append(f"{idx + 1}. {title}\n   sim={sim:.3f}")
+        doc_list = "\n".join(doc_lines)
+
+        # --- tier guidance ---
         tier_label, tier_desc = _TIER_GUIDANCE.get(rule_hit, _TIER_GUIDANCE_DEFAULT)
+
+        # --- comparison constraint block (fires for comparison / method_eval) ---
+        q_type = getattr(profile, "question_type", "")
+        comparison_block = ""
+        if q_type in _COMPARISON_TYPES:
+            comparison_block = (
+                "\n⚠ COMPARISON / METHOD-EVAL QUESTION — MANDATORY CONSTRAINT:\n"
+                "This question explicitly compares or contrasts two or more distinct "
+                "domains, methods, or indicator sets.\n"
+                "You MUST retain evidence from EACH named side of the comparison in "
+                "your kept set (full + abstract).\n"
+                "A kept set that covers only one side is a filter failure.\n"
+                "Low sim scores on papers from the secondary domain are expected "
+                "when the question vocabulary is weighted toward the primary domain — "
+                "do NOT use a low sim score alone as justification for 'drop'.\n"
+                "When uncertain whether a paper addresses a named comparison target, "
+                "always choose 'abstract' over 'drop'.\n"
+            )
 
         prompt = (
             f"You are a document relevance filter for a scientific RAG pipeline.\n\n"
             f"Question: {question}\n\n"
-            f"Key ontology concepts (by centrality):\n{top_concepts}\n\n"
-            f"{profile_dim_line}\n\n"
+            f"Question type: {q_type or 'unspecified'}\n"
             f"Routing tier: {rule_hit} ({tier_label})\n"
-            f"{tier_desc}\n\n"
-            f"Three pre-computed relevance signals are shown for each document (all 0-1):\n"
-            f"  lex -- vocabulary overlap between title/abstract and the ontology concepts above\n"
-            f"  dim -- how well the abstract addresses the question's active dimensions\n"
-            f"         (spatial coverage, temporal scope, quantitative data, methodology)\n"
-            f"  cen -- how strongly the abstract addresses the highest-centrality concepts\n\n"
-            f"These scores are orientation, not verdicts. Use them to form a hypothesis\n"
-            f"about each paper, then apply your judgment:\n"
-            f"  - A paper can score low yet be foundational to the question.\n"
-            f"  - A paper can score high on shared vocabulary while being off-topic.\n\n"
+            f"{tier_desc}\n"
+            f"{comparison_block}\n"
+            f"Ontology AV-pairs (all pairs, ranked by centrality):\n{ontology_lines}\n\n"
+            f"{profile_dim_line}\n\n"
+            f"Each document has a pre-computed similarity score (sim, 0-1):\n"
+            f"  sim -- tf-idf cosine similarity of the title+abstract against the question text.\n"
+            f"         This is an unbiased starting hypothesis. Use it to form an initial\n"
+            f"         view, then reason against the ontology and question intent:\n"
+            f"  - A paper can score low on sim yet be conceptually central to the question.\n"
+            f"  - A paper can score high on sim due to shared surface vocabulary while\n"
+            f"    addressing a clearly different phenomenon.\n\n"
             f"Classify each document as exactly one of:\n"
             f'  "abstract" -- DEFAULT. Use when the paper is plausibly relevant or provides\n'
-            f"               supporting context, but you are not confident the full text\n"
-            f"               would add specific evidence beyond what the abstract reveals.\n"
+            f"               supporting context, but the full text is unlikely to add\n"
+            f"               specific evidence beyond what the abstract reveals.\n"
             f'  "full"     -- Use only when you are confident that:\n'
             f"               (a) this paper likely contains specific data, methods, or\n"
             f"                   arguments that directly address what the question asks, AND\n"
-            f"               (b) that depth of specificity is what this question's tier needs.\n"
-            f"               High lex + cen together is a strong signal; tier-1/def questions\n"
-            f"               need very few full papers.\n"
-            f'  "drop"     -- Use only when the paper would introduce noise: it shares\n'
-            f"               vocabulary with the question but addresses a clearly different\n"
-            f"               phenomenon, domain, or application context.\n"
+            f"               (b) that depth is what this question's tier needs.\n"
+            f'  "drop"     -- Use ONLY when ALL of the following are true:\n'
+            f"               (a) the paper does not address ANY concept or domain explicitly\n"
+            f"                   named in the question,\n"
+            f"               (b) you can state a specific, concrete reason it is off-topic.\n"
+            f"               Sharing a domain label with one side of the question does NOT\n"
+            f"               justify drop if that domain is named in the question.\n"
             f"               When in doubt between 'drop' and 'abstract', choose 'abstract'.\n\n"
-            f"For each document, provide a one-sentence reason for your classification.\n"
-            f"This is used for pipeline debugging and thesis evaluation -- be specific.\n\n"
-            f"Hard constraints (safety net -- do not target these as goals):\n"
+            f"For each document provide a one-sentence reason for your classification.\n"
+            f"This is used for pipeline debugging and thesis evaluation — be specific.\n\n"
+            f"Hard constraints (safety net — do not target these as goals):\n"
             f'  - At least {min_full} "full" classifications required.\n'
             f'  - At least {min_total} combined "full"+"abstract" required.\n\n'
-            f"Documents (with pre-computed scores):\n{doc_list}\n\n"
+            f"Documents:\n{doc_list}\n\n"
             f"Return ONLY valid JSON:\n"
             f'{{"documents": [{{"classification": "full"|"abstract"|"drop", '
             f'"reason": "<one sentence>"}}, ...]}}\n'
             f"No prose outside the JSON. The list length must equal {n}."
         )
 
+        self.logger.debug("filter_documents prompt (q=%s...):\n%s", question[:60], prompt)
+
         try:
             raw = self.llm.invoke(prompt, force_json=True)
+            self.logger.debug("filter_documents raw llm response: %s", raw)
 
             if raw is None:
-                raise ValueError("LLM unavailable after retries (returned None)")
+                raise ValueError("llm unavailable after retries (returned None)")
 
             if isinstance(raw, str):
                 import json as _json
@@ -619,7 +595,7 @@ class OntologyAgent(BaseAgent):
             if "documents" in data:
                 entries = data["documents"]
                 if not entries:
-                    raise ValueError("LLM returned empty documents list")
+                    raise ValueError("llm returned empty documents list")
                 if len(entries) != n:
                     raise ValueError(
                         f"documents count {len(entries)} != doc count {n}"
@@ -630,24 +606,31 @@ class OntologyAgent(BaseAgent):
                     if c not in ("full", "abstract", "drop"):
                         c = "abstract"
                     classifications.append(c)
-                    self.logger.debug(
-                        "filter doc[%d] -> %s | %s", i + 1, c, e.get("reason", "")
+                    self.logger.info(
+                        "filter doc[%d/%d] -> %-8s | sim=%.3f | %s",
+                        i + 1, n, c,
+                        sim_by_idx.get(i, 0.0),
+                        e.get("reason", "<no reason>"),
                     )
             elif "classifications" in data:
                 classifications = data["classifications"]
                 if not classifications:
-                    raise ValueError("LLM returned empty classifications list")
+                    raise ValueError("llm returned empty classifications list")
                 if len(classifications) != n:
                     raise ValueError(
                         f"classification count {len(classifications)} != doc count {n}"
                     )
             else:
                 raise ValueError(
-                    "LLM response missing both 'documents' and 'classifications' keys"
+                    "llm response missing both 'documents' and 'classifications' keys"
                 )
 
             n_full  = classifications.count("full")
             n_total = n_full + classifications.count("abstract")
+            self.logger.info(
+                "filter_documents guardrail: n_full=%d (min %d), n_total=%d (min %d)",
+                n_full, min_full, n_total, min_total,
+            )
             if n_full < min_full or n_total < min_total:
                 raise ValueError(
                     f"guardrail violated: n_full={n_full} (min {min_full}), "
@@ -672,8 +655,9 @@ class OntologyAgent(BaseAgent):
         drop_docs     = [docs[i] for i, c in enumerate(classifications) if c == "drop"]
 
         self.logger.info(
-            "filter_documents: %d full, %d abstract, %d dropped (of %d)",
-            len(full_docs), len(abstract_docs), len(drop_docs), n,
+            "filter_documents [llm]: %d full, %d abstract, %d dropped (of %d) | "
+            "q_type=%s tier=%s",
+            len(full_docs), len(abstract_docs), len(drop_docs), n, q_type, rule_hit,
         )
 
         if evidence_mode == "abstracts":
