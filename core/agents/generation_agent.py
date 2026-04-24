@@ -195,10 +195,16 @@ class GenerationAgent(BaseAgent):
             return []
         refs: List[str] = []
         for line in lines[start + 1:]:
-            line = line.strip()
-            if not line:
+            stripped = line.strip()
+            # Stop when a new ## section heading appears after refs have started.
+            # Do NOT stop on blank lines -- the model separates entries with
+            # blank lines, so a bare `break` on empty string drops everything
+            # after the first entry.
+            if stripped.startswith("##") and refs:
                 break
-            cleaned = line.strip("-\u2022* []")
+            if not stripped:
+                continue
+            cleaned = stripped.strip("-\u2022* []")
             if cleaned and "No author" not in cleaned and "[EVIDENCE]" not in cleaned:
                 refs.append(" ".join(cleaned.split()))
         return refs
@@ -210,9 +216,15 @@ class GenerationAgent(BaseAgent):
             return []
         refs: List[str] = []
         for line in lines[start + 1:]:
-            line = line.strip()
-            if not line:
+            stripped = line.strip()
+            # Stop when a new ## section heading appears after refs have started.
+            # Do NOT stop on blank lines -- the model separates entries with
+            # blank lines, so a bare `break` on empty string drops everything
+            # after the first entry.
+            if stripped.startswith("##") and refs:
                 break
-            if line.startswith("[") and "]" in line and "[EVIDENCE]" not in line:
-                refs.append(line)
+            if not stripped:
+                continue
+            if stripped.startswith("[") and "]" in stripped and "[EVIDENCE]" not in stripped:
+                refs.append(stripped)
         return refs
