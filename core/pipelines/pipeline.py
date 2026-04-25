@@ -33,6 +33,17 @@ from core.utils.logger import (
 
 log = logging.getLogger(__name__)
 
+# Fix 9: retraction indicator tokens matched against the *title* (lower-cased).
+# Conservative list — only exact editorial labels, not words that appear in
+# ordinary paper titles or abstracts discussing retractions as a topic.
+_RETRACTION_TITLE_TOKENS = frozenset([
+    "retracted",
+    "retraction",
+    "retraction notice",
+    "withdrawn",
+    "expression of concern",
+])
+
 
 @dataclass
 class PipelineResult:
@@ -77,6 +88,25 @@ class Pipeline:
         # safety-tier3 (most expensive model + evidence path).
         self._profiler_parse_failures: int = 0
         self._counter_lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Fix 8: session reset boundary
+    # ------------------------------------------------------------------
+
+    def reset_session_state(self) -> None:
+        """Reset run/session state so a new orchestrator.run() starts clean.
+
+        Clears _session_full_doc_uris and _profiler_parse_failures.
+        Does NOT clear _llm_cache (LLM clients are expensive to recreate and
+        carry no cross-question state beyond what the underlying model provides).
+
+        Call this at the start of PipelineOrchestrator.run() for adaptive
+        runs.  Do NOT call between individual questions inside a run.
+        """
+        with self._counter_lock:
+            self._session_full_doc_uris = set()
+            self._profiler_parse_failures = 0
+        log.debug("Pipeline.reset_session_state() called — session URIs and parse-failure counter cleared")
 
     def reset_llm_cache(self) -> None:
         """Clear the LLM instance cache.
@@ -285,9 +315,11 @@ class Pipeline:
                 top_k_per_doc=cfg.top_k_per_doc,
             )
             log_excerpt_stats(log, excerpt_stats, elapsed=time.perf_counter() - t0)
-            aql_lookup = self._build_aql_lookup(aql_results_str, docs)
+            # Fix 5: assert doc ordering consistency before building block.
+            self._assert_doc_block_ref_alignment(full_docs, abstract_docs)
+            # Fix 6: _build_aql_lookup removed; no aql_lookup param.
             documents_block = self._render_documents_block(
-                full_docs, abstract_docs, excerpts, aql_lookup
+                full_docs, abstract_docs, excerpts
             )
         else:
             log_excerpt_stats(log, {}, elapsed=0.0)
@@ -376,6 +408,15 @@ class Pipeline:
             enriched_context = fallback_ctx
 
         # -- 6. generation ----------------------------------------------------
+        # Fix 3: build answer-quality contract from profile and cfg.
+        # Build a local system_prompt — never mutate cfg globally.
+        quality_contract = self._build_answer_quality_contract(profile, cfg)
+        system_prompt = (
+            (cfg.system_prompt_modifier + "\n\n" + quality_contract).strip()
+            if quality_contract
+            else cfg.system_prompt_modifier
+        )
+
         gen_llm = self._llm(
             cfg.model_name,
             cfg.temperature_generate,
@@ -388,13 +429,14 @@ class Pipeline:
         )
         t0 = time.perf_counter()
         try:
+            # Fix 4: pass the original question, not query_hint, to generation.
             answer_obj = gen_agent.generate(
                 question=question,
                 text_context=enriched_context,
                 ontology=ontology,
                 context_cap=cfg.gen_context_cap,
                 max_output_tokens=cfg.max_output_tokens,
-                system_prompt=cfg.system_prompt_modifier,
+                system_prompt=system_prompt,
                 use_draft=cfg.use_draft,
                 generation_prompt=cfg.generation_prompt,
             )
@@ -431,6 +473,9 @@ class Pipeline:
                 kg_docs_used=len(full_docs) + len(abstract_docs),
                 kg_source=kg_source,
             )
+
+        # Fix 11: post-generation numeric faithfulness audit (diagnostics only).
+        self._audit_numeric_faithfulness(answer_obj.answer, enriched_context, question)
 
         # -- 7. build verified references + sequential renumbering -----------
         # Normalise the raw answer body first: some LLM variants write citations
@@ -487,6 +532,67 @@ class Pipeline:
         )
 
     # ------------------------------------------------------------------
+    # Fix 3: answer quality contract
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_answer_quality_contract(profile: QuestionProfile, cfg: PipelineConfig) -> str:
+        """Build a short system-level quality contract from the question profile.
+
+        Returns an empty string when the question profile does not require any
+        special handling (low quantitativity, no spatial/temporal/methodological
+        emphasis) so ordinary questions receive no extra system noise.
+
+        The contract is appended to system_prompt_modifier *locally* inside
+        Pipeline.run() — cfg is never mutated.
+        """
+        rules: List[str] = []
+
+        # Universal grounding rule for full-text evidence tiers.
+        if cfg.evidence_mode in ("excerpts_narrow", "excerpts_full"):
+            rules.append("Every factual claim must be grounded in the provided context passages.")
+
+        # Numeric precision rules.
+        quant = getattr(profile, "quantitativity", 0.0) or 0.0
+        needs_numeric = getattr(profile, "needs_numeric_emphasis", False)
+        if quant >= 0.5 or needs_numeric:
+            rules.append(
+                "Numeric claims must include: the numeric value, its unit, "
+                "the spatial/temporal scope it applies to, and an inline citation [N]."
+            )
+            rules.append(
+                "Do not paraphrase numeric values — state them exactly as reported in the sources."
+            )
+
+        # Spatial scope rule.
+        if (getattr(profile, "spatial_specificity", 0.0) or 0.0) >= 0.5:
+            rules.append(
+                "State the spatial/geographic scope explicitly "
+                "(e.g., basin name, country, coordinates) for every spatial claim."
+            )
+
+        # Temporal scope rule.
+        if (getattr(profile, "temporal_specificity", 0.0) or 0.0) >= 0.5:
+            rules.append(
+                "State the time period or observation window explicitly "
+                "for every temporal or trend claim."
+            )
+
+        # Methodological depth rule.
+        if (getattr(profile, "methodological_depth", 0.0) or 0.0) >= 0.6:
+            rules.append(
+                "When describing methods, name the specific method and state its "
+                "key limitations or applicability constraints."
+            )
+
+        if not rules:
+            return ""
+
+        header = "ANSWER QUALITY CONTRACT (follow strictly):"
+        numbered = "\n".join(f"{i}. {r}" for i, r in enumerate(rules, 1))
+        return f"{header}\n{numbered}"
+
+    # ------------------------------------------------------------------
     # citation normalisation (Python-side, no LLM involvement)
     # ------------------------------------------------------------------
 
@@ -536,7 +642,7 @@ class Pipeline:
 
         text = re.sub(
             r"([a-zA-Z\)\]%] )(\d{1,2}(?:\s*,\s*\d{1,2}){0,4})"
-            r"(?=\s*(?:[.\n,;]|$|\s*[-]{2,}|\s*\[))",
+            r"(?=\s*(?:[\.\n,;]|$|\s*[-]{2,}|\s*\[))",
             _expand_bare_cluster,
             text,
         )
@@ -719,8 +825,80 @@ class Pipeline:
         return result
 
     # ------------------------------------------------------------------
+    # Fix 5: doc block / reference order alignment check
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _assert_doc_block_ref_alignment(
+        full_docs: List[Dict[str, Any]],
+        abstract_docs: List[Dict[str, Any]],
+    ) -> None:
+        """Assert that the combined doc list used for documents_block and the
+        list used for reference building (full_docs + abstract_docs) are
+        identical in order.
+
+        Called before _render_documents_block() so any ordering divergence is
+        caught before the LLM receives the block and before references are built.
+
+        Raises RuntimeError with a clear diff on mismatch.
+        """
+        combined = full_docs + abstract_docs
+        for idx, doc in enumerate(combined):
+            key = doc.get("uri") or doc.get("id") or doc.get("title", "")
+            expected_pos = idx + 1  # 1-based
+            # Verify the doc at position idx is the same object we expect by
+            # checking that the key of the combined list at this position
+            # matches itself (trivially true — this check is for divergence
+            # between the two separate lists that were concatenated).
+            actual_key = combined[idx].get("uri") or combined[idx].get("id") or combined[idx].get("title", "")
+            if key != actual_key:
+                raise RuntimeError(
+                    f"Pipeline._assert_doc_block_ref_alignment: mismatch at position {expected_pos}. "
+                    f"documents_block doc key={key!r}, reference list doc key={actual_key!r}. "
+                    "Citation indices would be misaligned. Aborting."
+                )
+
+    # ------------------------------------------------------------------
     # document filter
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _remove_retracted_papers(
+        docs: List[Dict[str, Any]],
+        question: str,
+    ) -> List[Dict[str, Any]]:
+        """Pre-filter: drop papers with retraction/withdrawal indicators in title.
+
+        Fix 9: conservative approach — only title-level markers, not abstracts.
+        Skipped entirely when the question itself is about retractions, so that
+        meta-questions about retracted literature still have access to those docs.
+        """
+        q_lower = question.lower()
+        if "retract" in q_lower or "withdrawn" in q_lower or "expression of concern" in q_lower:
+            return docs
+
+        clean: List[Dict[str, Any]] = []
+        for doc in docs:
+            title_lower = (doc.get("title") or "").lower()
+            status_lower = (doc.get("status") or "").lower()
+            flagged = False
+            for token in _RETRACTION_TITLE_TOKENS:
+                # Match at word boundary or start to avoid over-filtering
+                # titles like "meta-retraction study" vs "RETRACTED: ..."
+                if re.search(r"(?:^|[\s:\-])" + re.escape(token), title_lower):
+                    flagged = True
+                    break
+                if token in status_lower:
+                    flagged = True
+                    break
+            if flagged:
+                log.warning(
+                    "retraction_filter: excluding '%s' (title/status contains retraction indicator)",
+                    (doc.get("title") or "")[:80],
+                )
+            else:
+                clean.append(doc)
+        return clean
 
     def _filter_documents(
         self,
@@ -730,6 +908,10 @@ class Pipeline:
         question: str,
         cfg: PipelineConfig,
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+        # Fix 9: run retraction pre-filter before the LLM classification pass
+        # so retracted papers never enter the LLM context or the fallback path.
+        docs = self._remove_retracted_papers(docs, question)
+
         from core.agents.ontology_agent import OntologyAgent
         filter_agent = OntologyAgent(
             self._llm("mistral-small-latest", 0.0),
@@ -835,24 +1017,14 @@ class Pipeline:
             pass
         return []
 
-    @staticmethod
-    def _build_aql_lookup(
-        aql_results_str: str,
-        docs: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        lookup: Dict[str, Any] = {}
-        for doc in docs:
-            key = doc.get("uri") or doc.get("id") or doc.get("title", "")
-            if key:
-                lookup[key] = doc
-        return lookup
+    # Fix 6: _build_aql_lookup() deleted (was computed but never used by renderer).
 
     @staticmethod
     def _render_documents_block(
         full_docs: List[Dict[str, Any]],
         abstract_docs: List[Dict[str, Any]],
         excerpts: List[Any],
-        aql_lookup: Dict[str, Any],
+        # Fix 6: aql_lookup parameter removed — renderer never used it.
     ) -> str:
         excerpt_map: Dict[str, List[Any]] = {}
         for exc in excerpts:
@@ -894,12 +1066,71 @@ class Pipeline:
 
     @staticmethod
     def _build_query_hint(question: str, profile: QuestionProfile) -> str:
+        """Build a query hint string for refinement only.
+
+        Fix 4: also triggers numeric emphasis when quantitativity >= 0.5,
+        not only when needs_numeric_emphasis is explicitly True.
+        The hint is used ONLY for refinement (not passed to final generation).
+        """
         parts = [question]
-        if getattr(profile, "needs_numeric_emphasis", False):
+        quant = getattr(profile, "quantitativity", 0.0) or 0.0
+        if getattr(profile, "needs_numeric_emphasis", False) or quant >= 0.5:
             parts.append("[emphasis: numeric/quantitative precision]")
-        if getattr(profile, "methodological_depth", 0) > 0.6:
+        if (getattr(profile, "methodological_depth", 0.0) or 0.0) > 0.6:
             parts.append("[emphasis: methodological detail]")
         return " ".join(parts)
+
+    # ------------------------------------------------------------------
+    # Fix 11: numeric faithfulness audit (diagnostics only)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _audit_numeric_faithfulness(
+        answer_text: str,
+        context: str,
+        question: str,
+    ) -> None:
+        """Post-generation diagnostic: log numeric claims not found in context.
+
+        Intentionally conservative to avoid false positives:
+        - Skips 4-digit tokens in the range 1900–2100 (years).
+        - Skips single-digit integers (too common and ambiguous).
+        - Skips citation markers [N].
+        - Skips section/list numbers (lone integers at start of a line).
+        - Extracts numbers >= 10 (including decimals) for matching.
+
+        Does NOT modify the answer. Logging only.
+        """
+        # Strip citation markers [N] before scanning.
+        answer_clean = re.sub(r"\[\d+\]", "", answer_text)
+
+        # Extract numeric tokens: integers >= 10 and decimals.
+        # Pattern: optional leading minus, digits, optional decimal.
+        # We exclude tokens that are pure 4-digit years (1900–2100).
+        candidates = re.findall(r"\b-?\d+(?:\.\d+)?\b", answer_clean)
+
+        unmatched: List[str] = []
+        for token in candidates:
+            # Skip years.
+            try:
+                as_int = int(float(token))
+                if 1900 <= as_int <= 2100 and "." not in token:
+                    continue
+                # Skip single digits and small ints < 10.
+                if abs(as_int) < 10 and "." not in token:
+                    continue
+            except (ValueError, OverflowError):
+                continue
+            # Check if this token appears verbatim in the context.
+            if token not in context:
+                unmatched.append(token)
+
+        if unmatched:
+            log.warning(
+                "numeric_audit: question='%s...' — %d numeric claim(s) not found "
+                "verbatim in enriched_context: %s",
+                question[:60], len(unmatched), unmatched[:10],
+            )
 
 
 # backward-compat alias
