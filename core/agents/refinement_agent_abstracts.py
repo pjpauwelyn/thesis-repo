@@ -90,7 +90,6 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
             .replace("{ontology}", ontology_text)
             .replace("{aql_results}", aql_text)
             .replace("{documents}", documents_text)
-            .replace("{incomplete_references}", "")
         )
 
         _debug_logger.debug("refinement prompt:\n%s", prompt[:500])
@@ -144,6 +143,12 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
     def _format_documents_for_references(self, documents: List[Dict[str, Any]]) -> str:
         """Build a clean numbered reference list for the {documents} prompt slot.
 
+        Prepends a CITATION FORMAT instruction so the downstream generation
+        LLM writes [1] [2] [3] rather than [1,2,3] or [1, 2, 3].  This
+        eliminates grouped citation markers at the source, making the
+        post-hoc _extract_cited_indices + _renumber_inline_citations pipeline
+        fully reliable without any regex extension.
+
         Every document that survived the filter gets a line.  OpenAlex metadata
         is fetched when possible; if the fetch fails we still emit a fallback
         line so the LLM never sees a gap in the reference list that it might
@@ -178,7 +183,7 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
             else:
                 # Fetch failed or URI is non-OpenAlex: always emit a fallback line
                 # so there is no gap in the numbered list that the LLM might fill.
-                fallback_title = title or "Unknown title"
+                fallback_title = title or "[No title — see URI]"
                 ref = (
                     f"[{i}] {fallback_title}. {uri}."
                     if uri
@@ -186,7 +191,15 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
                 )
                 formatted.append(ref)
 
-        return "\n".join(formatted)
+        # Upstream citation-format guard: instruct the generation LLM to write
+        # each reference as a separate marker ([1] [2] [3]) rather than grouping
+        # them ([1,2,3]).  Placed here, adjacent to the reference list, so the
+        # model sees it immediately before the numbered entries it will cite.
+        header = (
+            "CITATION FORMAT: write each reference as a separate marker "
+            "[1] [2] [3] — never grouped as [1,2,3] or [1, 2, 3].\n\n"
+        )
+        return header + "\n".join(formatted)
 
     def _invoke_llm_text(self, prompt: str) -> str:
         response = self.llm.invoke(prompt)
