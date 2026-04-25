@@ -47,4 +47,4 @@ YOUR ONLY JOB regarding references:
 - The pipeline will automatically append a verified ## References section after your answer. You do not need to and must not write it yourself.
 - If NO [VALIDATED REFERENCES] block is present in the CONTEXT, omit all citation markers entirely.
 
-Now write the final, direct answer (2–5 sentences for factual questions; 3–6 sentences for definition/mechanism questions), with inline [N] citation markers where supported.
+Now write the final, direct answer (2–5 sentences for factual questions; 3–6 sentences for definition/mechanism questions), with inline [N] citation markers where supported. Your answer must end with a complete sentence — never with a citation marker or a list of citation markers.
