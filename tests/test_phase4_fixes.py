@@ -52,7 +52,12 @@ def _make_profile(**kwargs):
 
 
 def _make_cfg(**kwargs):
-    """Build a minimal PipelineConfig stub."""
+    """Build a minimal PipelineConfig stub.
+
+    Note: timeout_refine_s and timeout_generate_s are plain int fields with
+    defaults of 120 on PipelineConfig -- do NOT pass None for them or Pydantic
+    will raise a ValidationError.  Omit them here so the model defaults apply.
+    """
     from core.utils.data_models import PipelineConfig
     defaults = dict(
         rule_hit="tier-m",
@@ -70,8 +75,6 @@ def _make_cfg(**kwargs):
         use_draft=True,
         generation_prompt="generation_structured.txt",
         system_prompt_modifier="",
-        timeout_refine_s=None,
-        timeout_generate_s=None,
     )
     defaults.update(kwargs)
     return PipelineConfig(**defaults)
@@ -257,7 +260,7 @@ def test_alignment_check_detects_swap():
     The real divergence the guard protects against is mutation of full_docs or
     abstract_docs *between* when they were snapshotted and when they are used.
     We simulate that here by patching a doc's URI in-place after the snapshot
-    is taken — this is the actual bug class the guard defends against.
+    is taken -- this is the actual bug class the guard defends against.
     """
     from core.pipelines.pipeline import Pipeline
 
