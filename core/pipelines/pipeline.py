@@ -287,6 +287,11 @@ class Pipeline:
             timeout_s=cfg.timeout_refine_s,
         )
 
+        # Build filtered_aql from the post-filter doc list so both branches
+        # always pass a non-empty JSON string to their refinement agent,
+        # regardless of whether the caller supplied aql_results_str= or docs=.
+        filtered_aql = self._format_kg_context(full_docs + abstract_docs)
+
         t0 = time.perf_counter()
         try:
             if cfg.evidence_mode == "abstracts":
@@ -300,7 +305,7 @@ class Pipeline:
                     structured_context="",
                     ontology=ontology,
                     include_ontology=True,
-                    aql_results_str=aql_results_str,
+                    aql_results_str=filtered_aql,
                     context_filter="full",
                 )
             else:
@@ -310,7 +315,6 @@ class Pipeline:
                 )
                 refine_agent.set_documents_block(documents_block)
                 query_hint = self._build_query_hint(question, profile)
-                filtered_aql = self._format_kg_context(full_docs + abstract_docs)
                 refined = refine_agent.process_context(
                     question=query_hint,
                     structured_context="",
