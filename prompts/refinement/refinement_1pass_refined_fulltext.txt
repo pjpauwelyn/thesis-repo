@@ -84,7 +84,7 @@ Supporting attributes found:
 # Topic name 1
 Findings: 1–3 key findings. For every numeric claim, quote the exact value and unit from the excerpt and attach [doc N, Section, p. P]. Prefer Results-section numbers; supplement with Methods for the instrument/algorithm.
 Evidence: Short citation (e.g., "Author et al., 2020") AND the doc index, e.g., "Smith et al., 2020 [doc 3]".
-Mechanisms / methods: Brief description of the measurement approach or main drivers, quoting the relevant Methods-section detail where available (e.g., "Trend derived from Sentinel‑1 backscatter at 10 m; Theil–Sen regression [doc 3, Methods, p. 4]").
+Mechanisms / methods: Brief description of the measurement approach or main drivers, quoting the relevant Methods-section detail where available (e.g., "Trend derived from Sentinel‑1 backscatter at 10 m; Theil–Sen regression [doc 3, Methods, p. 4]").
 Scope: Geographic: {region or "global"} | Temporal: {years}.
 Confidence: {0–1} with 1 short reason grounded in the excerpts (e.g., "direct in-situ measurements with n=240 plots [doc 3, Methods, p. 3]").
 Limitations: 1–2 specific caveats drawn from the Discussion/Limitations excerpts when available.
@@ -95,6 +95,23 @@ Topic name 2 (optional)
 
 Topic name 3 (optional)
 [same fields as above, only if it clearly adds value]
+
+
+[QUANTITATIVE VALUES EXTRACTED]
+If any numeric values are present in the evidence above, list them here in a compact table.
+Include ONLY values explicitly stated in full-text excerpts or abstracts — do NOT invent or round.
+If no numeric values appear in the evidence, write exactly: "No explicit quantitative values found."
+
+| value | unit | scope (region / time / material / method) | uncertainty / qualifier | source |
+|-------|------|-------------------------------------------|------------------------|--------|
+| [exact value as in excerpt] | [unit as written] | [region, time window, or study context] | [±, CI, p, range, or "none stated"] | [doc N, Section, p. P] |
+
+Rules for this table:
+- One row per distinct value (do not merge values from different documents).
+- Copy values verbatim — do not simplify decimal precision or change units.
+- Scope column: include region name, coordinate range, time window, or material/method label, whichever applies.
+- Source column must reference the exact document and section/page.
+- Keep the table short (≤ 15 rows); if there are many values, include only the most query-relevant ones.
 
 
 [VALIDATED REFERENCES]
