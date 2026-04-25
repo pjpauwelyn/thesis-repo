@@ -419,6 +419,10 @@ def test_phase3_generation() -> None:
                     docs = _parse_docs(row)
                     break
 
+            # Reset LLM cache between questions to prevent cross-question
+            # draft bleed (Fix 1: stale LLM client conversation state).
+            _PIPELINE.reset_llm_cache()
+
             log_question_start(log, i, question)
             t0 = time.perf_counter()
             status = "success"
@@ -481,7 +485,12 @@ def test_phase3_generation() -> None:
             tf.write("-" * 60 + "\n")
             tf.write(ans.answer + "\n")
             tf.write("-" * 60 + "\n")
-            tf.write("\n".join(ans.formatted_references) + "\n")
+            # Guard: ans.answer already contains ## References (appended by
+            # pipeline.py). Only write formatted_references separately when
+            # the answer does NOT already include the block, to prevent the
+            # double-reference-block artifact seen in phase3_answers_readable.txt.
+            if "## References" not in ans.answer:
+                tf.write("\n".join(ans.formatted_references) + "\n")
             tf.write(
                 f"context={len(ans.enriched_context)} chars | "
                 f"excerpts={ans.excerpt_stats.get('n_excerpts', 0)}\n"
