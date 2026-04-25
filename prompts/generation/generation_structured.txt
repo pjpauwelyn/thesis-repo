@@ -59,9 +59,26 @@ Treat the draft answer as a strong starting point and the context as high-priori
 6. When multiple CONTEXT items report related findings, synthesise them explicitly (e.g., 'Several studies show…') rather than describing each one separately.
    - Support each synthesis with one or more numeric citations like [1], [2] when the statements are backed by specific references. Do not write phrases such as '(from context synthesis)' or any other explanatory parenthetical; either attach a reference marker or omit the parenthetical entirely.
 
+### DIRECTNESS — BOTTOM LINE UP FRONT
+
+The very first sentence of your answer must directly answer the question.
+- Do NOT open with background, topic importance, a generic definition, history, or “this is a complex topic”.
+- For yes/no questions: state yes or no (with qualification if needed) immediately.
+- For comparison questions: state the key difference or outcome in the first sentence.
+- For mechanism questions: state the primary driver or process in the first sentence.
+- Elaboration and supporting detail follow after the first sentence.
+
+### COMPLETENESS — COVER ALL NAMED PARTS
+
+Before writing, identify every named entity, mechanism, region, method, or comparison side in the question.
+- Ensure each is addressed at least once in the answer.
+- For comparison questions: address both sides and the basis of comparison.
+- For mechanism questions: include the causal chain — driver → process → observed effect.
+- For method-evaluation questions: include what the method measures, its key strengths, and its main limitations.
+
 ### STRUCTURE
 
-- Begin with a short direct answer (2–4 sentences) that clearly addresses the question.
+- Begin with a direct answer (first sentence answers the question — see DIRECTNESS above).
 
 - Then add 2–4 short sections with headings that match the question type, for example:
   * “Key concepts” / “Definition” for “what is…” questions,
@@ -76,18 +93,16 @@ Treat the draft answer as a strong starting point and the context as high-priori
 - If the context includes important caveats or confidence information, add a short "Uncertainties and limitations" paragraph (2–4 sentences).
 - When the question has clear real-world or modelling relevance (e.g., climate projections, EO mission design, risk, policy), end with a brief "Implications" paragraph (2–4 sentences) that summarises what the answer means for models, monitoring, or decisions, without adding new technical details.
 - Your answer body must end with a complete sentence, not with a citation marker or reference list.
+- Do NOT add a generic concluding paragraph that restates the answer or includes future-work boilerplate unless the question explicitly asks for future directions.
+- Use compact sections or bullets only when they improve clarity; do not pad.
 
 ### USE OF NUMBERS AND SCOPE
 
-- You are encouraged to use quantitative details (percent changes, rates, ranges) from:
-  * the CONTEXT, and
-  * your training knowledge,
-  as long as they are consistent.
-- When using quantitative details from training knowledge, only add a value if the CONTEXT does not already provide one and there is no conflict.
-
-- Whenever you give a quantitative value from the CONTEXT, mention:
-  * the geographic scope (e.g., “Hindu Kush Himalaya, 27–37°N, 66–92°E”), and
-  * the temporal scope (e.g., “2000–2024”).
+- Only use numeric values that are explicitly present in the provided CONTEXT. Do not introduce numbers from training knowledge if the CONTEXT already supplies values for the same claim, and do not invent numbers not present anywhere.
+- For every quantitative value, state: (a) the value and unit exactly as reported, (b) the spatial scope (region, basin, coordinates), and (c) the temporal scope (observation window, year range).
+- If the CONTEXT gives a range or uncertainty (±, CI, p-value), preserve it — do not simplify to a single number.
+- Do not convert units unless the conversion is trivially standard (e.g., km to m) and you explicitly mark it as a conversion. If in doubt, report the value in the unit used by the source.
+- If evidence is qualitative only, describe the direction or pattern in words — do not fabricate a number.
 
 - If the question is global or very general in scope:
   * Keep the main narrative GENERAL (global or conceptual).
@@ -98,10 +113,18 @@ Treat the draft answer as a strong starting point and the context as high-priori
 - If the question is explicitly regional (e.g., names a region, country, or basin):
   * Focus the answer on that region.
   * Use global behaviour only as supporting context.
+  * If evidence in the CONTEXT covers only a subset of the named region or period, explicitly say so (e.g., “Evidence covers the upper basin only” or “Studies available for 2000–2015”).
 
 - When discussing frozen ground or permafrost albedo, distinguish explicitly between snow-covered surfaces (typical albedo 0.6–0.9) and snow-free bare soil (typical albedo 0.10–0.25). Never present a snow-covered albedo value as a radiative property of the underlying soil.
 
-- For health-impact or epidemiological claims involving temperature, always specify the per-unit exposure (e.g., ‘per 1°C rise’). A 10°C temperature shift is outside the range of standard climate health-impact studies and almost certainly indicates a unit or magnitude error.
+- For health-impact or epidemiological claims involving temperature, always specify the per-unit exposure (e.g., 'per 1°C rise'). A 10°C temperature shift is outside the range of standard climate health-impact studies and almost certainly indicates a unit or magnitude error.
+
+### SCOPE AWARENESS
+
+- When evidence is spatially, temporally, or domain-limited, state that limitation explicitly in the relevant sentence or paragraph (e.g., “Based on studies from the Tibetan Plateau”, “as shown in 2000–2020 satellite records”).
+- Distinguish “shown in these studies” from “generally true” — do not globalise findings that are regional.
+- If the question asks globally but CONTEXT evidence is regional, say so: “Available evidence is predominantly from [region]; global behaviour may differ.”
+- If evidence is mixed, inconsistent, or covers only part of the question scope, state this concretely rather than using vague hedges like “results may vary”.
 
 ### UNCERTAINTY AND CAVEATS
 
@@ -128,9 +151,23 @@ The CONTEXT includes a [VALIDATED REFERENCES] block listing the papers available
 YOUR ONLY JOB regarding references:
 - Insert numeric markers [N] inline in your answer body wherever a claim is backed by a reference.
 - Only use IDs that exist in [VALIDATED REFERENCES]. Never cite an ID that is not listed there.
+- Cite every factual or numeric claim that depends on the provided CONTEXT with an inline [N] marker.
 - Aim to cite each paper you substantively draw on at least once. If you use content from a paper across multiple paragraphs, cite it at the first relevant claim; you do not need to repeat it on every sentence.
 - Do NOT write a "## References" section or "References" section. Do NOT reproduce any reference lines, URIs, or author strings.
 - The pipeline will automatically append a verified ## References section after your answer. You do not need to and must not write it yourself.
 - If NO [VALIDATED REFERENCES] block is present in the CONTEXT, omit all citation markers entirely.
+
+---
+
+### NON-NEGOTIABLE FINAL CHECK
+
+Before submitting your answer, verify ALL of the following:
+
+1. **First sentence answers the question directly** — no preamble, no background, no “this is complex”.
+2. **Every numeric claim includes**: value, unit, spatial scope, temporal scope, and an inline [N] citation. If any element is missing from the context, omit the number rather than guessing.
+3. **Spatial/temporal scope is stated** wherever evidence is regional or time-limited; do not generalise beyond what the evidence supports.
+4. **Every named entity, mechanism, or comparison side in the question is addressed** at least once.
+5. **No generic concluding paragraph** and no future-work boilerplate unless explicitly asked.
+6. **No [N] citation IDs outside the [VALIDATED REFERENCES] list**; no self-written References section.
 
 Now write the final refined answer (answer body only — no ## References section).
