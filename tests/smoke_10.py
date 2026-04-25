@@ -214,15 +214,38 @@ BLEED_SIGNALS = [
 
 DIM_LABELS = [
     "fix7_guard",        # a) no empty-refinement warning
-    "body_length",       # b) >= 500 chars (>= 2000 for tier-3)
+    "body_length",       # b) >= 500 chars (>= 1000 for tier-m, >= 2000 for tier-3)
     "sentence_ending",   # c) body does not end on ]
     "seq_refs",          # d) inline [N] gap-free + ## References matches
     "use_draft",         # e) use_draft matches tier expectation
     "bleed_check",       # f) no off-topic text
-    "ref_uri_sanity",    # g) no Unknown entries in ## References
+    "ref_uri_sanity",    # g) no blank/malformed entries in ## References
     "context_size",      # h) enriched_context large enough for tier
     "answer_quality",    # i) heuristic completeness signal
 ]
+
+
+def _is_bad_ref_line(line: str) -> bool:
+    """Return True if a ## References line looks blank or malformed.
+
+    Covers four known bad patterns (S3):
+      1. "unknown" anywhere          -- old Unknown-title sentinel
+      2. starts with ". ."           -- ". . 2019" blank-metadata artifact (Q12)
+      3. "[no title" anywhere        -- Agent A's "[No title — see URI]" sentinel
+                                        (ac7fb8): title is missing even though
+                                        the URI is present
+      4. "[N] ." form                -- empty title rendered as a lone period
+    """
+    l = line.strip()
+    if "unknown" in l.lower():
+        return True
+    if l.startswith(". ."):
+        return True
+    if "[no title" in l.lower():
+        return True
+    if re.match(r"\[\d+\]\s*\.", l):
+        return True
+    return False
 
 
 def _score_answer(
@@ -252,8 +275,17 @@ def _score_answer(
     if empty_refine:
         warnings.append("FIX7: refinement fell back to raw abstracts (aql_results_str was empty)")
 
-    # b) body length
-    min_len = 2000 if tier == "tier-3" else 500
+    # b) body length -- tier-specific floors (S4)
+    #    tier-3  >= 2000  (unchanged)
+    #    tier-m  >= 1000  (new: catches truncations without false-failing short
+    #                      but valid answers)
+    #    others  >= 500   (unchanged)
+    if tier == "tier-3":
+        min_len = 2000
+    elif tier == "tier-m":
+        min_len = 1000
+    else:
+        min_len = 500
     scores["body_length"] = len(body) >= min_len
     if not scores["body_length"]:
         warnings.append(f"BODY_LEN: {len(body)} chars < {min_len} floor for {tier}")
@@ -298,13 +330,19 @@ def _score_answer(
     if bleed_hit:
         warnings.append(f"BLEED: off-topic signal words found: {bleed_hit}")
 
-    # g) ref URI sanity -- flag lines containing "unknown" or suspiciously short
+    # g) ref URI sanity (S3) -- four-condition bad-ref detector
+    #    Replaces the old two-condition check ("unknown" OR len < 10).
+    #    _is_bad_ref_line() covers:
+    #      - "unknown" sentinel (old)
+    #      - ". . 2019" blank-metadata (Q12 pattern)
+    #      - "[No title — see URI]" (Agent A sentinel from ac7fb8)
+    #      - "[N] ." empty-title-as-period form
     ref_lines = [l.strip() for l in ref_blk.strip().splitlines() if l.strip().startswith("[")]
-    unknown_refs = [l for l in ref_lines if "unknown" in l.lower() or len(l) < 10]
-    scores["ref_uri_sanity"] = not unknown_refs
-    if unknown_refs:
+    bad_refs = [l for l in ref_lines if _is_bad_ref_line(l)]
+    scores["ref_uri_sanity"] = not bad_refs
+    if bad_refs:
         warnings.append(
-            f"REF_URI: {len(unknown_refs)} suspicious reference entries: {unknown_refs[:3]}"
+            f"REF_URI: {len(bad_refs)} blank/malformed reference entries: {bad_refs[:3]}"
         )
 
     # h) enriched context size
