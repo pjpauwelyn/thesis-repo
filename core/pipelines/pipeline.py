@@ -170,9 +170,12 @@ class Pipeline:
         before we receive the answer body.  This makes references deterministic
         and hallucination-proof: the LLM only writes [N] markers inline.
 
-        Inline markers are then renumbered to sequential [1]..[K] so that if
-        the LLM cited doc indices {3,7,14} the output shows [1][2][3] and the
-        ## References section lists [1]..[3] to match.
+        Before renumbering, _normalize_citation_format() converts any bare
+        comma-lists ("word 3, 7") or multi-index brackets ("[5,6,7]") that the
+        LLM produced into canonical "[N][M]" form.  Inline markers are then
+        renumbered to sequential [1]..[K] so that if the LLM cited doc indices
+        {3,7,14} the output shows [1][2][3] and the ## References section lists
+        [1]..[3] to match.
         """
         from core.agents.generation_agent import GenerationAgent
         from core.agents.refinement_agent_abstracts import RefinementAgentAbstracts
@@ -420,19 +423,20 @@ class Pipeline:
             )
 
         # -- 7. build verified references + sequential renumbering -----------
-        # The LLM answer body contains [N] inline markers referencing original
-        # 1-based doc positions from the [VALIDATED REFERENCES] block.
-        # _build_verified_references() builds the ## References section and
-        # returns a remap dict {old_index: new_sequential_index} so we can
-        # rewrite the inline markers in the answer body to match [1]..[K].
+        # Normalise the raw answer body first: some LLM variants write citations
+        # as bare comma-lists ("word 3, 7") or multi-index brackets ("[5,6,7]")
+        # instead of the canonical "[N][M]" form.  _normalize_citation_format()
+        # converts both forms to "[N][M]" so _renumber_inline_citations() and
+        # the scorer's re.findall(r'\[(\d+)\]') both see the correct markers.
         all_docs = full_docs + abstract_docs
         cited_indices = getattr(answer_obj, "cited_indices", set())
         fmt_refs, plain_refs, index_remap = self._build_verified_references(
             all_docs, cited_indices
         )
 
-        # Rewrite inline [N] markers in answer body to sequential positions.
-        answer_text = self._renumber_inline_citations(answer_obj.answer, index_remap)
+        # Normalise citation format, then rewrite [N] to sequential [1]..[K].
+        normalised_body = self._normalize_citation_format(answer_obj.answer)
+        answer_text = self._renumber_inline_citations(normalised_body, index_remap)
 
         # Append ## References to the answer body.
         if fmt_refs:
@@ -467,6 +471,54 @@ class Pipeline:
             kg_docs_used=len(full_docs) + len(abstract_docs),
             kg_source=kg_source,
         )
+
+    # ------------------------------------------------------------------
+    # citation normalisation (Python-side, no LLM involvement)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_citation_format(text: str) -> str:
+        """Normalise LLM citation variants to canonical [N][M] form.
+
+        Two passes, applied before renumbering:
+
+        Pass 1 — multi-index bracket expansion:
+            [N, M, K]  ->  [N][M][K]
+
+        Pass 2 — bare cluster bracketing:
+            "word N, M"  ->  "word [N][M]"
+            Anchor:    letter / ) / ] / % / "." followed by exactly one space.
+            Guard:     each digit token must be 1..30 (rules out years >= 31,
+                       wavelengths, percentages written as plain numbers).
+            Lookahead: sentence-ending punctuation (.,;), newline, em-dash "--",
+                       or an opening "[".  This excludes numbers that are part
+                       of prose (e.g. "3 m below" where "m" does not satisfy
+                       the lookahead).
+
+        Both passes are no-ops when the LLM already used [N] form correctly.
+        """
+        # Pass 1: [N, M, K] -> [N][M][K]
+        def _expand_multi_bracket(m: re.Match) -> str:
+            nums = re.split(r"[\s,]+", m.group(1).strip())
+            return "".join(f"[{n}]" for n in nums if n.isdigit())
+
+        text = re.sub(r"\[(\d+(?:\s*,\s*\d+)+)\]", _expand_multi_bracket, text)
+
+        # Pass 2: bare citation clusters after a word/symbol anchor
+        def _expand_bare_cluster(m: re.Match) -> str:
+            nums = re.split(r"[\s,]+", m.group(2).strip())
+            valid = [n for n in nums if n.isdigit() and 1 <= int(n) <= 30]
+            if not valid:
+                return m.group(0)
+            return m.group(1) + "".join(f"[{n}]" for n in valid)
+
+        text = re.sub(
+            r"([a-zA-Z\)\]%\.] )(\d{1,2}(?:\s*,\s*\d{1,2}){0,4})"
+            r"(?=\s*(?:[.\n,;]|$|\s*[-]{2,}|\s*\[))",
+            _expand_bare_cluster,
+            text,
+        )
+        return text
 
     # ------------------------------------------------------------------
     # verified reference builder (Python-side, no LLM involvement)
