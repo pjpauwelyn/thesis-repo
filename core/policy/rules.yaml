@@ -46,8 +46,8 @@
 #
 # Measured baselines (Mistral API, Apr 2026):
 #   small  : TTFT ~0.3s,  ~130 tok/s  -> 700 tok ~= 6s   -> 30s ceiling
-#   medium : TTFT ~1.3s,  ~53 tok/s   -> 1600 tok ~= 32s -> 150s ceiling
-#   large  : TTFT ~30s,   ~47 tok/s   -> 1400 tok ~= 30s -> 360s ceiling
+#   medium : TTFT ~1.3s,  ~53 tok/s   -> 4000 tok ~= 75s -> 150s ceiling
+#   large  : TTFT ~30s,   ~47 tok/s   -> 4000 tok ~= 85s -> 360s ceiling
 #
 # NOTE: safety-tier3 (confidence < 0.60) is handled directly in router.py
 # and does NOT appear here. Its timeouts match tier-3 (large everywhere).
@@ -74,11 +74,9 @@ rules:
 # escalating simple "what is X" questions to the medium model.
 # Guard: quant < 0.45 ensures numeric-heavy definitions still reach tier-2a.
 #
-# max_output_tokens: 700 -> 1200
-#   Q18 ('What are the radiative properties...') produced a 3-sentence stub
-#   despite the definition floor instruction. The combined zero-shot draft +
-#   refinement + generation budget at 700 tok was too tight for multi-property
-#   definition questions. 1200 tok ~= 9s at 130 tok/s, within the 45s ceiling.
+# max_output_tokens: 1200 -> 2000 (P1)
+#   Raised to prevent truncation on multi-property definition questions.
+#   2000 tok ~= 15s at 130 tok/s, well within the 45s ceiling.
   - name: tier_1_def
     when:
       question_type: {in: [definition, factual]}
@@ -93,7 +91,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_exp4.txt
       generation_prompt:        generation_direct.txt
       gen_context_cap:          307200
-      max_output_tokens:        1200
+      max_output_tokens:        2000
       system_prompt_modifier:   ""
       doc_filter_min_keep:      3
       scope_filter:             false
@@ -109,6 +107,8 @@ rules:
 # grounding of measured values to the named region/period in the evidence.
 # System prompt is a light nudge -- not a hard constraint -- so the model can
 # still use supporting cross-regional context when it is the only evidence.
+#
+# max_output_tokens: 1600 -> 4000 (P1)
   - name: tier_2b
     when:
       quantitativity: {ge: 0.60}
@@ -125,7 +125,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_fulltext.txt
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
-      max_output_tokens:        1600
+      max_output_tokens:        4000
       system_prompt_modifier:   "Pay particular attention to findings specific to the geographic region and time period named in the question. Supporting context from other regions is acceptable when it is the only available evidence."
       doc_filter_min_keep:      6
       scope_filter:             true
@@ -145,27 +145,9 @@ rules:
 #   b) complexity >= 0.75 AND meth >= 0.45  (very complex + moderate method grounding)
 #   c) type in comparison/method_eval AND meth >= 0.40  (v7: lowered from 0.45)
 #
-# v7 rationale for branch-c change (0.45 -> 0.40):
-#   Phase 1 profiling showed the profiler uses meth=0.40 as its canonical
-#   'moderate methodology' value for comparison questions. Every comparison
-#   question in EO-QA (comparing sensors, algorithms, or approaches) requires
-#   reading method sections across papers -- that is cross-paper synthesis by
-#   definition. The 0.05 gap between the old gate (0.45) and the profiler's
-#   output (0.40) was systematic quantization, not genuine signal.
-#   tier-m (excerpts_narrow + use_draft=False) produces draft-free grounded
-#   comparisons for these questions; tier-3 (excerpts_full + use_draft=False)
-#   is the correct pipeline.
-#
-# Why not complexity alone:
-#   A mechanism question at cx=0.80 and meth=0.25 is an explanatory question.
-#   Only when the question genuinely needs to evaluate or compare methods across
-#   papers does the large model + full excerpts earn their cost.
-#
-# max_output_tokens: 1400
-#   Raised from 1000. Q2 comparison answer truncated before ## References.
-#   generation_structured.txt drives 5+ sections; a full comparison answer
-#   exhausts ~1200-1300 tokens. At 47 tok/s (mistral-large), 1400 tok ~= 30s,
-#   well within timeout_generate_s=360.
+# max_output_tokens: 1400 -> 4000 (P1)
+#   Raised to prevent truncation on long synthesis answers (Q4, Q14).
+#   4000 tok ~= 85s at 47 tok/s (mistral-large), within 360s timeout.
   - name: tier_3
     when:
       question_type: {in: [mechanism, method_eval, comparison]}
@@ -187,7 +169,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_fulltext.txt
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
-      max_output_tokens:        1400
+      max_output_tokens:        4000
       system_prompt_modifier:   "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated' -- do not present it as a cited fact."
       doc_filter_min_keep:      7
       scope_filter:             false
@@ -201,6 +183,8 @@ rules:
 # tier-2a: standalone high quantitativity (no strong spatial/temporal focus)
 # methodological_depth guard: prevents capturing questions that also have high
 # meth -- those should be evaluated by tier-3 first.
+#
+# max_output_tokens: 900 -> 4000 (P1)
   - name: tier_2a
     when:
       quantitativity: {ge: 0.55}
@@ -215,7 +199,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_fulltext.txt
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
-      max_output_tokens:        900
+      max_output_tokens:        4000
       system_prompt_modifier:   "Answer concisely and directly. Lead with the core finding in the first sentence. Verify every numeric claim against the provided context before stating it."
       doc_filter_min_keep:      6
       scope_filter:             false
@@ -238,12 +222,16 @@ rules:
 #   RefinementAgent provides structure; a separate zero-shot draft is redundant
 #   and risky. This aligns tier-m with tier-2a, tier-2b, and tier-3.
 #
-# max_output_tokens: 1600
-#   Raised from 1200. Q1 and Q3 both truncated before ## References at 5826 /
-#   5325 chars. generation_structured.txt prompts for 5 sections + uncertainties
-#   + implications + ## References; this structure exhausts ~1300-1500 tokens
-#   for complex mechanism questions. 1600 tok ~= 32s at 53 tok/s (mistral-medium),
-#   well within the 150s timeout_generate_s ceiling.
+# max_output_tokens: 1600 -> 4000 (P1)
+#   Raised to prevent truncation on complex mechanism answers.
+#   4000 tok ~= 75s at 53 tok/s (mistral-medium), within 150s timeout.
+#
+# system_prompt_modifier (R1):
+#   Added faithfulness guard + FAC unit correction.
+#   (a) Quantitative faithfulness: verify every numeric value appears in the
+#       CONTEXT before stating it; if only in training knowledge, omit or flag.
+#   (b) FAC unit: field-aligned current intensity is measured in uA/m^2
+#       (microamperes per square metre), not mA/m. Fixes Q11/Q14 unit error.
   - name: tier_m
     when:
       complexity: {ge: 0.40}
@@ -256,8 +244,8 @@ rules:
       refinement_prompt:        refinement_1pass_refined_fulltext.txt
       generation_prompt:        generation_structured.txt
       gen_context_cap:          307200
-      max_output_tokens:        1600
-      system_prompt_modifier:   ""
+      max_output_tokens:        4000
+      system_prompt_modifier:   "Before writing each quantitative claim, verify it appears in the provided CONTEXT. If a specific number is only in your training knowledge and not in the context, either omit it or flag it as 'estimated -- not from retrieved sources'. Note on units: field-aligned current (FAC) intensity is measured in microamperes per square metre (uA/m^2); do not use mA/m."
       doc_filter_min_keep:      6
       scope_filter:             false
       synthesis_mode:           homogeneous
@@ -269,6 +257,8 @@ rules:
 
 # tier-1: simple / low-complexity -- abstracts only, no PDF fetch
 # Ceiling raised from 0.35 to 0.40 to absorb the profiler drift zone.
+#
+# max_output_tokens: 450 -> 2000 (P1)
   - name: tier_1
     when:
       complexity: {lt: 0.40}
@@ -281,7 +271,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_exp4.txt
       generation_prompt:        generation_direct.txt
       gen_context_cap:          307200
-      max_output_tokens:        450
+      max_output_tokens:        2000
       system_prompt_modifier:   ""
       doc_filter_min_keep:      6
       scope_filter:             false
@@ -296,6 +286,8 @@ rules:
 # Assumes a simple question type since no profile signal was strong enough
 # to match any rule. Small model + abstracts. Wide doc keep net because
 # we don't know what the question needs.
+#
+# max_output_tokens: 700 -> 2000 (P1)
   - name: fallback
     when:
       always: true
@@ -308,7 +300,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_exp4.txt
       generation_prompt:        generation_direct.txt
       gen_context_cap:          307200
-      max_output_tokens:        700
+      max_output_tokens:        2000
       system_prompt_modifier:   ""
       doc_filter_min_keep:      6
       scope_filter:             false
