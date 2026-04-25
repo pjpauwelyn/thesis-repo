@@ -72,6 +72,20 @@ class Pipeline:
         self._profiler_parse_failures: int = 0
         self._counter_lock = threading.Lock()
 
+    def reset_llm_cache(self) -> None:
+        """Clear the LLM instance cache.
+
+        Call this between questions in a multi-question test loop to force
+        fresh LLM client instances for each question.  This prevents any
+        accumulated conversation state in the underlying client object from
+        leaking a prior question's draft into the next refinement context
+        (draft-bleed guard).
+
+        Safe to call at any point; does not affect routing, docs, or results.
+        """
+        self._llm_cache = {}
+        log.debug("Pipeline._llm_cache cleared (reset_llm_cache called)")
+
     def profile_and_route(
         self, question: str
     ) -> Tuple[DynamicOntology, QuestionProfile, PipelineConfig]:
@@ -155,6 +169,10 @@ class Pipeline:
         The LLM's own ## References output (if any) is stripped by the agent
         before we receive the answer body.  This makes references deterministic
         and hallucination-proof: the LLM only writes [N] markers inline.
+
+        Inline markers are then renumbered to sequential [1]..[K] so that if
+        the LLM cited doc indices {3,7,14} the output shows [1][2][3] and the
+        ## References section lists [1]..[3] to match.
         """
         from core.agents.generation_agent import GenerationAgent
         from core.agents.refinement_agent_abstracts import RefinementAgentAbstracts
@@ -397,18 +415,22 @@ class Pipeline:
                 kg_source=kg_source,
             )
 
-        # -- 7. build verified references (Python-side, hallucination-proof) --
-        # The LLM answer body contains [N] inline markers.  We build the
-        # ## References section here from the known-good doc list so the
-        # output is always correct regardless of LLM behaviour.
+        # -- 7. build verified references + sequential renumbering -----------
+        # The LLM answer body contains [N] inline markers referencing original
+        # 1-based doc positions from the [VALIDATED REFERENCES] block.
+        # _build_verified_references() builds the ## References section and
+        # returns a remap dict {old_index: new_sequential_index} so we can
+        # rewrite the inline markers in the answer body to match [1]..[K].
         all_docs = full_docs + abstract_docs
         cited_indices = getattr(answer_obj, "cited_indices", set())
-        fmt_refs, plain_refs = self._build_verified_references(
+        fmt_refs, plain_refs, index_remap = self._build_verified_references(
             all_docs, cited_indices
         )
 
+        # Rewrite inline [N] markers in answer body to sequential positions.
+        answer_text = self._renumber_inline_citations(answer_obj.answer, index_remap)
+
         # Append ## References to the answer body.
-        answer_text = answer_obj.answer
         if fmt_refs:
             refs_block = "\n\n## References\n" + "\n".join(fmt_refs)
             answer_text = answer_text.rstrip() + refs_block
@@ -450,7 +472,7 @@ class Pipeline:
     def _build_verified_references(
         docs: List[Dict[str, Any]],
         cited_indices: Set[int],
-    ) -> Tuple[List[str], List[str]]:
+    ) -> Tuple[List[str], List[str], Dict[int, int]]:
         """Build formatted_references and references from the known-good doc list.
 
         Args:
@@ -460,9 +482,13 @@ class Pipeline:
                 or questions where the LLM wrote no markers).
 
         Returns:
-            (formatted_references, plain_references) both as List[str].
-            formatted_references: '[N] Author (Year). *Title*. URI.' lines.
+            (formatted_references, plain_references, index_remap).
+            formatted_references: '[N] Author (Year). *Title*. URI.' lines,
+                renumbered sequentially from [1].
             plain_references:     'Author (Year). Title. URI.' lines (no [N]).
+            index_remap:          {original_doc_index: sequential_output_index}
+                e.g. {3: 1, 7: 2, 14: 3} when docs 3,7,14 were cited.
+                Used by _renumber_inline_citations() to rewrite the answer body.
 
         OpenAlex metadata is fetched when the URI is available; on failure the
         doc's title and URI from the KG are used as a reliable fallback.
@@ -489,8 +515,11 @@ class Pipeline:
 
         formatted: List[str] = []
         plain: List[str] = []
+        # Maps original 1-based doc index -> sequential output position (1-based).
+        index_remap: Dict[int, int] = {}
 
-        for i in sorted(indices_to_use):
+        for seq, i in enumerate(sorted(indices_to_use), start=1):
+            index_remap[i] = seq
             doc = docs[i - 1]  # docs is 0-indexed, cited_indices is 1-based
             title = doc.get("title_or_name") or doc.get("title") or ""
             uri   = doc.get("uri") or doc.get("id") or ""
@@ -507,22 +536,56 @@ class Pipeline:
 
             if metadata:
                 meta = dict(metadata)
-                meta["position"] = i
+                meta["position"] = seq   # sequential position, not original index
                 line = format_reference_from_metadata(meta)
                 formatted.append(line)
-                # plain: strip leading '[N] ' bracket
                 plain.append(re.sub(r"^\[\d+\]\s*", "", line))
             else:
                 # Fallback: use KG data directly -- always reliable
                 fallback_title = title or "Unknown title"
                 if uri:
-                    line = f"[{i}] {fallback_title}. {uri}."
+                    line = f"[{seq}] {fallback_title}. {uri}."
                 else:
-                    line = f"[{i}] {fallback_title}."
+                    line = f"[{seq}] {fallback_title}."
                 formatted.append(line)
                 plain.append(re.sub(r"^\[\d+\]\s*", "", line))
 
-        return formatted, plain
+        return formatted, plain, index_remap
+
+    @staticmethod
+    def _renumber_inline_citations(answer_body: str, index_remap: Dict[int, int]) -> str:
+        """Rewrite inline [N] markers in answer_body using index_remap.
+
+        Replaces each [old] with [new] where new = index_remap[old].
+        Markers not present in index_remap are left unchanged (safety).
+
+        Uses a two-pass approach (placeholder -> final) to avoid collisions
+        when two indices swap values (e.g. [1]->2 and [2]->1).
+
+        Args:
+            answer_body: raw answer text with original [N] markers.
+            index_remap: {original_index: sequential_index} from
+                _build_verified_references().
+
+        Returns:
+            answer_body with inline markers renumbered.
+        """
+        if not index_remap:
+            return answer_body
+
+        # Pass 1: replace [old] with __CITE_new__ placeholders.
+        result = answer_body
+        for old, new in sorted(index_remap.items(), key=lambda kv: -kv[0]):
+            # Use negative-lookbehind/lookahead to match whole [N] only.
+            result = re.sub(
+                r"\[" + str(old) + r"\]",
+                f"__CITE_{new}__",
+                result,
+            )
+
+        # Pass 2: replace __CITE_new__ with [new].
+        result = re.sub(r"__CITE_(\d+)__", r"[\1]", result)
+        return result
 
     # ------------------------------------------------------------------
     # document filter
