@@ -182,21 +182,33 @@ class PipelineOrchestrator:
         if verbose:
             self._print_header(data)
 
+        # Fix 8: reset adaptive pipeline session state at the start of each run
+        # so that _session_full_doc_uris does not bleed across separate run() calls.
+        if self.pipeline_type == "adaptive" and self._adaptive_pipeline is not None:
+            self._adaptive_pipeline.reset_session_state()
+
         results: List[PipelineResult] = []
+        # Fix 1: result_lock guards appends to the shared results list; the
+        # semaphore is now acquired *inside* each coroutine so it truly limits
+        # the number of concurrently executing to_thread calls.
+        result_lock = threading.Lock()
         self._csv_lock = threading.Lock()
 
-        async def process_question(idx, row):
+        async def process_question(semaphore, idx, row):
             orig_idx = row.get("_row_index")
             qid = int(row.get("question_id") or (int(orig_idx) + 1 if orig_idx is not None else (idx + 1)))
-            result = await asyncio.to_thread(self._process_question, idx, row, verbose=verbose, question_id=qid)
-            results.append(result)
+            # Fix 1: acquire semaphore here, wrapping the blocking I/O call,
+            # not around task creation.
+            async with semaphore:
+                result = await asyncio.to_thread(self._process_question, idx, row, verbose=verbose, question_id=qid)
             await asyncio.sleep(0.05)
+            with result_lock:
+                results.append(result)
 
         async def main():
             semaphore = asyncio.Semaphore(8)
-            async with semaphore:
-                tasks = [process_question(idx, row) for idx, row in enumerate(data)]
-                await asyncio.gather(*tasks)
+            tasks = [process_question(semaphore, idx, row) for idx, row in enumerate(data)]
+            await asyncio.gather(*tasks)
 
         asyncio.run(main())
 
@@ -501,7 +513,6 @@ def main():
 
     args = parser.parse_args()
 
-    # re-configure with user-supplied log path and optional debug console
     import logging as _logging
     configure_pipeline_logging(
         log_file=args.log_file,

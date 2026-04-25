@@ -4,7 +4,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from core.agents.base_agent import BaseAgent
 from core.utils.data_models import DynamicOntology
@@ -44,8 +44,42 @@ class GenerationAgent(BaseAgent):
             self.logger.warning(f"template not found: {filename}")
             return ""
 
-    def process(self, input_data):
-        pass
+    def process(self, input_data: Dict[str, Any]) -> Answer:
+        """Thin dict-based wrapper around generate().
+
+        Fix 7: previously a silent no-op (pass).  Now either routes to
+        generate() when the input dict is valid, or raises NotImplementedError
+        with an actionable message so callers notice the problem immediately.
+
+        Expected keys in input_data:
+            question   (str, required)
+            text_context (str, required)
+            ontology   (DynamicOntology | None, optional)
+            system_prompt (str, optional)
+            use_draft  (bool, optional, default True)
+        """
+        if not isinstance(input_data, dict):
+            raise NotImplementedError(
+                "GenerationAgent.process() requires a dict with at least "
+                "'question' and 'text_context' keys. "
+                f"Got {type(input_data).__name__}. "
+                "Use generate() directly for full control."
+            )
+        question = input_data.get("question")
+        text_context = input_data.get("text_context")
+        if not question or not text_context:
+            raise NotImplementedError(
+                "GenerationAgent.process(): input_data must contain non-empty "
+                "'question' and 'text_context'. "
+                f"Got question={question!r}, text_context={str(text_context)[:40]!r}."
+            )
+        return self.generate(
+            question=question,
+            text_context=text_context,
+            ontology=input_data.get("ontology"),
+            system_prompt=input_data.get("system_prompt", ""),
+            use_draft=input_data.get("use_draft", True),
+        )
 
     def generate(
         self,
