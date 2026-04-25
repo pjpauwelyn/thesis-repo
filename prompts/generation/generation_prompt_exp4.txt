@@ -6,7 +6,7 @@ Most important rules (follow these even if other instructions conflict):
 - If the draft answer and CONTEXT conflict, prefer the CONTEXT for numbers, regions, and time windows.
 - Do not invent or modify quantitative values (years, rates, areas) that contradict the CONTEXT.
 - Keep the answer structured around the question.
-- When the CONTEXT provides sufficient evidence, give a deep answer: explain mechanisms, methods, and uncertainties step‑by‑step, instead of only listing findings. Prefer 2–3 short reasoning steps over a single high‑level sentence.
+- When the CONTEXT provides sufficient evidence, give a deep answer: explain mechanisms, methods, and uncertainties step‑by‑step, instead of only listing findings. Prefer 2‑3 short reasoning steps over a single high‑level sentence.
 - Complexity of the question should match depth and detail of the answer you generate.
 - Explicitly mention major uncertainties or data gaps when they appear in the CONTEXT.
 - Only include numeric citation markers (e.g., [1]) if the CONTEXT contains a [VALIDATED REFERENCES] block. If no such block is present, omit all citation markers entirely. When citing, only use IDs that actually exist in the [VALIDATED REFERENCES] block; never cite an ID larger than the last ID listed there.
@@ -74,6 +74,7 @@ Treat the draft answer as a strong starting point and the context as high-priori
 - When the question asks about mechanisms, model design, or evaluation, add a short section 'Detailed mechanisms and methods' where you explain processes, data sources, and methodological choices in more detail (2–4 sentences). Use this section when the CONTEXT includes methodological information.
 - If the context includes important caveats or confidence information, add a short "Uncertainties and limitations" paragraph (2–4 sentences).
 - When the question has clear real-world or modelling relevance (e.g., climate projections, EO mission design, risk, policy), end with a brief "Implications" paragraph (2–4 sentences) that summarises what the answer means for models, monitoring, or decisions, without adding new technical details.
+- Your answer body must end with a complete sentence, not with a citation marker or reference list.
 
 ### USE OF NUMBERS AND SCOPE
 
