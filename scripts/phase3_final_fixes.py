@@ -35,8 +35,6 @@ python scripts/phase3_final_fixes.py \
     --log    tests/output/phase3_fixes_run.log
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import logging
@@ -672,7 +670,7 @@ def main() -> int:
 
     for label in sorted(target_labels):
         if label not in label_map:
-            log.warning("Label %s not found in input – skipping.", label)
+            log.warning("Label %s not found in input - skipping.", label)
             continue
 
         idx      = label_map[label]
