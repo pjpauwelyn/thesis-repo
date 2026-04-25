@@ -18,6 +18,9 @@ _CONTEXT_WINDOW_60PCT_CHARS = 307_200  # 76_800 tokens x 4
 @dataclass
 class Answer:
     answer: str
+    # NOTE: references and formatted_references on this object are always empty
+    # lists.  pipeline._build_verified_references() is the sole authority; it
+    # populates PipelineResult.formatted_references from the known-good doc list.
     references: List[str] = field(default_factory=list)
     formatted_references: List[str] = field(default_factory=list)
     # set of 1-based doc indices the LLM cited inline, e.g. {1, 3, 4}
@@ -54,7 +57,7 @@ class GenerationAgent(BaseAgent):
         system_prompt: str = "",
         use_draft: bool = True,
         generation_prompt: str = "generation_prompt_exp4.txt",
-    ) -> Answer:
+    ) -> "Answer":
         """Generate an answer for a question.
 
         Args:
@@ -137,15 +140,8 @@ class GenerationAgent(BaseAgent):
                 "pipeline will attach all available references"
             )
 
-        # Keep legacy extraction for backward compat (tests that inspect
-        # Answer.references / Answer.formatted_references directly).
-        refs     = self._extract_references(raw_answer)
-        fmt_refs = self._extract_formatted_references(raw_answer)
-
         return Answer(
             answer=answer_body,
-            references=refs,
-            formatted_references=fmt_refs,
             cited_indices=cited,
         )
 
@@ -161,9 +157,18 @@ class GenerationAgent(BaseAgent):
         removed any ## References block), so stray numbers in a reference
         list do not inflate the set.
 
-        Matches [N] and [N, M] and [N][M] patterns.
+        Handles both separate markers ([1] [2]) and grouped forms
+        ([1,2,3] or [1, 2, 3]) that the upstream citation-format guard
+        prevents from being written, but which may appear in pre-existing
+        CSV docs or old test fixtures.
         """
-        return {int(m) for m in re.findall(r"\[(\d+)\]", answer_body)}
+        indices: Set[int] = set()
+        for bracket in re.findall(r"\[([\d,\s]+)\]", answer_body):
+            for token in bracket.split(","):
+                token = token.strip()
+                if token.isdigit():
+                    indices.add(int(token))
+        return indices
 
     # ------------------------------------------------------------------
     # references section stripping
@@ -173,7 +178,6 @@ class GenerationAgent(BaseAgent):
     def _strip_references_section(text: str) -> str:
         """Remove everything from the first '## References' heading onward.
 
-        Handles the same LLM formatting variations as _find_references_section.
         Returns the original text unchanged if no heading is found.
         """
         lines = text.split("\n")
@@ -184,8 +188,7 @@ class GenerationAgent(BaseAgent):
                 and not stripped.lstrip("*_ ").startswith("[")
             ):
                 # Keep everything before this line, strip trailing blank lines.
-                body = "\n".join(lines[:i]).rstrip()
-                return body
+                return "\n".join(lines[:i]).rstrip()
         return text
 
     # ------------------------------------------------------------------
@@ -255,88 +258,3 @@ class GenerationAgent(BaseAgent):
                 "GenerationAgent._call_llm(): LLM response was whitespace-only."
             )
         return text
-
-    # ------------------------------------------------------------------
-    # legacy reference extraction (kept for backward compat)
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _find_references_section(text: str) -> Optional[int]:
-        """Return the line index of the '## References' heading, or None."""
-        for i, line in enumerate(text.split("\n")):
-            stripped = line.strip()
-            stripped = stripped.lstrip("#").strip()
-            stripped = stripped.strip("*_ ")
-            if (
-                "references" in stripped.lower()
-                and not stripped.lstrip("*_ ").startswith("[")
-            ):
-                return i
-        return None
-
-    def _extract_references(self, answer: str) -> List[str]:
-        """Extract plain reference strings (legacy; pipeline.py is now authoritative)."""
-        lines = answer.split("\n")
-        start = self._find_references_section(answer)
-
-        if start is not None:
-            refs: List[str] = []
-            for line in lines[start + 1:]:
-                stripped = line.strip()
-                if stripped.startswith("##") and refs:
-                    break
-                if not stripped:
-                    continue
-                cleaned = stripped.strip("-\u2022* []")
-                if cleaned and "No author" not in cleaned and "[EVIDENCE]" not in cleaned:
-                    refs.append(" ".join(cleaned.split()))
-            if refs:
-                return refs
-
-        fallback: List[str] = []
-        for line in lines:
-            stripped = line.strip()
-            cleaned = stripped.strip("-\u2022* []")
-            if (
-                cleaned
-                and "openalex.org/W" in cleaned
-                and "[EVIDENCE]" not in cleaned
-            ):
-                fallback.append(" ".join(cleaned.split()))
-        return fallback
-
-    def _extract_formatted_references(self, answer: str) -> List[str]:
-        """Extract formatted '[N] Author...' lines (legacy; pipeline.py is now authoritative)."""
-        lines = answer.split("\n")
-        start = self._find_references_section(answer)
-
-        if start is not None:
-            refs: List[str] = []
-            for line in lines[start + 1:]:
-                stripped = line.strip()
-                if stripped.startswith("##") and refs:
-                    break
-                if not stripped:
-                    continue
-                normalised = re.sub(r"^(\d+)\.\s+", r"[\1] ", stripped)
-                if (
-                    normalised.startswith("[")
-                    and "]" in normalised
-                    and "[EVIDENCE]" not in normalised
-                ):
-                    refs.append(normalised)
-            if refs:
-                return refs
-
-        fallback: List[str] = []
-        for line in lines:
-            stripped = line.strip()
-            normalised = re.sub(r"^(\d+)\.\s+", r"[\1] ", stripped)
-            if (
-                normalised.startswith("[")
-                and "]" in normalised
-                and "openalex.org/W" in normalised
-                and "[EVIDENCE]" not in normalised
-            ):
-                fallback.append(normalised)
-        return fallback
