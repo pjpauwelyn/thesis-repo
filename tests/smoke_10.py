@@ -1,4 +1,5 @@
-"""Standalone 10-question smoke test for the adaptive RAG pipeline.
+"""
+Standalone 10-question smoke test for the adaptive RAG pipeline.
 
 Runs a representative set of 10 questions covering every active tier and all
 fix canaries from Sessions 4-5.  Saves full diagnostics to a timestamped
@@ -284,7 +285,7 @@ def _score_answer(
     if bleed_hit:
         warnings.append(f"BLEED: off-topic signal words found: {bleed_hit}")
 
-    # g) ref URI sanity
+    # g) ref URI sanity -- flag lines containing "unknown" or suspiciously short
     ref_lines = [l.strip() for l in ref_blk.strip().splitlines() if l.strip().startswith("[")]
     unknown_refs = [l for l in ref_lines if "unknown" in l.lower() or len(l) < 10]
     scores["ref_uri_sanity"] = not unknown_refs
@@ -299,27 +300,40 @@ def _score_answer(
         warnings.append(f"CTX_SIZE: enriched_context {ctx_chars} chars < {ctx_floor} floor for {tier}")
 
     # i) answer quality heuristic
-    # Definition questions: must mention definition + mechanism + application
-    # Mechanism questions: must contain at least 2 of: mechanism step words
+    # Definition questions: must mention definition + mechanism
+    # Mechanism questions:  must contain >= 2 mechanism-reasoning words
+    # Tier-3 questions:     must have >= 2 section headings
     quality_ok = True
     quality_note = ""
     body_lower = body.lower()
     if "tier-1-def" in tier or "definition" in label:
-        has_def  = any(w in body_lower for w in ["is a", "refers to", "defined as", "is an", "stands for"])
-        has_mech = any(w in body_lower for w in ["by ", "through ", "using ", "measures", "emits", "detects", "works by"])
-        has_app  = any(w in body_lower for w in ["application", "used for", "enables", "allows", "such as"])
+        # Broad set of definition-phrasing stems covers both copula forms
+        # ("is a", "is an", "defined as") and characterisation forms
+        # ("are characterized by", "quantifies", "include", etc.).
+        has_def = any(w in body_lower for w in [
+            "is a", "refers to", "defined as", "is an", "stands for",
+            "are characterized", "is characterized", "include", "consist of",
+            "quantif", "describe", "represent",
+        ])
+        has_mech = any(w in body_lower for w in [
+            "by ", "through ", "using ", "measures", "emits", "detects", "works by",
+        ])
+        has_app  = any(w in body_lower for w in [
+            "application", "used for", "enables", "allows", "such as",
+        ])
         if not (has_def and has_mech):
             quality_ok = False
             quality_note = f"def={has_def} mech={has_mech} app={has_app}"
     elif "mechanism" in label or tier in ("tier-m",):
-        mech_words = ["because", "therefore", "results in", "causes", "leads to",
-                      "driven by", "due to", "via", "through", "mechanism"]
+        mech_words = [
+            "because", "therefore", "results in", "causes", "leads to",
+            "driven by", "due to", "via", "through", "mechanism",
+        ]
         hits = sum(1 for w in mech_words if w in body_lower)
         if hits < 2:
             quality_ok = False
             quality_note = f"only {hits}/2 mechanism reasoning words found"
     elif tier == "tier-3":
-        # tier-3: expect multiple sections (## headings)
         n_headers = len(re.findall(r"^#{2,3} ", body, re.MULTILINE))
         if n_headers < 2:
             quality_ok = False
@@ -362,7 +376,11 @@ def main() -> None:
         sys.exit(1)
 
     rows = _load_rows(csv_path)
-    row_map: Dict[str, Dict[str, Any]] = {_get_question(r): r for r in rows}
+    # Keys are .strip().lower() so TARGET_QUESTIONS text matches regardless of
+    # capitalisation or surrounding whitespace differences in the CSV.
+    row_map: Dict[str, Dict[str, Any]] = {
+        _get_question(r).strip().lower(): r for r in rows
+    }
 
     pipeline = Pipeline()
 
@@ -389,11 +407,12 @@ def main() -> None:
         print(header, end="")
 
         for q_idx, (question, label) in enumerate(TARGET_QUESTIONS, start=1):
-            row = row_map.get(question)
+            # Case-insensitive lookup (Fix E).
+            row = row_map.get(question.strip().lower())
             if row is None:
-                # fuzzy fallback: find closest question in CSV by prefix
+                # Fuzzy fallback: find closest question in CSV by lowercased prefix.
                 for rq, r in row_map.items():
-                    if rq.startswith(question[:60]):
+                    if rq.startswith(question[:60].strip().lower()):
                         row = r
                         break
             if row is None:
@@ -441,7 +460,6 @@ def main() -> None:
 
             scores   = score_result["scores"]
             warnings = score_result["warnings"]
-            dims_ok  = [v for v in scores.values() if v is True]
             dims_fail = [k for k, v in scores.items() if v is False]
             status   = "✅" if not dims_fail else "⚠️"
 
@@ -466,7 +484,6 @@ def main() -> None:
                      f"ctx={score_result['ctx_chars']}c\n")
             tf.write(f"{sep}\n")
 
-            # per-dimension score block
             for dim in DIM_LABELS:
                 v = scores.get(dim)
                 mark = "✅" if v is True else ("⚠️" if v is False else "--")
@@ -480,7 +497,6 @@ def main() -> None:
             tf.write(f"Ref block   : {score_result['ref_nums']}\n")
             tf.write(f"{sep}\n")
 
-            # full answer
             if ans is not None:
                 tf.write(ans.answer + "\n")
             else:
@@ -528,7 +544,6 @@ def main() -> None:
         sf.write(f"SMOKE-10 SCORECARD  {run_ts_str}\n")
         sf.write(f"Output dir: {OUT_DIR}\n\n")
 
-        # header row
         dim_abbrev = [
             "fix7", "len", "end", "seq", "dft", "bld", "uri", "ctx", "qly"
         ]
@@ -558,7 +573,6 @@ def main() -> None:
         sf.write("-" * 100 + "\n")
         sf.write(f"\nRESULT: {n_pass}/{len(all_scores)} questions passed all checks\n")
 
-        # dimension failure summary
         dim_fails: Dict[str, int] = {d: 0 for d in DIM_LABELS}
         for s in all_scores:
             for d, v in s["scores"].items():
@@ -568,7 +582,6 @@ def main() -> None:
         for d, n in dim_fails.items():
             sf.write(f"  {d:<20}: {n}\n")
 
-    # final stdout summary
     print(f"\n{'='*70}")
     print(f"SMOKE-10 RESULT: {n_pass}/{len(all_scores)} passed")
     print(f"Scorecard : {SCORECARD_PATH}")
