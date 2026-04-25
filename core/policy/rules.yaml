@@ -20,8 +20,10 @@
 #   UPPER BOUND REMOVED: tier-m is now the catch-all for ALL complexity >= 0.40
 #   questions that were not caught by tier-3 or tier-2a. Explanatory mechanism
 #   questions at cx=0.80 with low methodological_depth belong here, not tier-3.
-#   mistral-medium + excerpts_narrow + use_draft=True is the right pipeline for
-#   "How does X work?" questions regardless of how complex the explanation is.
+#   mistral-medium + excerpts_narrow + use_draft=False is the correct pipeline
+#   for "How does X work?" questions -- the draft step adds parametric noise
+#   that counteracts the enriched excerpts context and can cause cross-question
+#   bleed when the LLM cache is not reset between questions.
 # tier-2a             : high quant, low meth -- medium refinement + medium
 #   generation for numeric extraction and focused synthesis.
 # tier-2b             : quant + focal -- large refinement for spatial/temporal
@@ -71,6 +73,12 @@ rules:
 # Fires before tier-m to prevent profiler score drift (0.38-0.45) from
 # escalating simple "what is X" questions to the medium model.
 # Guard: quant < 0.45 ensures numeric-heavy definitions still reach tier-2a.
+#
+# max_output_tokens: 700 -> 1200
+#   Q18 ('What are the radiative properties...') produced a 3-sentence stub
+#   despite the definition floor instruction. The combined zero-shot draft +
+#   refinement + generation budget at 700 tok was too tight for multi-property
+#   definition questions. 1200 tok ~= 9s at 130 tok/s, within the 45s ceiling.
   - name: tier_1_def
     when:
       question_type: {in: [definition, factual]}
@@ -85,7 +93,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_exp4.txt
       generation_prompt:        generation_direct.txt
       gen_context_cap:          307200
-      max_output_tokens:        700
+      max_output_tokens:        1200
       system_prompt_modifier:   ""
       doc_filter_min_keep:      3
       scope_filter:             false
@@ -144,7 +152,7 @@ rules:
 #   reading method sections across papers -- that is cross-paper synthesis by
 #   definition. The 0.05 gap between the old gate (0.45) and the profiler's
 #   output (0.40) was systematic quantization, not genuine signal.
-#   tier-m (excerpts_narrow + use_draft=True) produces draft-anchored surface
+#   tier-m (excerpts_narrow + use_draft=False) produces draft-free grounded
 #   comparisons for these questions; tier-3 (excerpts_full + use_draft=False)
 #   is the correct pipeline.
 #
@@ -223,12 +231,12 @@ rules:
 # mechanism questions regardless of complexity score, as long as they were
 # not caught by tier-3 (high meth) or tier-2a (high quant).
 #
-# Why this is right for cx=0.80 mechanism questions with low meth:
-#   mistral-medium + excerpts_narrow + use_draft=True:
-#   - draft gives structure to the explanation
-#   - narrow excerpts provide grounded claims without flooding the context
-#   - medium model handles explanatory prose quality perfectly well
-#   - avoids the full-text dilution problem observed in experiments
+# use_draft: false (Fix 4)
+#   The draft step was adding parametric noise that counteracted the enriched
+#   excerpts_narrow context and amplified cross-question bleed. Mechanism
+#   questions are grounded-context-only by design -- the refined context from
+#   RefinementAgent provides structure; a separate zero-shot draft is redundant
+#   and risky. This aligns tier-m with tier-2a, tier-2b, and tier-3.
 #
 # max_output_tokens: 1600
 #   Raised from 1200. Q1 and Q3 both truncated before ## References at 5826 /
@@ -255,9 +263,9 @@ rules:
       synthesis_mode:           homogeneous
       timeout_refine_s:         150
       timeout_generate_s:       150
-      use_draft:                true
+      use_draft:                false
       rule_hit:                 tier-m
-      reason:                   "explanatory catch-all (cx>=0.40, low meth/quant) -- medium everywhere"
+      reason:                   "explanatory catch-all (cx>=0.40, low meth/quant) -- medium everywhere, draft-free"
 
 # tier-1: simple / low-complexity -- abstracts only, no PDF fetch
 # Ceiling raised from 0.35 to 0.40 to absorb the profiler drift zone.
