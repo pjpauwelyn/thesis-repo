@@ -121,7 +121,11 @@ class PipelineConfig(BaseModel):
 
     # prompts
     refinement_prompt: str = "refinement_1pass_refined_exp4.txt"
-    generation_prompt: str = "generation_prompt_exp4.txt"
+    # D2/D3: default was 'generation_prompt_exp4.txt' (deleted in D1).
+    # Changed to 'generation_structured.txt' — the canonical structured prompt.
+    # tier-1/fallback rules in rules.yaml override this to 'generation_direct.txt';
+    # all other tiers use 'generation_structured.txt', matching their declaration.
+    generation_prompt: str = "generation_structured.txt"
 
     # filters / synthesis
     scope_filter: bool = False

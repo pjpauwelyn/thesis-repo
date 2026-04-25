@@ -39,6 +39,11 @@ class Router:
                 profile.complexity,
                 profile.quantitativity,
             )
+            # P1b: max_output_tokens raised from 1400 -> 4000 to match all other
+            # full-text tiers.  safety-tier3 uses mistral-large + excerpts_full
+            # (35k-60k token context); 1400 tok output was causing truncation on
+            # exactly the questions (low-confidence escalations) that need the
+            # most thorough answers.  4000 tok @ 47 tok/s = 85s < 480s timeout.
             return PipelineConfig(
                 model_name="mistralai/mistral-large",
                 refinement_model_name="mistralai/mistral-large",
@@ -49,7 +54,7 @@ class Router:
                 refinement_prompt="refinement_1pass_refined_fulltext.txt",
                 generation_prompt="generation_structured.txt",
                 gen_context_cap=_CONTEXT_CAP_CHARS,
-                max_output_tokens=1400,
+                max_output_tokens=4000,
                 system_prompt_modifier="",
                 doc_filter_min_keep=8,
                 scope_filter=False,
@@ -92,6 +97,8 @@ class Router:
             profile.temporal_specificity,
             profile.methodological_depth,
         )
+        # P1c: max_output_tokens raised from 700 -> 2000 to match the fallback
+        # rule in rules.yaml (which was already updated by P1).
         return PipelineConfig(
             model_name="mistral-small-latest",
             evidence_mode="abstracts",
@@ -101,7 +108,7 @@ class Router:
             refinement_prompt="refinement_1pass_refined_exp4.txt",
             generation_prompt="generation_direct.txt",
             gen_context_cap=_CONTEXT_CAP_CHARS,
-            max_output_tokens=700,
+            max_output_tokens=2000,
             system_prompt_modifier="",
             doc_filter_min_keep=6,
             scope_filter=False,

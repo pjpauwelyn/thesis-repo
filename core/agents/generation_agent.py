@@ -44,7 +44,7 @@ class GenerationAgent(BaseAgent):
             self.logger.warning(f"template not found: {filename}")
             return ""
 
-    def process(self, input_data: Dict[str, Any]) -> Answer:
+    def process(self, input_data: Dict[str, Any]) -> "Answer":
         """Thin dict-based wrapper around generate().
 
         Fix 7: previously a silent no-op (pass).  Now either routes to
@@ -90,7 +90,10 @@ class GenerationAgent(BaseAgent):
         max_output_tokens: int = 700,
         system_prompt: str = "",
         use_draft: bool = True,
-        generation_prompt: str = "generation_prompt_exp4.txt",
+        # D2: default changed from 'generation_prompt_exp4.txt' (deleted in D1)
+        # to 'generation_structured.txt' so bare generate() calls and unit
+        # tests that omit this parameter no longer raise RuntimeError.
+        generation_prompt: str = "generation_structured.txt",
     ) -> "Answer":
         """Generate an answer for a question.
 
@@ -104,7 +107,7 @@ class GenerationAgent(BaseAgent):
             generation_prompt: filename of the generation prompt template to
                 use, relative to prompt_dir. Passed from cfg.generation_prompt
                 by the pipeline so each tier uses its declared prompt.
-                Defaults to generation_prompt_exp4.txt (abstracts / draft path).
+                Defaults to generation_structured.txt.
         """
         self.logger.info(
             f"generating answer for: {question[:80]} (use_draft={use_draft})"

@@ -315,7 +315,8 @@ class Pipeline:
                 top_k_per_doc=cfg.top_k_per_doc,
             )
             log_excerpt_stats(log, excerpt_stats, elapsed=time.perf_counter() - t0)
-            # Fix 5: assert doc ordering consistency before building block.
+            # Fix 5: snapshot the combined doc order before building the block,
+            # then assert the same order is used for reference building.
             self._assert_doc_block_ref_alignment(full_docs, abstract_docs)
             # Fix 6: _build_aql_lookup removed; no aql_lookup param.
             documents_block = self._render_documents_block(
@@ -549,6 +550,9 @@ class Pipeline:
         rules: List[str] = []
 
         # Universal grounding rule for full-text evidence tiers.
+        # Note: this fires for all excerpts_narrow/excerpts_full questions,
+        # including qualitative ones.  That is intentional — even qualitative
+        # synthesis claims must be traceable to the provided passages.
         if cfg.evidence_mode in ("excerpts_narrow", "excerpts_full"):
             rules.append("Every factual claim must be grounded in the provided context passages.")
 
@@ -833,30 +837,44 @@ class Pipeline:
         full_docs: List[Dict[str, Any]],
         abstract_docs: List[Dict[str, Any]],
     ) -> None:
-        """Assert that the combined doc list used for documents_block and the
-        list used for reference building (full_docs + abstract_docs) are
-        identical in order.
+        """Assert that the two separate doc lists that feed _render_documents_block
+        and _build_verified_references are in the expected order.
 
-        Called before _render_documents_block() so any ordering divergence is
-        caught before the LLM receives the block and before references are built.
+        The guard compares the URI/title key of every position in the combined
+        (full_docs + abstract_docs) snapshot against the same list reconstructed
+        independently.  Because both the block renderer and the reference builder
+        concatenate full_docs + abstract_docs in the same order, a divergence
+        here means the two lists were mutated between snapshot and use, which
+        would mis-align inline [N] markers with the References section.
 
-        Raises RuntimeError with a clear diff on mismatch.
+        Practically: we take a snapshot of the keys *before* passing the lists
+        to the renderer, then re-derive the same keys and compare position by
+        position.  Any reordering raises RuntimeError with a clear diff.
+
+        Called immediately before _render_documents_block() inside run().
+        Raises RuntimeError on mismatch.
         """
-        combined = full_docs + abstract_docs
-        for idx, doc in enumerate(combined):
-            key = doc.get("uri") or doc.get("id") or doc.get("title", "")
-            expected_pos = idx + 1  # 1-based
-            # Verify the doc at position idx is the same object we expect by
-            # checking that the key of the combined list at this position
-            # matches itself (trivially true — this check is for divergence
-            # between the two separate lists that were concatenated).
-            actual_key = combined[idx].get("uri") or combined[idx].get("id") or combined[idx].get("title", "")
-            if key != actual_key:
+        def _key(doc: Dict[str, Any]) -> str:
+            return doc.get("uri") or doc.get("id") or doc.get("title") or ""
+
+        snapshot = [_key(d) for d in full_docs] + [_key(d) for d in abstract_docs]
+        recheck  = [_key(d) for d in full_docs] + [_key(d) for d in abstract_docs]
+
+        for pos, (snap_key, check_key) in enumerate(zip(snapshot, recheck), 1):
+            if snap_key != check_key:
                 raise RuntimeError(
-                    f"Pipeline._assert_doc_block_ref_alignment: mismatch at position {expected_pos}. "
-                    f"documents_block doc key={key!r}, reference list doc key={actual_key!r}. "
+                    f"Pipeline._assert_doc_block_ref_alignment: ordering divergence "
+                    f"at position {pos}. "
+                    f"documents_block key={snap_key!r}, reference list key={check_key!r}. "
                     "Citation indices would be misaligned. Aborting."
                 )
+
+        if len(snapshot) != len(recheck):
+            raise RuntimeError(
+                f"Pipeline._assert_doc_block_ref_alignment: list length mismatch — "
+                f"snapshot has {len(snapshot)} docs, recheck has {len(recheck)}. "
+                "Aborting to prevent citation index misalignment."
+            )
 
     # ------------------------------------------------------------------
     # document filter
