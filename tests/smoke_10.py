@@ -65,20 +65,23 @@ log = logging.getLogger("smoke_10")
 from core.pipelines.pipeline import Pipeline  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# data loading  (reuse helpers from test_adaptive_v2)
+# data loading
 # ---------------------------------------------------------------------------
 csv.field_size_limit(int(1e8))
 
+# Authoritative CSV filename (the only dataset file in data/dlr/).
+_DARES25_CSV = "data/dlr/DARES25_EarthObsertvation_QA_RAG_results_v1.csv"
+
 
 def _find_csv() -> Optional[str]:
-    candidates = [
-        "data/dlr/questions.csv",
-        "data/dlr/dlr_questions.csv",
-        "data/questions.csv",
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            return p
+    """Return the path to the questions CSV.
+
+    Tries the known authoritative path first, then falls back to a glob
+    over data/ looking for any CSV with an 'aql_results' header column.
+    """
+    if os.path.exists(_DARES25_CSV):
+        return _DARES25_CSV
+    # Glob fallback: find any CSV that looks like a question dataset.
     data_root = Path("data")
     if data_root.exists():
         for csv_path in sorted(data_root.rglob("*.csv")):
@@ -127,14 +130,22 @@ def _parse_docs(row: Dict[str, Any]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # 10 target questions
 # ---------------------------------------------------------------------------
-# Selection rationale:
-#   tier-1-def (2) : Fix 2 stub canary + Fix 7 empty-refinement canary
-#   tier-m     (4) : Fix 1 bleed, Fix 3 renumber, Fix 4 use_draft, deep mech
-#   tier-2a/b  (2) : answer depth + reference integrity
-#   tier-3     (1) : length floor (>= 2000 chars) + multi-paper synthesis
-#   high-drop  (1) : 69% filter drop-rate stress test (ontology quality)
+# Selection rationale (Session 5 / Phase 3 final smoke set):
+#
+#   Q1  tier-1-def  Fix2+Fix7 canary   -- LIDAR definition + mechanism
+#   Q2  tier-1-def  Fix2+Fix7 canary   -- radiative properties definition
+#   Q3  tier-m      Fix1+Fix3+Fix4     -- solar activity + ionosphere
+#   Q4  tier-m      Fix3 renumber      -- cryosphere + carbon flux
+#   Q5  tier-m      mechanism depth    -- soil + land surface energy
+#   Q6  tier-m      solar cycle mech   -- ionospheric electron density
+#   Q7  tier-2a/b   answer depth       -- SAR backscatter vegetation index
+#   Q8  tier-2a/b   reference integr.  -- optical remote sensing calibration
+#   Q9  tier-3      length + synthesis -- climate model land-atmosphere coupling
+#   Q10 tier-m/2    high drop-rate     -- atmospheric correction hyperspectral
+#
+# Q7-Q10 are drawn from the DARES25 generated-questions CSV and confirmed to
+# have non-empty aql_results rows.
 TARGET_QUESTIONS: List[Tuple[str, str]] = [
-    # (question_text, label_for_scorecard)
     (
         "What is LIDAR and how does it measure the properties of distant targets?",
         "tier-1-def | Fix2+Fix7 canary",
@@ -167,23 +178,24 @@ TARGET_QUESTIONS: List[Tuple[str, str]] = [
         "tier-m | solar cycle mechanism",
     ),
     (
-        "How do machine learning algorithms improve the accuracy of land cover "
-        "classification using multispectral satellite imagery?",
-        "tier-2a/b | answer depth",
+        "How does SAR backscatter relate to vegetation structure and biomass "
+        "estimation in forested ecosystems?",
+        "tier-2a/b | SAR vegetation depth",
     ),
     (
-        "What are the key challenges in retrieving soil moisture from synthetic "
-        "aperture radar (SAR) observations?",
-        "tier-2a/b | reference integrity",
+        "What are the main approaches for radiometric calibration of optical "
+        "satellite sensors and how do they affect surface reflectance retrieval?",
+        "tier-2a/b | calibration reference integrity",
     ),
     (
-        "How do coupled climate-vegetation models represent feedbacks between land "
-        "surface processes and the atmosphere in the context of global warming?",
-        "tier-3 | length floor + synthesis",
+        "How do land surface models represent the exchange of energy, water, and "
+        "carbon between the land surface and the atmosphere in coupled climate "
+        "simulations?",
+        "tier-3 | length floor + multi-paper synthesis",
     ),
     (
-        "How do aerosol optical properties influence radiative forcing and climate "
-        "sensitivity estimates in Earth system models?",
+        "How is atmospheric correction performed for hyperspectral remote sensing "
+        "data and what are the main sources of error?",
         "tier-m/2 | high drop-rate stress",
     ),
 ]
@@ -375,9 +387,9 @@ def main() -> None:
         print("ERROR: no questions CSV found under data/", file=sys.stderr)
         sys.exit(1)
 
+    log.info("using CSV: %s", csv_path)
     rows = _load_rows(csv_path)
-    # Keys are .strip().lower() so TARGET_QUESTIONS text matches regardless of
-    # capitalisation or surrounding whitespace differences in the CSV.
+    # Keys are .strip().lower() for case-insensitive lookup.
     row_map: Dict[str, Dict[str, Any]] = {
         _get_question(r).strip().lower(): r for r in rows
     }
@@ -399,6 +411,7 @@ def main() -> None:
         header = (
             f"{'='*70}\n"
             f"SMOKE-10 RUN  {run_ts_str}\n"
+            f"CSV: {csv_path}\n"
             f"Repo: {REPO_ROOT}\n"
             f"Output: {OUT_DIR}\n"
             f"{'='*70}\n\n"
@@ -407,16 +420,23 @@ def main() -> None:
         print(header, end="")
 
         for q_idx, (question, label) in enumerate(TARGET_QUESTIONS, start=1):
-            # Case-insensitive lookup (Fix E).
+            # Case-insensitive lookup.
             row = row_map.get(question.strip().lower())
             if row is None:
                 # Fuzzy fallback: find closest question in CSV by lowercased prefix.
+                q_prefix = question[:60].strip().lower()
                 for rq, r in row_map.items():
-                    if rq.startswith(question[:60].strip().lower()):
+                    if rq.startswith(q_prefix):
                         row = r
                         break
             if row is None:
-                print(f"  Q{q_idx} SKIPPED -- question not found in CSV: {question[:70]}")
+                print(
+                    f"  Q{q_idx} SKIPPED -- question not found in CSV "
+                    f"(check TARGET_QUESTIONS against {csv_path}): {question[:70]}"
+                )
+                log.warning(
+                    "Q%d not found in CSV -- SKIPPED: %s", q_idx, question[:70]
+                )
                 continue
 
             docs = _parse_docs(row)
@@ -461,7 +481,7 @@ def main() -> None:
             scores   = score_result["scores"]
             warnings = score_result["warnings"]
             dims_fail = [k for k, v in scores.items() if v is False]
-            status   = "✅" if not dims_fail else "⚠️"
+            status   = "OK" if not dims_fail else "WARN"
 
             # ----------------------------------------------------------------
             # print quick summary to stdout
@@ -471,7 +491,7 @@ def main() -> None:
                   f"ctx={score_result['ctx_chars']}c  "
                   f"elapsed={elapsed:.1f}s  {status}")
             for w in warnings:
-                print(f"    ⚠️  {w}")
+                print(f"    WARNING  {w}")
 
             # ----------------------------------------------------------------
             # write to readable TXT
@@ -486,12 +506,12 @@ def main() -> None:
 
             for dim in DIM_LABELS:
                 v = scores.get(dim)
-                mark = "✅" if v is True else ("⚠️" if v is False else "--")
+                mark = "PASS" if v is True else ("FAIL" if v is False else "SKIP")
                 tf.write(f"  {mark} {dim}\n")
             if warnings:
                 tf.write("\nWarnings:\n")
                 for w in warnings:
-                    tf.write(f"  ⚠️  {w}\n")
+                    tf.write(f"  WARNING  {w}\n")
 
             tf.write(f"\nInline refs : {score_result['inline']}\n")
             tf.write(f"Ref block   : {score_result['ref_nums']}\n")
@@ -542,6 +562,7 @@ def main() -> None:
     with open(SCORECARD_PATH, "w", encoding="utf-8") as sf:
         run_ts_str = datetime.datetime.now().isoformat(timespec="seconds")
         sf.write(f"SMOKE-10 SCORECARD  {run_ts_str}\n")
+        sf.write(f"CSV: {csv_path}\n")
         sf.write(f"Output dir: {OUT_DIR}\n\n")
 
         dim_abbrev = [
@@ -558,7 +579,7 @@ def main() -> None:
             cells  = []
             for dim in DIM_LABELS:
                 v = scores.get(dim)
-                cells.append("✅" if v is True else ("⚠️" if v is False else "--"))
+                cells.append("PASS" if v is True else ("FAIL" if v is False else "SKIP"))
             row_str = (
                 f"{s['q_idx']:>3}  {s['tier']:<12}  "
                 + "   ".join(cells)
@@ -566,8 +587,8 @@ def main() -> None:
             )
             sf.write(row_str + "\n")
             for w in s["warnings"]:
-                sf.write(f"       ⚠️  {w}\n")
-            if s["status"] == "✅":
+                sf.write(f"       WARNING  {w}\n")
+            if s["status"] == "OK":
                 n_pass += 1
 
         sf.write("-" * 100 + "\n")
