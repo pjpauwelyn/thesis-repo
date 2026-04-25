@@ -41,7 +41,7 @@ class OpenAlexClient:
                 return {
                     "author": author,
                     "year": str(year) if year else "No year",
-                    "title": data.get("title", "No title"),
+                    "title": data.get("title") or "",
                     "uri": uri,
                 }
             except requests.exceptions.HTTPError as exc:
@@ -66,10 +66,17 @@ class OpenAlexClient:
 
 
 def format_reference_from_metadata(metadata: Dict[str, str]) -> str:
-    """format a numbered reference line from openalex metadata."""
+    """format a numbered reference line from openalex metadata.
+
+    P5: title is normalised to empty string by fetch_metadata when OpenAlex
+    returns null or "".  The caller (_build_verified_references) checks for
+    empty title and falls back to the KG title before calling this function,
+    so an empty title here should be rare.  As a belt-and-suspenders guard,
+    replace empty title with a placeholder that is clearly not a data value.
+    """
     pos = metadata.get("position", 1)
-    author = metadata.get("author", "No author")
-    year = metadata.get("year", "No year")
-    title = metadata.get("title", "No title")
+    author = metadata.get("author") or "No author"
+    year = metadata.get("year") or "No year"
+    title = (metadata.get("title") or "").strip() or "[No title \u2014 see URI]"
     uri = metadata.get("uri", "")
     return f"[{pos}] {author} ({year}). *{title}*. {uri}."

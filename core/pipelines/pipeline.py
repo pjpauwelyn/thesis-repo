@@ -65,6 +65,12 @@ class Pipeline:
         self._llm_cache: Dict[Tuple[str, float, int, int], Any] = {}
         self._indexer = None  # lazy
 
+        # P6: session-level set of document URIs that have already been used
+        # as full-text in a prior question. Used by _filter_documents to demote
+        # repeated full-text docs to abstract-only, preventing the same passage
+        # from dominating multiple answers (e.g. Q19/Q20 Yellow River overlap).
+        self._session_full_doc_uris: Set[str] = set()
+
         # Profiler parse-failure counter (thread-safe).
         # Incremented whenever the profiler LLM returns malformed JSON and
         # confidence falls back to 0.0, causing silent escalation to
@@ -81,9 +87,13 @@ class Pipeline:
         leaking a prior question's draft into the next refinement context
         (draft-bleed guard).
 
+        Also resets the session full-doc URI throttle so each test run starts
+        with a clean slate (P6).
+
         Safe to call at any point; does not affect routing, docs, or results.
         """
         self._llm_cache = {}
+        self._session_full_doc_uris = set()
         log.debug("Pipeline._llm_cache cleared (reset_llm_cache called)")
 
     def profile_and_route(
@@ -438,6 +448,10 @@ class Pipeline:
         normalised_body = self._normalize_citation_format(answer_obj.answer)
         answer_text = self._renumber_inline_citations(normalised_body, index_remap)
 
+        # P3: strip any trailing [N] cluster left by a token-limit truncation.
+        # Primary fix is P1 (higher token ceiling); this is a safety net.
+        answer_text = re.sub(r'(\[\d+\])+\s*$', '', answer_text).rstrip()
+
         # Append ## References to the answer body.
         if fmt_refs:
             refs_block = "\n\n## References\n" + "\n".join(fmt_refs)
@@ -487,7 +501,14 @@ class Pipeline:
 
         Pass 2 — bare cluster bracketing:
             "word N, M"  ->  "word [N][M]"
-            Anchor:    letter / ) / ] / % / "." followed by exactly one space.
+            Anchor:    letter / ) / ] / % followed by exactly one space.
+            NOTE: "." (dot) is intentionally excluded from the anchor class.
+                  Including it caused false matches on decimal values such as
+                  "2.16 Ma" (the "." before "16" matched, wrapping 16 as [16])
+                  and "Ms 6.4" (same issue after the decimal point).
+                  The sentence-ending-period case ("warming. 3, 7") is handled
+                  by the prompt-level instruction that answers must end with a
+                  complete sentence, not a citation marker.
             Guard:     each digit token must be 1..30 (rules out years >= 31,
                        wavelengths, percentages written as plain numbers).
             Lookahead: sentence-ending punctuation (.,;), newline, em-dash "--",
@@ -504,7 +525,8 @@ class Pipeline:
 
         text = re.sub(r"\[(\d+(?:\s*,\s*\d+)+)\]", _expand_multi_bracket, text)
 
-        # Pass 2: bare citation clusters after a word/symbol anchor
+        # Pass 2: bare citation clusters after a word/symbol anchor.
+        # Anchor class: [a-zA-Z\)\]%] — dot deliberately excluded (see docstring).
         def _expand_bare_cluster(m: re.Match) -> str:
             nums = re.split(r"[\s,]+", m.group(2).strip())
             valid = [n for n in nums if n.isdigit() and 1 <= int(n) <= 30]
@@ -513,7 +535,7 @@ class Pipeline:
             return m.group(1) + "".join(f"[{n}]" for n in valid)
 
         text = re.sub(
-            r"([a-zA-Z\)\]%\.] )(\d{1,2}(?:\s*,\s*\d{1,2}){0,4})"
+            r"([a-zA-Z\)\]%] )(\d{1,2}(?:\s*,\s*\d{1,2}){0,4})"
             r"(?=\s*(?:[.\n,;]|$|\s*[-]{2,}|\s*\[))",
             _expand_bare_cluster,
             text,
@@ -549,6 +571,13 @@ class Pipeline:
         OpenAlex metadata is fetched when the URI is available; on failure the
         doc's title and URI from the KG are used as a reliable fallback.
         Every cited doc that has at least a title or URI is guaranteed a line.
+
+        P4: title-normalised duplicate deduplication.
+            Two docs with near-identical titles (preprint + journal version of
+            the same paper, e.g. Zeitz 2021 Q4) are collapsed to one entry.
+            The first occurrence wins; the duplicate's original index is remapped
+            to the same sequential output number so inline [N] markers stay
+            consistent.  seq is never incremented for a skipped duplicate.
         """
         from core.utils.openalex_client import OpenAlexClient, format_reference_from_metadata
 
@@ -577,6 +606,9 @@ class Pipeline:
         index_remap: Dict[int, int] = {}
         seq = 0
 
+        # P4: track normalised titles to deduplicate preprint/journal pairs.
+        seen_norm_titles: Set[str] = set()
+
         for i in sorted(indices_to_use):
             doc = docs[i - 1]  # docs is 0-indexed, indices_to_use is 1-based
             title = doc.get("title_or_name") or doc.get("title") or ""
@@ -588,6 +620,33 @@ class Pipeline:
                 )
                 continue
 
+            # P4: normalise title and check for duplicates before spending a
+            # sequence slot.  Normalisation: collapse non-word chars, lowercase,
+            # truncate to 100 chars so minor subtitle differences don't prevent
+            # deduplication of the same paper.
+            norm_title = re.sub(r"\W+", " ", title[:100].lower()).strip()
+            if norm_title and norm_title in seen_norm_titles:
+                # Duplicate title detected (e.g. preprint vs. journal version).
+                # Find the seq number already assigned to the first occurrence
+                # and remap this index to it so inline [N] stays consistent.
+                # We scan index_remap in insertion order (Python 3.7+).
+                for prev_i, prev_seq in index_remap.items():
+                    prev_doc = docs[prev_i - 1]
+                    prev_title = prev_doc.get("title_or_name") or prev_doc.get("title") or ""
+                    prev_norm = re.sub(r"\W+", " ", prev_title[:100].lower()).strip()
+                    if prev_norm == norm_title:
+                        index_remap[i] = prev_seq
+                        log.debug(
+                            "_build_verified_references: doc %d title duplicate of doc %d "
+                            "('%s') -- remapped to seq %d",
+                            i, prev_i, title[:60], prev_seq,
+                        )
+                        break
+                continue
+
+            if norm_title:
+                seen_norm_titles.add(norm_title)
+
             # Only increment seq and register the remap after confirming this
             # doc will produce a formatted line.
             seq += 1
@@ -596,6 +655,17 @@ class Pipeline:
             metadata = None
             if uri and "openalex.org" in uri:
                 metadata = OpenAlexClient.fetch_metadata(uri)
+
+            # P5: if OpenAlex returned metadata but the title is empty/None,
+            # discard the metadata and use the KG fallback instead.  An empty
+            # title from OpenAlex produces a malformed entry like "*None*" or
+            # "**" which is worse than the KG title which is always populated.
+            if metadata and not (metadata.get("title") or "").strip():
+                log.warning(
+                    "_build_verified_references: OpenAlex metadata for doc %d "
+                    "has empty title -- falling back to KG title", i
+                )
+                metadata = None
 
             if metadata:
                 meta = dict(metadata)
@@ -665,7 +735,7 @@ class Pipeline:
             self._llm("mistral-small-latest", 0.0),
             prompt_dir=str(self._prompts_root / "ontology"),
         )
-        return filter_agent.filter_documents(
+        full_docs, abstract_docs, drop_docs = filter_agent.filter_documents(
             docs=docs,
             ontology=ontology,
             profile=profile,
@@ -674,6 +744,39 @@ class Pipeline:
             evidence_mode=cfg.evidence_mode,
             rule_hit=cfg.rule_hit,
         )
+
+        # P6: cross-question full-text throttle.
+        # Demote any full_doc whose URI was already used as full-text in a
+        # prior question this session, but only when there is a surplus of
+        # full_docs (len > min_keep + 2).  This prevents the same foundational
+        # paper from dominating multiple answers with the same passages while
+        # keeping genuinely unique full-text evidence accessible.
+        surplus = len(full_docs) - (cfg.doc_filter_min_keep + 2)
+        if surplus > 0 and self._session_full_doc_uris:
+            demoted = 0
+            new_full: List[Dict] = []
+            new_abstract: List[Dict] = list(abstract_docs)
+            for doc in full_docs:
+                uri = doc.get("uri") or doc.get("id") or ""
+                if uri and uri in self._session_full_doc_uris and demoted < surplus:
+                    new_abstract.append(doc)
+                    demoted += 1
+                    log.debug(
+                        "P6 throttle: demoted '%s' (URI %s) from full to abstract",
+                        doc.get("title", "")[:60], uri[:60],
+                    )
+                else:
+                    new_full.append(doc)
+            full_docs = new_full
+            abstract_docs = new_abstract
+
+        # Register the URIs of docs kept as full-text for future questions.
+        for doc in full_docs:
+            uri = doc.get("uri") or doc.get("id") or ""
+            if uri:
+                self._session_full_doc_uris.add(uri)
+
+        return full_docs, abstract_docs, drop_docs
 
     def _get_indexer(self):
         if self._indexer is None:
