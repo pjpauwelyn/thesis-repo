@@ -18,6 +18,13 @@ from core.utils.openalex_client import OpenAlexClient, format_reference_from_met
 
 _debug_logger = logging.getLogger("raw_prompts")
 
+# Fix 2: named constant for the per-abstract character cap.
+# 200 chars was too short and starved the refinement step.
+# 1_400 chars covers ~350 tokens per abstract -- enough for a full
+# Methods/Results summary while keeping worst-case prompt size bounded
+# even with 20 documents (~28 k chars abstract block, ~7 k tokens).
+_ABSTRACT_PREVIEW_CAP = 1_400
+
 
 class RefinementAgentAbstracts(BaseRefinementAgent):
     def __init__(self, llm, prompt_dir: str = "prompts/refinement"):
@@ -97,7 +104,11 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
 
     @staticmethod
     def _parse_aql_for_prompt(aql_results_str: str) -> Tuple[str, List[Dict[str, Any]]]:
-        """return (human-readable text, list of doc dicts)."""
+        """return (human-readable text, list of doc dicts).
+
+        Fix 2: abstract preview is capped at _ABSTRACT_PREVIEW_CAP chars
+        (named constant) instead of the previous 200-char hard-code.
+        """
         from core.utils.aql_parser import parse_aql_results
 
         compact_json = parse_aql_results(aql_results_str)
@@ -112,7 +123,10 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
         for i, doc in enumerate(documents, 1):
             title = doc.get("title", f"Document {i}")
             abstract = doc.get("abstract", "No abstract")
-            preview = abstract[:200] + "..." if len(abstract) > 200 else abstract
+            if len(abstract) > _ABSTRACT_PREVIEW_CAP:
+                preview = abstract[:_ABSTRACT_PREVIEW_CAP] + "..."
+            else:
+                preview = abstract
             uri = doc.get("uri", "")
             lines.append(f"[{i}] {title}")
             lines.append(f"   Abstract: {preview}")
@@ -181,8 +195,6 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
                 ref_meta["position"] = i
                 formatted.append(format_reference_from_metadata(ref_meta))
             else:
-                # Fetch failed or URI is non-OpenAlex: always emit a fallback line
-                # so there is no gap in the numbered list that the LLM might fill.
                 fallback_title = title or "[No title — see URI]"
                 ref = (
                     f"[{i}] {fallback_title}. {uri}."
@@ -191,10 +203,6 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
                 )
                 formatted.append(ref)
 
-        # Upstream citation-format guard: instruct the generation LLM to write
-        # each reference as a separate marker ([1] [2] [3]) rather than grouping
-        # them ([1,2,3]).  Placed here, adjacent to the reference list, so the
-        # model sees it immediately before the numbered entries it will cite.
         header = (
             "CITATION FORMAT: write each reference as a separate marker "
             "[1] [2] [3] — never grouped as [1,2,3] or [1, 2, 3].\n\n"
