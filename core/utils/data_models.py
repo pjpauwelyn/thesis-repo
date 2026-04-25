@@ -139,17 +139,21 @@ class PipelineConfig(BaseModel):
     # generation caps
     # 307_200 chars = 76_800 tokens = 60% of the 128k window.
     # Matches _CONTEXT_WINDOW_60PCT_CHARS in generation_agent.py and
-    # _CONTEXT_CAP_CHARS in router.py — those are the source of truth;
+    # _CONTEXT_CAP_CHARS in router.py -- those are the source of truth;
     # this default must stay in sync with them.
     gen_context_cap: int = 307_200
     max_output_tokens: int = 700
     system_prompt_modifier: str = ""
 
     # generation strategy
-    # True  = zero-shot draft -> context-grounded refinement (tier-1*, tier-m, fallback)
-    #         adds structure when context is thin (abstracts / narrow excerpts)
-    # False = skip draft, straight context-grounded generation (tier-2*, tier-3)
-    #         prevents parametric-knowledge anchoring when rich full-text is available
+    # True  = zero-shot draft -> context-grounded refinement
+    #         tier-1-def, tier-1, fallback
+    #         adds structure when context is thin (abstracts only)
+    # False = skip draft, straight context-grounded generation
+    #         tier-m, tier-2a, tier-2b, tier-3
+    #         prevents parametric-knowledge anchoring when rich
+    #         excerpts are available; also eliminates cross-question
+    #         bleed risk from LLM client conversation state
     use_draft: bool = True
 
     # routing metadata
