@@ -200,8 +200,6 @@ TARGET_QUESTIONS: List[Tuple[str, str]] = [
     ),
 ]
 
-TARGET_Q_SET = {q for q, _ in TARGET_QUESTIONS}
-
 # ---------------------------------------------------------------------------
 # bleed signal words  (from known cross-question contamination event)
 # ---------------------------------------------------------------------------
@@ -287,7 +285,10 @@ def _score_answer(
         else:
             scores["use_draft"] = None  # unknown tier -- skip
         if scores["use_draft"] is False:
-            warnings.append(f"USE_DRAFT: expected {'True' if tier in draft_tier_true else 'False'} for {tier}, got {cfg.use_draft}")
+            warnings.append(
+                f"USE_DRAFT: expected {'True' if tier in draft_tier_true else 'False'} "
+                f"for {tier}, got {cfg.use_draft}"
+            )
     else:
         scores["use_draft"] = None
 
@@ -302,7 +303,9 @@ def _score_answer(
     unknown_refs = [l for l in ref_lines if "unknown" in l.lower() or len(l) < 10]
     scores["ref_uri_sanity"] = not unknown_refs
     if unknown_refs:
-        warnings.append(f"REF_URI: {len(unknown_refs)} suspicious reference entries: {unknown_refs[:3]}")
+        warnings.append(
+            f"REF_URI: {len(unknown_refs)} suspicious reference entries: {unknown_refs[:3]}"
+        )
 
     # h) enriched context size
     ctx_chars = len(ans.enriched_context)
@@ -389,7 +392,7 @@ def main() -> None:
 
     log.info("using CSV: %s", csv_path)
     rows = _load_rows(csv_path)
-    # Keys are .strip().lower() for case-insensitive lookup.
+    # Keys are .strip().lower() for case-insensitive lookup (Fix 9).
     row_map: Dict[str, Dict[str, Any]] = {
         _get_question(r).strip().lower(): r for r in rows
     }
@@ -420,10 +423,10 @@ def main() -> None:
         print(header, end="")
 
         for q_idx, (question, label) in enumerate(TARGET_QUESTIONS, start=1):
-            # Case-insensitive lookup.
+            # Case-insensitive lookup (Fix 9a).
             row = row_map.get(question.strip().lower())
             if row is None:
-                # Fuzzy fallback: find closest question in CSV by lowercased prefix.
+                # Fuzzy fallback: find closest question in CSV by lowercased prefix (Fix 9b).
                 q_prefix = question[:60].strip().lower()
                 for rq, r in row_map.items():
                     if rq.startswith(q_prefix):
