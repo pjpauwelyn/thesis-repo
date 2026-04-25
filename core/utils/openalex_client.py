@@ -9,7 +9,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 _OPENALEX_BASE = "https://api.openalex.org/works/"
-_MAX_RETRIES = 3
+_MAX_RETRIES = 2
 
 
 class OpenAlexClient:
@@ -28,7 +28,7 @@ class OpenAlexClient:
         delay = 1.0
         for attempt in range(_MAX_RETRIES):
             try:
-                resp = requests.get(f"{_OPENALEX_BASE}{work_id}", timeout=5)
+                resp = requests.get(f"{_OPENALEX_BASE}{work_id}", timeout=3)
                 resp.raise_for_status()
                 data = resp.json()
 
@@ -63,7 +63,6 @@ class OpenAlexClient:
             except Exception as exc:
                 logger.error(f"unexpected error fetching {uri}: {exc}")
                 return None
-        return None
 
 
 def format_reference_from_metadata(metadata: Dict[str, str]) -> str:
