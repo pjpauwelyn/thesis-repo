@@ -26,10 +26,10 @@ GENERAL RULES
    - Do NOT invent numbers, regions, years, methods, or citations.
    - If something is missing, write “Not available in AQL results” instead of leaving a placeholder.
    - Do NOT create new references or modify any reference metadata.
-- Be concise but informative. Use bullets, but include key methodological details (sensor, algorithm, resolution) and at least one short explanatory sentence per topic when available in AQL_RESULTS.”
+- Be concise but informative. Use bullets, but include key methodological details (sensor, algorithm, resolution) and at least one short explanatory sentence per topic when available in AQL_RESULTS.
 - Always specify scope (region + time) when giving quantitative results.
 - Clearly separate regional vs global findings.
-- For each critical attribute, if the AQL_RESULTS provide methods or drivers (e.g., satellite sensor, retrieval algorithm, forcing factors), append a brief clause describing them (e.g., ‘…derived from MODIS NDVI using trend analysis over 2001–2020’).”
+- For each critical attribute, if the AQL_RESULTS provide methods or drivers (e.g., satellite sensor, retrieval algorithm, forcing factors), append a brief clause describing them (e.g., '…derived from MODIS NDVI using trend analysis over 2001–2020').
 
 ================================================================
 OUTPUT FORMAT (plain text, no JSON, no code fences)
@@ -50,7 +50,7 @@ Supporting attributes found:
 # Topic name 1
 Findings: 1–2 key findings for this topic (quantitative and/or qualitative).
 Evidence: Short citation from AQL (e.g., “Author et al., 2020” or “Report Title, 2019”).
-Mechanisms / methods: Brief description of the measurement approach or main drivers mentioned in the study (e.g., ‘Trend derived from Sentinel‑1 backscatter; changes linked to precipitation anomalies’).
+Mechanisms / methods: Brief description of the measurement approach or main drivers mentioned in the study (e.g., 'Trend derived from Sentinel‑1 backscatter; changes linked to precipitation anomalies').
 Scope: Geographic: {region or “global”} | Temporal: {years}.
 Confidence: {0–1} with 1 short reason (e.g., “direct measurements”, “model-based”).
 Limitations: 1–2 specific caveats (e.g., “data ends 2018; limited stations in eastern region”).
@@ -61,6 +61,18 @@ Topic name 2 (optional)
 
 Topic name 3 (optional)
 [same fields as above, only if it clearly adds value]
+
+
+[QUANTITATIVE VALUES EXTRACTED]
+If any numeric values are present in the evidence above, list them here.
+Include ONLY values explicitly stated in the AQL results — do NOT invent or round.
+If no numeric values appear in the evidence, write exactly: "No explicit quantitative values found."
+
+| value | unit | scope (region / time) | uncertainty / qualifier | source |
+|-------|------|----------------------|------------------------|--------|
+| [exact value] | [unit] | [region, time window] | [range, qualifier, or "none stated"] | [Author et al., Year] |
+
+Rules: copy values verbatim; include scope; keep table to ≤ 10 rows (most query-relevant only).
 
 
 [VALIDATED REFERENCES]
@@ -98,7 +110,7 @@ Key limitations:
 
 Generation guidance:
 - Emphasise: 2–3 concepts or metrics that are best supported and most relevant to the question.
-- Caveat: 1–2 concepts that must always be qualified when mentioned.
+- Caveat: 1–2 concepts that must always be qualified when mentioned; note if evidence is regional rather than global.
 - Frame answer as: 1 sentence high-level framing suggestion for the final answer model.
 
 ================================================================
