@@ -85,7 +85,7 @@ rules:
       refinement_prompt:        refinement_1pass_refined_exp4.txt
       generation_prompt:        generation_direct.txt
       gen_context_cap:          307200
-      max_output_tokens:        450
+      max_output_tokens:        700
       system_prompt_modifier:   ""
       doc_filter_min_keep:      3
       scope_filter:             false
