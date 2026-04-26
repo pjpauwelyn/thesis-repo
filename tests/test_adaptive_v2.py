@@ -424,9 +424,13 @@ def test_phase3_generation() -> None:
                     docs = _parse_docs(row)
                     break
 
-            # Reset LLM cache between questions to prevent cross-question
-            # draft bleed (Fix 1: stale LLM client conversation state).
-            _PIPELINE.reset_llm_cache()
+            # Clear LLM client cache between questions to prevent cross-question
+            # draft bleed (stale LLM client conversation state).
+            # NOTE: do NOT call reset_llm_cache() here -- that method also wipes
+            # _session_full_doc_uris, which would disable the P6 cross-question
+            # full-text throttle for the entire run. Directly clear _llm_cache
+            # so P6 keeps accumulating URIs across questions as intended.
+            _PIPELINE._llm_cache = {}
 
             log_question_start(log, i, question)
             t0 = time.perf_counter()
