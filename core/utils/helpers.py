@@ -77,7 +77,7 @@ _CODE_ERROR_TOKENS = (
 
 
 class MistralLLMWrapper:
-    """thin wrapper around the mistral chat api with json mode support."""
+    """Thin wrapper around the Mistral chat API with system-prompt and json-mode support."""
 
     def __init__(
         self,
@@ -91,15 +91,40 @@ class MistralLLMWrapper:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-    def invoke(self, prompt_text: str, force_json: bool = False) -> Optional[Union[dict, str]]:
-        """send a prompt and return parsed json (force_json=True) or raw text."""
+    def invoke(
+        self,
+        prompt_text: str,
+        force_json: bool = False,
+        system: str = "",
+        max_tokens: Optional[int] = None,
+    ) -> Optional[Union[dict, str]]:
+        """Send a prompt and return parsed JSON (force_json=True) or raw text.
+
+        Args:
+            prompt_text: the user-turn content.
+            force_json:  when True, prepends a JSON-mode instruction to the
+                         user message and parses the response as JSON.
+            system:      optional system prompt sent as a proper
+                         {role: system} message before the user turn.
+                         Pass GenerationAgent quality contracts here so they
+                         reach the model at full authority.
+            max_tokens:  per-call token ceiling override.  Falls back to
+                         self.max_tokens (set at construction time) when None.
+        """
         from core.utils.logger import log_llm_retry, log_llm_failure
 
-        full_prompt = (
+        effective_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        user_content = (
             "You MUST respond with ONLY valid JSON when instructed to do so.\n" + prompt_text
             if force_json else prompt_text
         )
-        messages = [{"role": "user", "content": full_prompt}]
+
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user_content})
+
         use_stream = os.getenv("MISTRAL_STREAM", "1") not in ("0", "false", "False", "")
 
         for attempt in range(8):
@@ -110,7 +135,7 @@ class MistralLLMWrapper:
                         model=self.model,
                         messages=messages,
                         temperature=self.temperature,
-                        max_tokens=self.max_tokens,
+                        max_tokens=effective_max_tokens,
                     ):
                         data = getattr(ev, "data", ev)
                         choices = getattr(data, "choices", None) or []
@@ -128,7 +153,7 @@ class MistralLLMWrapper:
                         model=self.model,
                         messages=messages,
                         temperature=self.temperature,
-                        max_tokens=self.max_tokens,
+                        max_tokens=effective_max_tokens,
                     )
                     content = resp.choices[0].message.content
                 return self._parse_output(content, force_json=force_json)
@@ -137,7 +162,6 @@ class MistralLLMWrapper:
                 msg = str(e).lower()
                 status = getattr(e, "status_code", None) or getattr(e, "http_status", None)
 
-                # Local code bug or permanent API failure — bail immediately.
                 if any(tok in msg for tok in _CODE_ERROR_TOKENS):
                     _log.error(
                         "llm call aborted — local code error (will not retry): %s", e
@@ -199,14 +223,36 @@ class OpenRouterLLMWrapper:
         self.max_tokens = max_tokens
         self.timeout_s = timeout_s
 
-    def invoke(self, prompt_text: str, force_json: bool = False) -> Optional[Union[dict, str]]:
+    def invoke(
+        self,
+        prompt_text: str,
+        force_json: bool = False,
+        system: str = "",
+        max_tokens: Optional[int] = None,
+    ) -> Optional[Union[dict, str]]:
+        """Send a prompt and return parsed JSON (force_json=True) or raw text.
+
+        Args:
+            prompt_text: the user-turn content.
+            force_json:  when True, prepends a JSON-mode instruction.
+            system:      optional system prompt sent as {role: system} before the
+                         user turn so quality contracts reach the model at full
+                         authority rather than being buried in user content.
+            max_tokens:  per-call override; falls back to self.max_tokens when None.
+        """
         from core.utils.logger import log_llm_retry, log_llm_failure
 
-        full_prompt = (
+        effective_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        user_content = (
             "You MUST respond with ONLY valid JSON when instructed to do so.\n" + prompt_text
             if force_json else prompt_text
         )
-        messages = [{"role": "user", "content": full_prompt}]
+
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user_content})
 
         for attempt in range(8):
             try:
@@ -215,7 +261,7 @@ class OpenRouterLLMWrapper:
                     model=self.model,
                     messages=messages,
                     temperature=self.temperature,
-                    max_tokens=self.max_tokens,
+                    max_tokens=effective_max_tokens,
                     stream=True,
                     timeout=self.timeout_s,
                 ):
@@ -233,7 +279,6 @@ class OpenRouterLLMWrapper:
                 msg = str(e).lower()
                 status = getattr(e, "status_code", None)
 
-                # Local code bug or permanent API failure — bail immediately.
                 if any(tok in msg for tok in _CODE_ERROR_TOKENS):
                     _log.error(
                         "llm call aborted — local code error (will not retry): %s", e
