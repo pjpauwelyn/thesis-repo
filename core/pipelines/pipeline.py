@@ -130,19 +130,28 @@ class Pipeline:
         self, question: str
     ) -> Tuple[DynamicOntology, QuestionProfile, PipelineConfig]:
         from core.agents.ontology_agent import OntologyAgent
+
         ont_agent = OntologyAgent(
             self._llm("mistral-small-latest", 0.0),
             prompt_dir=str(self._prompts_root / "ontology"),
         )
         ontology, profile = ont_agent.process_with_profile(question)
 
-        # Single automatic retry on profiler parse failure.
+        # Fix 9: single automatic retry on profiler parse failure — use a
+        # slightly warmer temperature to escape the deterministic zero-temp
+        # failure loop. A retry at temp=0.0 produces the exact same malformed
+        # JSON every time; temp=0.1 breaks the deterministic cycle.
         if profile.confidence is not None and profile.confidence == 0.0:
             log.warning(
-                "profiler parse failure on first attempt -- retrying once for '%s...'",
+                "profiler parse failure on first attempt -- retrying with temp=0.1 for '%s...'",
                 question[:60],
             )
-            ontology, profile = ont_agent.process_with_profile(question)
+            retry_llm = self._llm("mistral-small-latest", 0.1)
+            retry_agent = OntologyAgent(
+                retry_llm,
+                prompt_dir=str(self._prompts_root / "ontology"),
+            )
+            ontology, profile = retry_agent.process_with_profile(question)
 
         cfg = self.router.select(profile)
 
@@ -306,6 +315,12 @@ class Pipeline:
         if cfg.evidence_mode in ("excerpts_narrow", "excerpts_full"):
             t0 = time.perf_counter()
             indexer = self._get_indexer()
+
+            # Fix 1: take a snapshot of doc URI/title keys BEFORE excerpt
+            # selection runs so the alignment guard has a real before/after
+            # window to compare against (not list-to-itself at the same instant).
+            _doc_key_snapshot = self._key_snapshot(full_docs, abstract_docs)
+
             excerpts, excerpt_stats = indexer.select_excerpts_for_question(
                 question=question,
                 ontology=ontology,
@@ -315,10 +330,13 @@ class Pipeline:
                 top_k_per_doc=cfg.top_k_per_doc,
             )
             log_excerpt_stats(log, excerpt_stats, elapsed=time.perf_counter() - t0)
-            # Fix 5: snapshot the combined doc order before building the block,
-            # then assert the same order is used for reference building.
-            self._assert_doc_block_ref_alignment(full_docs, abstract_docs)
-            # Fix 6: _build_aql_lookup removed; no aql_lookup param.
+
+            # Fix 1: assert the doc lists were not mutated during excerpt
+            # selection. Raises RuntimeError if ordering or length changed.
+            self._assert_doc_block_ref_alignment(
+                full_docs, abstract_docs, _doc_key_snapshot
+            )
+
             documents_block = self._render_documents_block(
                 full_docs, abstract_docs, excerpts
             )
@@ -326,10 +344,18 @@ class Pipeline:
             log_excerpt_stats(log, {}, elapsed=0.0)
 
         # -- 5. refinement ----------------------------------------------------
+        # Fix C: use a tier-aware refinement max_tokens instead of the
+        # hardcoded 2000. Full-text tiers (excerpts_narrow / excerpts_full)
+        # pass large document blocks to the refinement model; 2000 tokens is
+        # not enough to summarise 6+ papers with full methodology sections.
+        # 4000 tokens @ 47 tok/s = ~85s, within the 360s timeout for large.
+        refine_max_tokens = (
+            4000 if cfg.evidence_mode in ("excerpts_narrow", "excerpts_full") else 2000
+        )
         refine_llm = self._llm(
             cfg.refinement_model_name or cfg.model_name,
             cfg.temperature_refine,
-            max_tokens=2000,
+            max_tokens=refine_max_tokens,
             timeout_s=cfg.timeout_refine_s,
         )
 
@@ -550,9 +576,6 @@ class Pipeline:
         rules: List[str] = []
 
         # Universal grounding rule for full-text evidence tiers.
-        # Note: this fires for all excerpts_narrow/excerpts_full questions,
-        # including qualitative ones.  That is intentional — even qualitative
-        # synthesis claims must be traceable to the provided passages.
         if cfg.evidence_mode in ("excerpts_narrow", "excerpts_full"):
             rules.append("Every factual claim must be grounded in the provided context passages.")
 
@@ -604,7 +627,13 @@ class Pipeline:
     def _normalize_citation_format(text: str) -> str:
         """Normalise LLM citation variants to canonical [N][M] form.
 
-        Two passes, applied before renumbering:
+        Three passes, applied before renumbering:
+
+        Pre-pass — line-start bare citation clusters:
+            "\\n3, 7 confirm that..."  ->  "[3][7] confirm that..."
+            Only fires when followed by a word character (not a year or decimal).
+            The lookahead (?=\\s+[A-Za-z]) prevents matching years or plain
+            numbers that start a sentence with a numeric topic.
 
         Pass 1 — multi-index bracket expansion:
             [N, M, K]  ->  [N][M][K]
@@ -616,18 +645,29 @@ class Pipeline:
                   Including it caused false matches on decimal values such as
                   "2.16 Ma" (the "." before "16" matched, wrapping 16 as [16])
                   and "Ms 6.4" (same issue after the decimal point).
-                  The sentence-ending-period case ("warming. 3, 7") is handled
-                  by the prompt-level instruction that answers must end with a
-                  complete sentence, not a citation marker.
-            Guard:     each digit token must be 1..30 (rules out years >= 31,
-                       wavelengths, percentages written as plain numbers).
+            Guard:     each digit token must be 1..30.
             Lookahead: sentence-ending punctuation (.,;), newline, em-dash "--",
-                       or an opening "[".  This excludes numbers that are part
-                       of prose (e.g. "3 m below" where "m" does not satisfy
-                       the lookahead).
+                       or an opening "[".
 
-        Both passes are no-ops when the LLM already used [N] form correctly.
+        All passes are no-ops when the LLM already used [N] form correctly.
         """
+        # Fix 8 pre-pass: handle line-start bare citation clusters.
+        # e.g. "\\n3, 7 show that..." -> "[3][7] show that..."
+        # Lookahead (?=\\s+[A-Za-z]) ensures we only match citation-like patterns,
+        # not years or sentences starting with a numeric subject.
+        def _expand_line_start(m: re.Match) -> str:
+            nums = re.split(r"[\s,]+", m.group(1).strip())
+            valid = [n for n in nums if n.isdigit() and 1 <= int(n) <= 30]
+            if not valid:
+                return m.group(0)
+            return "".join(f"[{n}]" for n in valid)
+
+        text = re.sub(
+            r"(?m)^(\d{1,2}(?:\s*,\s*\d{1,2}){1,4})(?=\s+[A-Za-z])",
+            _expand_line_start,
+            text,
+        )
+
         # Pass 1: [N, M, K] -> [N][M][K]
         def _expand_multi_bracket(m: re.Match) -> str:
             nums = re.split(r"[\s,]+", m.group(1).strip())
@@ -636,7 +676,6 @@ class Pipeline:
         text = re.sub(r"\[(\d+(?:\s*,\s*\d+)+)\]", _expand_multi_bracket, text)
 
         # Pass 2: bare citation clusters after a word/symbol anchor.
-        # Anchor class: [a-zA-Z\)\]%] — dot deliberately excluded (see docstring).
         def _expand_bare_cluster(m: re.Match) -> str:
             nums = re.split(r"[\s,]+", m.group(2).strip())
             valid = [n for n in nums if n.isdigit() and 1 <= int(n) <= 30]
@@ -646,7 +685,7 @@ class Pipeline:
 
         text = re.sub(
             r"([a-zA-Z\)\]%] )(\d{1,2}(?:\s*,\s*\d{1,2}){0,4})"
-            r"(?=\s*(?:[\.\n,;]|$|\s*[-]{2,}|\s*\[))",
+            r"(?=\s*(?:[\.\\n,;]|$|\s*[-]{2,}|\s*\[))",
             _expand_bare_cluster,
             text,
         )
@@ -682,25 +721,23 @@ class Pipeline:
         doc's title and URI from the KG are used as a reliable fallback.
         Every cited doc that has at least a title or URI is guaranteed a line.
 
-        P4: title-normalised duplicate deduplication.
+        Fix 2 — P4 title-normalised duplicate deduplication (O(1) lookup):
             Two docs with near-identical titles (preprint + journal version of
-            the same paper, e.g. Zeitz 2021 Q4) are collapsed to one entry.
-            The first occurrence wins; the duplicate's original index is remapped
-            to the same sequential output number so inline [N] markers stay
-            consistent.  seq is never incremented for a skipped duplicate.
+            the same paper) are collapsed to one entry. The first occurrence wins;
+            the duplicate's original index is remapped to the same sequential
+            output number. A norm_title_to_seq dict is built alongside
+            seen_norm_titles so duplicate lookup is O(1) — no inner scan loop,
+            no fragile docs[prev_i - 1] access.
         """
         from core.utils.openalex_client import OpenAlexClient, format_reference_from_metadata
 
-        # If the LLM cited nothing, attach all docs so the section is not empty.
         if not cited_indices:
             indices_to_use = set(range(1, len(docs) + 1))
         else:
-            # Clamp to valid range (LLM occasionally writes [0] or out-of-range).
             indices_to_use = {
                 i for i in cited_indices if 1 <= i <= len(docs)
             }
             if not indices_to_use:
-                # All cited indices out of range -- fall back to all docs.
                 log.warning(
                     "_build_verified_references: all cited indices %s out of range "
                     "(n_docs=%d) -- attaching all docs",
@@ -710,17 +747,17 @@ class Pipeline:
 
         formatted: List[str] = []
         plain: List[str] = []
-        # Maps original 1-based doc index -> sequential output position (1-based).
-        # Written only when a doc produces an output line (seq never "spent" on
-        # skipped docs, so inline markers and the References block stay aligned).
         index_remap: Dict[int, int] = {}
         seq = 0
 
-        # P4: track normalised titles to deduplicate preprint/journal pairs.
+        # Fix 2: O(1) duplicate tracking — norm_title_to_seq maps each
+        # normalised title to the sequential output position already assigned
+        # to its first occurrence.  Replaces the O(N) inner scan loop.
         seen_norm_titles: Set[str] = set()
+        norm_title_to_seq: Dict[str, int] = {}
 
         for i in sorted(indices_to_use):
-            doc = docs[i - 1]  # docs is 0-indexed, indices_to_use is 1-based
+            doc = docs[i - 1]
             title = doc.get("title_or_name") or doc.get("title") or ""
             uri   = doc.get("uri") or doc.get("id") or ""
 
@@ -730,46 +767,32 @@ class Pipeline:
                 )
                 continue
 
-            # P4: normalise title and check for duplicates before spending a
-            # sequence slot.  Normalisation: collapse non-word chars, lowercase,
-            # truncate to 100 chars so minor subtitle differences don't prevent
-            # deduplication of the same paper.
             norm_title = re.sub(r"\W+", " ", title[:100].lower()).strip()
+
+            # Fix 2: O(1) duplicate lookup via norm_title_to_seq.
             if norm_title and norm_title in seen_norm_titles:
-                # Duplicate title detected (e.g. preprint vs. journal version).
-                # Find the seq number already assigned to the first occurrence
-                # and remap this index to it so inline [N] stays consistent.
-                # We scan index_remap in insertion order (Python 3.7+).
-                for prev_i, prev_seq in index_remap.items():
-                    prev_doc = docs[prev_i - 1]
-                    prev_title = prev_doc.get("title_or_name") or prev_doc.get("title") or ""
-                    prev_norm = re.sub(r"\W+", " ", prev_title[:100].lower()).strip()
-                    if prev_norm == norm_title:
-                        index_remap[i] = prev_seq
-                        log.debug(
-                            "_build_verified_references: doc %d title duplicate of doc %d "
-                            "('%s') -- remapped to seq %d",
-                            i, prev_i, title[:60], prev_seq,
-                        )
-                        break
+                index_remap[i] = norm_title_to_seq[norm_title]
+                log.debug(
+                    "_build_verified_references: doc %d title duplicate of seq %d "
+                    "('%s') -- remapped",
+                    i, norm_title_to_seq[norm_title], title[:60],
+                )
                 continue
 
             if norm_title:
                 seen_norm_titles.add(norm_title)
 
-            # Only increment seq and register the remap after confirming this
-            # doc will produce a formatted line.
             seq += 1
             index_remap[i] = seq
+
+            # Fix 2: record the seq for this norm_title immediately (O(1)).
+            if norm_title:
+                norm_title_to_seq[norm_title] = seq
 
             metadata = None
             if uri and "openalex.org" in uri:
                 metadata = OpenAlexClient.fetch_metadata(uri)
 
-            # P5: if OpenAlex returned metadata but the title is empty/None,
-            # discard the metadata and use the KG fallback instead.  An empty
-            # title from OpenAlex produces a malformed entry like "*None*" or
-            # "**" which is worse than the KG title which is always populated.
             if metadata and not (metadata.get("title") or "").strip():
                 log.warning(
                     "_build_verified_references: OpenAlex metadata for doc %d "
@@ -784,9 +807,6 @@ class Pipeline:
                 formatted.append(line)
                 plain.append(re.sub(r"^\[\d+\]\s*", "", line))
             else:
-                # KG fallback: title and URI are always populated for dataset docs.
-                # Use "[No title — see URI]" rather than "Unknown title" so the
-                # smoke scorer's `"unknown" in l.lower()` check never fires.
                 fallback_title = title or "[No title \u2014 see URI]"
                 line = f"[{seq}] {fallback_title}. {uri}." if uri else f"[{seq}] {fallback_title}."
                 formatted.append(line)
@@ -803,19 +823,10 @@ class Pipeline:
 
         Uses a two-pass approach (placeholder -> final) to avoid collisions
         when two indices swap values (e.g. [1]->2 and [2]->1).
-
-        Args:
-            answer_body: raw answer text with original [N] markers.
-            index_remap: {original_index: sequential_index} from
-                _build_verified_references().
-
-        Returns:
-            answer_body with inline markers renumbered.
         """
         if not index_remap:
             return answer_body
 
-        # Pass 1: replace [old] with __CITE_new__ placeholders.
         result = answer_body
         for old, new in sorted(index_remap.items(), key=lambda kv: -kv[0]):
             result = re.sub(
@@ -824,57 +835,69 @@ class Pipeline:
                 result,
             )
 
-        # Pass 2: replace __CITE_new__ with [new].
         result = re.sub(r"__CITE_(\d+)__", r"[\1]", result)
         return result
 
     # ------------------------------------------------------------------
-    # Fix 5: doc block / reference order alignment check
+    # Fix 1: doc block / reference order alignment check
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _key_snapshot(
+        full_docs: List[Dict[str, Any]],
+        abstract_docs: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Capture URI/title keys from both doc lists before excerpt selection.
+
+        Called in run() immediately BEFORE select_excerpts_for_question() so
+        that _assert_doc_block_ref_alignment() has a real before/after window
+        to compare against (not list-to-itself at the same instant).
+        """
+        def _key(doc: Dict[str, Any]) -> str:
+            return doc.get("uri") or doc.get("id") or doc.get("title") or ""
+
+        return [_key(d) for d in full_docs] + [_key(d) for d in abstract_docs]
 
     @staticmethod
     def _assert_doc_block_ref_alignment(
         full_docs: List[Dict[str, Any]],
         abstract_docs: List[Dict[str, Any]],
+        snapshot: List[str],
     ) -> None:
-        """Assert that the two separate doc lists that feed _render_documents_block
-        and _build_verified_references are in the expected order.
+        """Assert that doc lists were not mutated during excerpt selection.
 
-        The guard compares the URI/title key of every position in the combined
-        (full_docs + abstract_docs) snapshot against the same list reconstructed
-        independently.  Because both the block renderer and the reference builder
-        concatenate full_docs + abstract_docs in the same order, a divergence
-        here means the two lists were mutated between snapshot and use, which
-        would mis-align inline [N] markers with the References section.
+        Fix 1: accepts a pre-computed snapshot taken BEFORE excerpt selection
+        runs (via _key_snapshot). Compares snapshot against the current list
+        state position-by-position, raising RuntimeError on any ordering or
+        length divergence.
 
-        Practically: we take a snapshot of the keys *before* passing the lists
-        to the renderer, then re-derive the same keys and compare position by
-        position.  Any reordering raises RuntimeError with a clear diff.
+        Because both _render_documents_block and _build_verified_references
+        concatenate full_docs + abstract_docs in the same order, any mutation
+        here would mis-align inline [N] markers with the ## References section.
 
-        Called immediately before _render_documents_block() inside run().
         Raises RuntimeError on mismatch.
         """
         def _key(doc: Dict[str, Any]) -> str:
             return doc.get("uri") or doc.get("id") or doc.get("title") or ""
 
-        snapshot = [_key(d) for d in full_docs] + [_key(d) for d in abstract_docs]
-        recheck  = [_key(d) for d in full_docs] + [_key(d) for d in abstract_docs]
+        current = [_key(d) for d in full_docs] + [_key(d) for d in abstract_docs]
 
-        for pos, (snap_key, check_key) in enumerate(zip(snapshot, recheck), 1):
-            if snap_key != check_key:
+        if len(snapshot) != len(current):
+            raise RuntimeError(
+                f"Pipeline._assert_doc_block_ref_alignment: list length mismatch — "
+                f"snapshot has {len(snapshot)} docs, current has {len(current)}. "
+                "Doc list was mutated during excerpt selection. Aborting."
+            )
+
+        for pos, (snap_key, cur_key) in enumerate(zip(snapshot, current), 1):
+            if snap_key != cur_key:
                 raise RuntimeError(
                     f"Pipeline._assert_doc_block_ref_alignment: ordering divergence "
                     f"at position {pos}. "
-                    f"documents_block key={snap_key!r}, reference list key={check_key!r}. "
-                    "Citation indices would be misaligned. Aborting."
+                    f"snapshot key={snap_key!r}, current key={cur_key!r}. "
+                    "Doc list was reordered during excerpt selection — "
+                    "citation indices would be misaligned. Aborting."
                 )
-
-        if len(snapshot) != len(recheck):
-            raise RuntimeError(
-                f"Pipeline._assert_doc_block_ref_alignment: list length mismatch — "
-                f"snapshot has {len(snapshot)} docs, recheck has {len(recheck)}. "
-                "Aborting to prevent citation index misalignment."
-            )
 
     # ------------------------------------------------------------------
     # document filter
@@ -901,8 +924,6 @@ class Pipeline:
             status_lower = (doc.get("status") or "").lower()
             flagged = False
             for token in _RETRACTION_TITLE_TOKENS:
-                # Match at word boundary or start to avoid over-filtering
-                # titles like "meta-retraction study" vs "RETRACTED: ..."
                 if re.search(r"(?:^|[\s:\-])" + re.escape(token), title_lower):
                     flagged = True
                     break
@@ -926,8 +947,6 @@ class Pipeline:
         question: str,
         cfg: PipelineConfig,
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        # Fix 9: run retraction pre-filter before the LLM classification pass
-        # so retracted papers never enter the LLM context or the fallback path.
         docs = self._remove_retracted_papers(docs, question)
 
         from core.agents.ontology_agent import OntologyAgent
@@ -945,20 +964,21 @@ class Pipeline:
             rule_hit=cfg.rule_hit,
         )
 
-        # P6: cross-question full-text throttle.
-        # Demote any full_doc whose URI was already used as full-text in a
-        # prior question this session, but only when there is a surplus of
-        # full_docs (len > min_keep + 2).  This prevents the same foundational
-        # paper from dominating multiple answers with the same passages while
-        # keeping genuinely unique full-text evidence accessible.
+        # Fix 5 (strengthened): P6 cross-question full-text throttle.
+        # Read _session_full_doc_uris under lock to get a consistent snapshot,
+        # then use the local copy for the demotion loop (no lock held during
+        # iteration — prevents lock contention on concurrent questions).
         surplus = len(full_docs) - (cfg.doc_filter_min_keep + 2)
-        if surplus > 0 and self._session_full_doc_uris:
+        with self._counter_lock:
+            session_uris_snapshot = set(self._session_full_doc_uris)
+
+        if surplus > 0 and session_uris_snapshot:
             demoted = 0
             new_full: List[Dict] = []
             new_abstract: List[Dict] = list(abstract_docs)
             for doc in full_docs:
                 uri = doc.get("uri") or doc.get("id") or ""
-                if uri and uri in self._session_full_doc_uris and demoted < surplus:
+                if uri and uri in session_uris_snapshot and demoted < surplus:
                     new_abstract.append(doc)
                     demoted += 1
                     log.debug(
@@ -970,11 +990,15 @@ class Pipeline:
             full_docs = new_full
             abstract_docs = new_abstract
 
-        # Register the URIs of docs kept as full-text for future questions.
-        for doc in full_docs:
-            uri = doc.get("uri") or doc.get("id") or ""
-            if uri:
-                self._session_full_doc_uris.add(uri)
+        # Fix 5 (strengthened): register new full-text URIs under lock to
+        # prevent data races when multiple questions run concurrently.
+        new_uris = {
+            doc.get("uri") or doc.get("id") or ""
+            for doc in full_docs
+            if doc.get("uri") or doc.get("id")
+        }
+        with self._counter_lock:
+            self._session_full_doc_uris.update(new_uris)
 
         return full_docs, abstract_docs, drop_docs
 
@@ -1035,14 +1059,11 @@ class Pipeline:
             pass
         return []
 
-    # Fix 6: _build_aql_lookup() deleted (was computed but never used by renderer).
-
     @staticmethod
     def _render_documents_block(
         full_docs: List[Dict[str, Any]],
         abstract_docs: List[Dict[str, Any]],
         excerpts: List[Any],
-        # Fix 6: aql_lookup parameter removed — renderer never used it.
     ) -> str:
         excerpt_map: Dict[str, List[Any]] = {}
         for exc in excerpts:
@@ -1067,7 +1088,15 @@ class Pipeline:
             else:
                 abstract = doc.get("abstract", "")
                 if abstract:
-                    lines.append("\n[abstract only]")
+                    # Fix 10: log a warning when a full doc has no excerpt cache
+                    # hit so the developer can tune FullTextIndexer population.
+                    log.warning(
+                        "_render_documents_block: full doc '%s' (URI=%s) has no "
+                        "excerpt cache hit — serving abstract only. "
+                        "Check FullTextIndexer cache population.",
+                        doc.get("title", "")[:60], uri[:60],
+                    )
+                    lines.append("\n[abstract only — no fulltext cache hit]")
                     lines.append(abstract)
 
         for i, doc in enumerate(abstract_docs, len(full_docs) + 1):
@@ -1110,36 +1139,25 @@ class Pipeline:
     ) -> None:
         """Post-generation diagnostic: log numeric claims not found in context.
 
-        Intentionally conservative to avoid false positives:
+        Conservative to avoid false positives:
         - Skips 4-digit tokens in the range 1900–2100 (years).
         - Skips single-digit integers (too common and ambiguous).
         - Skips citation markers [N].
-        - Skips section/list numbers (lone integers at start of a line).
-        - Extracts numbers >= 10 (including decimals) for matching.
-
         Does NOT modify the answer. Logging only.
         """
-        # Strip citation markers [N] before scanning.
         answer_clean = re.sub(r"\[\d+\]", "", answer_text)
-
-        # Extract numeric tokens: integers >= 10 and decimals.
-        # Pattern: optional leading minus, digits, optional decimal.
-        # We exclude tokens that are pure 4-digit years (1900–2100).
         candidates = re.findall(r"\b-?\d+(?:\.\d+)?\b", answer_clean)
 
         unmatched: List[str] = []
         for token in candidates:
-            # Skip years.
             try:
                 as_int = int(float(token))
                 if 1900 <= as_int <= 2100 and "." not in token:
                     continue
-                # Skip single digits and small ints < 10.
                 if abs(as_int) < 10 and "." not in token:
                     continue
             except (ValueError, OverflowError):
                 continue
-            # Check if this token appears verbatim in the context.
             if token not in context:
                 unmatched.append(token)
 
