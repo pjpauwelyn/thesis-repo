@@ -35,7 +35,7 @@ from core.utils.logger import (
     log_run_summary,
 )
 
-# ── logging bootstrap ──────────────────────────────────────────────────────────────
+# ── logging bootstrap ──────────────────────────────────────────────────────────────────────────────────
 configure_pipeline_logging(log_file="logs/pipeline.log")
 logger = get_logger(__name__)
 
@@ -146,7 +146,20 @@ class PipelineOrchestrator:
         self.generation_agent = GenerationAgent(self.generation_llm, prompt_dir=f"{prompt_dir}/generation")
 
         self.pipeline_analyzer = _PipelineAnalyzer() if _PipelineAnalyzer is not None else None
-        self._adaptive_pipeline = None
+
+        # Fix 5 (strengthened): initialise _adaptive_pipeline eagerly so that
+        # concurrent asyncio.to_thread calls in run() never race on the
+        # `if self._adaptive_pipeline is None:` check. Lazy init allowed up to
+        # 8 threads to simultaneously create their own Pipeline() instance;
+        # the last write won, causing cross-question _session_full_doc_uris
+        # contamination within the same run.
+        if pipeline_type == "adaptive":
+            from core.pipelines.pipeline import Pipeline
+            self._adaptive_pipeline: Optional[Any] = Pipeline(
+                prompts_root=self.prompt_dir
+            )
+        else:
+            self._adaptive_pipeline = None
 
         logger.info(
             "orchestrator ready: %s | model=%s",
@@ -182,23 +195,19 @@ class PipelineOrchestrator:
         if verbose:
             self._print_header(data)
 
-        # Fix 8: reset adaptive pipeline session state at the start of each run
-        # so that _session_full_doc_uris does not bleed across separate run() calls.
-        if self.pipeline_type == "adaptive" and self._adaptive_pipeline is not None:
+        # Fix 5 (strengthened): reset session state unconditionally at the
+        # start of each run() call. _adaptive_pipeline is always non-None
+        # for adaptive pipelines (eager init in __init__) so no guard needed.
+        if self.pipeline_type == "adaptive":
             self._adaptive_pipeline.reset_session_state()
 
         results: List[PipelineResult] = []
-        # Fix 1: result_lock guards appends to the shared results list; the
-        # semaphore is now acquired *inside* each coroutine so it truly limits
-        # the number of concurrently executing to_thread calls.
         result_lock = threading.Lock()
         self._csv_lock = threading.Lock()
 
         async def process_question(semaphore, idx, row):
             orig_idx = row.get("_row_index")
             qid = int(row.get("question_id") or (int(orig_idx) + 1 if orig_idx is not None else (idx + 1)))
-            # Fix 1: acquire semaphore here, wrapping the blocking I/O call,
-            # not around task creation.
             async with semaphore:
                 result = await asyncio.to_thread(self._process_question, idx, row, verbose=verbose, question_id=qid)
             await asyncio.sleep(0.05)
@@ -245,11 +254,8 @@ class PipelineOrchestrator:
 
         try:
             if self.pipeline_type == "adaptive":
-                from core.pipelines.pipeline import Pipeline
-                if self._adaptive_pipeline is None:
-                    self._adaptive_pipeline = Pipeline(
-                        prompts_root=self.prompt_dir
-                    )
+                # Fix 5: _adaptive_pipeline is always initialised by __init__
+                # for adaptive pipelines — no lazy-init check needed here.
                 adaptive_result = self._adaptive_pipeline.run(
                     question=question,
                     aql_results_str=aql_results or "",
