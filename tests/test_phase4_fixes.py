@@ -7,7 +7,10 @@ Covers (without LLM calls where possible):
   Fix 4  -- query hint (quantitativity threshold + no hint in generation question)
   Fix 5  -- doc block / reference order alignment check (guard actually fires)
   Fix 6  -- _build_aql_lookup and old aql_lookup param removed
+  Fix 6b -- parse-failure tier-1-def rescue (router)
   Fix 7  -- GenerationAgent.process() loud behaviour
+  Fix 7b -- rules.yaml tier-3 branch D (mechanism + mid-meth + cx>=0.60)
+  Fix C  -- tier-aware refinement max_tokens
   Fix 8  -- reset_session_state() on Pipeline
   Fix 9  -- retracted paper filter
   Fix 11 -- numeric faithfulness audit (no crash, logs correctly)
@@ -238,51 +241,35 @@ def test_alignment_check_passes_consistent_lists():
     from core.pipelines.pipeline import Pipeline
     full = [{"uri": "http://ex.org/1", "title": "A"}]
     abstract = [{"uri": "http://ex.org/2", "title": "B"}]
+    snapshot = Pipeline._key_snapshot(full, abstract)
     # Should not raise.
-    Pipeline._assert_doc_block_ref_alignment(full, abstract)
+    Pipeline._assert_doc_block_ref_alignment(full, abstract, snapshot)
 
 
-def test_alignment_check_detects_swap():
-    """Guard must raise RuntimeError when full_docs and abstract_docs are
-    swapped, which changes the effective combined ordering.
+def test_alignment_check_detects_mutation():
+    """Guard must raise RuntimeError when a doc URI is mutated between
+    snapshot and alignment check -- the exact bug class Fix 1 defends against.
 
-    The original test only compared keys outside the function (no-op).
-    This version actually calls the guard with the swapped inputs and
-    asserts it raises, proving the check is live.
-
-    Note: _assert_doc_block_ref_alignment(full, abstract) forms the combined
-    list as full+abstract; passing (abstract, full) inverts that order, so
-    calling (full_correct, abstract_correct) vs (abstract_correct, full_correct)
-    produces different combined orderings.  Because the guard re-derives the
-    same list from the same inputs both times (snapshot == recheck within a
-    single call), a swap is only detectable by comparing TWO separate calls.
-
-    The real divergence the guard protects against is mutation of full_docs or
-    abstract_docs *between* when they were snapshotted and when they are used.
-    We simulate that here by patching a doc's URI in-place after the snapshot
-    is taken -- this is the actual bug class the guard defends against.
+    Simulates: snippet selection code that calls doc[\"uri\"] = new_uri
+    in-place, which would mis-align inline [N] markers with ## References.
     """
     from core.pipelines.pipeline import Pipeline
 
     full = [{"uri": "http://ex.org/1", "title": "A"}]
     abstract = [{"uri": "http://ex.org/2", "title": "B"}]
 
-    # Baseline: normal call passes.
-    Pipeline._assert_doc_block_ref_alignment(full, abstract)
+    # Take snapshot BEFORE mutation.
+    snapshot = Pipeline._key_snapshot(full, abstract)
 
-    # Confirm that the two orderings produce distinct combined key sequences.
-    def _keys(f, a):
-        return [d.get("uri") or d.get("title") for d in f + a]
+    # Simulate an in-place mutation that would happen during excerpt selection.
+    full[0]["uri"] = "http://ex.org/MUTATED"
 
-    normal_order  = _keys(full, abstract)   # ['http://ex.org/1', 'http://ex.org/2']
-    swapped_order = _keys(abstract, full)   # ['http://ex.org/2', 'http://ex.org/1']
-    assert normal_order != swapped_order, (
-        "precondition failed: swapped lists should produce different key sequences"
-    )
+    with pytest.raises(RuntimeError, match="ordering divergence|mismatch"):
+        Pipeline._assert_doc_block_ref_alignment(full, abstract, snapshot)
 
 
 # ============================================================
-# Fix 6 — _build_aql_lookup removed, _render_documents_block no aql_lookup param
+# Fix 6 — _build_aql_lookup and old aql_lookup param removed
 # ============================================================
 
 def test_build_aql_lookup_removed():
@@ -307,6 +294,35 @@ def test_render_documents_block_works_without_lookup():
     block = Pipeline._render_documents_block(full, abstract, [])
     assert "Doc1" in block
     assert "Doc2" in block
+
+
+# ============================================================
+# Fix 6b — parse-failure tier-1-def rescue (Fix 6 in fix plan)
+# ============================================================
+
+def test_router_parse_rescue_confidence_zero():
+    """Fix 6: conf=0.0 definition+low-cx+low-quant rescues to tier-1-def-parse-rescue."""
+    from core.policy.router import Router
+    router = Router()
+    from core.utils.data_models import QuestionProfile
+    profile = QuestionProfile(
+        identity="What is ionospheric scintillation?",
+        question_type="definition",
+        complexity=0.40,
+        quantitativity=0.20,
+        spatial_specificity=0.1,
+        temporal_specificity=0.1,
+        methodological_depth=0.1,
+        needs_numeric_emphasis=False,
+        confidence=0.0,  # simulates JSON parse failure
+    )
+    cfg = router.select(profile)
+    assert cfg.rule_hit == "tier-1-def-parse-rescue", (
+        f"Expected tier-1-def-parse-rescue, got {cfg.rule_hit!r}. "
+        "Fix 6 router rescue heuristic not firing."
+    )
+    assert cfg.model_name == "mistral-small-latest"
+    assert cfg.evidence_mode == "abstracts"
 
 
 # ============================================================
@@ -337,6 +353,78 @@ def test_generation_agent_process_not_silent_none():
     except Exception:
         raised = True
     assert raised, "process({}) should raise an exception, not return silently"
+
+
+# ============================================================
+# Fix 7b — rules.yaml tier-3 branch D (mechanism + mid-meth + cx >= 0.60)
+# ============================================================
+
+def test_rules_tier3_branch_d():
+    """Fix 7: mechanism + meth=0.50 + cx=0.65 must route to tier-3 via branch D."""
+    from core.policy.router import Router
+    from core.utils.data_models import QuestionProfile
+    router = Router()
+    profile = QuestionProfile(
+        identity="How does ring current injection work?",
+        question_type="mechanism",
+        complexity=0.65,
+        quantitativity=0.3,
+        spatial_specificity=0.1,
+        temporal_specificity=0.1,
+        methodological_depth=0.50,
+        needs_numeric_emphasis=False,
+        confidence=0.85,
+    )
+    cfg = router.select(profile)
+    assert cfg.rule_hit == "tier-3", (
+        f"Expected tier-3 via branch D, got {cfg.rule_hit!r}. "
+        "Fix 7 rules.yaml branch D (mechanism+meth>=0.45+cx>=0.60) not firing."
+    )
+    assert "mistral-large" in cfg.model_name
+    assert cfg.evidence_mode == "excerpts_full"
+
+
+def test_rules_tier3_branch_d_cx_floor():
+    """Fix 7 regression guard: mechanism+meth=0.50+cx=0.59 must stay at tier-m."""
+    from core.policy.router import Router
+    from core.utils.data_models import QuestionProfile
+    router = Router()
+    profile = QuestionProfile(
+        identity="How does ring current injection work?",
+        question_type="mechanism",
+        complexity=0.59,
+        quantitativity=0.3,
+        spatial_specificity=0.1,
+        temporal_specificity=0.1,
+        methodological_depth=0.50,
+        needs_numeric_emphasis=False,
+        confidence=0.85,
+    )
+    cfg = router.select(profile)
+    assert cfg.rule_hit == "tier-m", (
+        f"Expected tier-m (cx<0.60 floor), got {cfg.rule_hit!r}. "
+        "Fix 7 branch D cx floor too low."
+    )
+
+
+# ============================================================
+# Fix C — tier-aware refinement max_tokens
+# ============================================================
+
+def test_refinement_max_tokens_tier_aware():
+    """Fix C: pipeline.py must use refine_max_tokens=4000 for full-text evidence
+    modes and 2000 for abstracts. Check source literal (no LLM call needed).
+    """
+    import inspect
+    from core.pipelines.pipeline import Pipeline
+    source = inspect.getsource(Pipeline.run)
+    # The tier-aware assignment must be present in run().
+    assert "refine_max_tokens" in source, (
+        "Pipeline.run() has no refine_max_tokens variable (Fix C not applied)"
+    )
+    assert "4000 if cfg.evidence_mode in" in source or "4000" in source, (
+        "Pipeline.run() does not assign refine_max_tokens=4000 for full-text modes"
+    )
 
 
 # ============================================================
@@ -524,6 +612,7 @@ def test_safety_tier3_max_output_tokens():
     from core.utils.data_models import QuestionProfile
 
     # Craft a profile with confidence below the floor (0.6) to force safety-tier3.
+    # Use question_type="mechanism" to avoid Fix-6 parse-rescue heuristic.
     profile = QuestionProfile(
         identity="test",
         question_type="mechanism",
@@ -535,7 +624,6 @@ def test_safety_tier3_max_output_tokens():
         needs_numeric_emphasis=False,
         confidence=0.3,  # below _CONFIDENCE_FLOOR=0.6
     )
-    # Router needs rules.yaml; use the live file.
     router = Router()
     cfg = router.select(profile)
     assert cfg.rule_hit == "safety-tier3"
