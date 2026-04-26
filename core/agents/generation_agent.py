@@ -47,16 +47,16 @@ class GenerationAgent(BaseAgent):
     def process(self, input_data: Dict[str, Any]) -> "Answer":
         """Thin dict-based wrapper around generate().
 
-        Fix 7: previously a silent no-op (pass).  Now either routes to
-        generate() when the input dict is valid, or raises NotImplementedError
-        with an actionable message so callers notice the problem immediately.
+        Either routes to generate() when the input dict is valid, or raises
+        NotImplementedError with an actionable message so callers notice the
+        problem immediately.
 
         Expected keys in input_data:
-            question   (str, required)
-            text_context (str, required)
-            ontology   (DynamicOntology | None, optional)
+            question      (str, required)
+            text_context  (str, required)
+            ontology      (DynamicOntology | None, optional)
             system_prompt (str, optional)
-            use_draft  (bool, optional, default True)
+            use_draft     (bool, optional, default True)
         """
         if not isinstance(input_data, dict):
             raise NotImplementedError(
@@ -90,9 +90,6 @@ class GenerationAgent(BaseAgent):
         max_output_tokens: int = 700,
         system_prompt: str = "",
         use_draft: bool = True,
-        # D2: default changed from 'generation_prompt_exp4.txt' (deleted in D1)
-        # to 'generation_structured.txt' so bare generate() calls and unit
-        # tests that omit this parameter no longer raise RuntimeError.
         generation_prompt: str = "generation_structured.txt",
     ) -> "Answer":
         """Generate an answer for a question.
@@ -141,7 +138,7 @@ class GenerationAgent(BaseAgent):
             )
 
         if use_draft:
-            # step 1: zero-shot draft (question only)
+            # step 1: zero-shot draft (question only, no system prompt)
             zero_prompt = self.zero_shot_template.replace("{question}", question)
             draft = self._call_llm(zero_prompt, max_tokens=max_output_tokens)
         else:
@@ -281,9 +278,15 @@ class GenerationAgent(BaseAgent):
     def _call_llm(
         self, prompt: str, max_tokens: int = 700, system: str = ""
     ) -> str:
-        if system:
-            prompt = f"SYSTEM: {system}\n\n{prompt}"
-        response = self.llm.invoke(prompt)
+        """Invoke the LLM with an optional system prompt and per-call max_tokens.
+
+        system is forwarded to llm.invoke() as a proper kwarg so both
+        MistralLLMWrapper and OpenRouterLLMWrapper insert it as a
+        {role: system} message before the user turn — not as raw user text.
+        max_tokens is forwarded so tier-specific token ceilings are honoured
+        per call rather than only at LLM construction time.
+        """
+        response = self.llm.invoke(prompt, system=system, max_tokens=max_tokens)
         if not response:
             raise RuntimeError(
                 "GenerationAgent._call_llm(): LLM returned empty/None response. "
