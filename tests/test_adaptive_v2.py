@@ -391,8 +391,13 @@ def test_phase3_generation() -> None:
             n_skip, len(all_questions) - n_skip,
         )
 
-    valid_tiers = {"tier-1", "tier-1-def", "tier-2", "tier-2a", "tier-2b",
-                   "tier-3", "tier-m", "safety-tier3", "fallback"}
+    # Fix 6 adds tier-1-def-parse-rescue for parse-failure definitional questions.
+    # Fix 7 (branch D) keeps mechanism+mid-meth at tier-3 (already in set).
+    valid_tiers = {
+        "tier-1", "tier-1-def", "tier-1-def-parse-rescue",
+        "tier-2", "tier-2a", "tier-2b",
+        "tier-3", "tier-m", "safety-tier3", "fallback",
+    }
 
     # open both outputs in append mode so existing content is preserved
     with open(jsonl_path, "a", encoding="utf-8") as jf, \
