@@ -31,6 +31,45 @@ class Router:
 
     def select(self, profile: QuestionProfile) -> PipelineConfig:
         if profile.confidence is None or profile.confidence < _CONFIDENCE_FLOOR:
+            # Fix 6: before escalating to safety-tier3, check whether a
+            # parse-failure profile still carries a clear definitional/low-cx
+            # signal. If so, route to tier-1-def instead of safety-tier3 to
+            # avoid ~6x cost overrun on simple definitional questions whose
+            # profiler JSON wrapper was malformed but payload was intact.
+            if self._is_tier1_def_rescue(profile):
+                _log.warning(
+                    "router.select: parse-failure profile matches tier-1-def rescue heuristic "
+                    "(type=%s complexity=%.2f quant=%.2f conf=%.2f) -> tier-1-def-parse-rescue",
+                    profile.question_type,
+                    profile.complexity,
+                    profile.quantitativity,
+                    profile.confidence or 0.0,
+                )
+                return PipelineConfig(
+                    model_name="mistral-small-latest",
+                    evidence_mode="abstracts",
+                    top_k_per_doc=0,
+                    per_doc_budget=0,
+                    global_budget=0,
+                    refinement_prompt="refinement_1pass_refined_exp4.txt",
+                    generation_prompt="generation_direct.txt",
+                    gen_context_cap=_CONTEXT_CAP_CHARS,
+                    max_output_tokens=2000,
+                    system_prompt_modifier="",
+                    doc_filter_min_keep=3,
+                    scope_filter=False,
+                    synthesis_mode="homogeneous",
+                    timeout_refine_s=30,
+                    timeout_generate_s=45,
+                    use_draft=True,
+                    rule_hit="tier-1-def-parse-rescue",
+                    reason=(
+                        f"parse-failure but profile matches tier-1-def "
+                        f"(type={profile.question_type} cx={profile.complexity:.2f} "
+                        f"quant={profile.quantitativity:.2f}) -> rescue to tier-1-def"
+                    ),
+                )
+
             _log.warning(
                 "router.select: low/missing confidence (%.2f) -> safety-tier3 "
                 "(type=%s complexity=%.2f quant=%.2f)",
@@ -118,6 +157,26 @@ class Router:
             use_draft=True,
             rule_hit="fallback",
             reason="no rule matched -- conservative fallback",
+        )
+
+    @staticmethod
+    def _is_tier1_def_rescue(profile: QuestionProfile) -> bool:
+        """Return True when a parse-failure profile safely matches tier-1-def.
+
+        Fix 6: intentionally mirrors the tier-1-def when: block in rules.yaml
+        (question_type in [definition, factual] AND quant < 0.45 AND cx < 0.60)
+        so the rescue heuristic stays in sync if the rule thresholds change.
+        Returns False when any field is None (conservative: unknown -> safety-tier3).
+        """
+        qt = getattr(profile, "question_type", None)
+        cx = getattr(profile, "complexity", None)
+        quant = getattr(profile, "quantitativity", None)
+        if qt is None or cx is None or quant is None:
+            return False
+        return (
+            qt in ("definition", "factual")
+            and quant < 0.45
+            and cx < 0.60
         )
 
     def _matches(self, when: Dict[str, Any], p: QuestionProfile) -> bool:
