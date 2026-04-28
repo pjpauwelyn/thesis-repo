@@ -33,7 +33,7 @@ from core.utils.logger import (
 
 log = logging.getLogger(__name__)
 
-# Fix 9: retraction indicator tokens matched against the *title* (lower-cased).
+# Retraction indicator tokens matched against the *title* (lower-cased).
 # Conservative list — only exact editorial labels, not words that appear in
 # ordinary paper titles or abstracts discussing retractions as a topic.
 _RETRACTION_TITLE_TOKENS = frozenset([
@@ -90,7 +90,7 @@ class Pipeline:
         self._counter_lock = threading.Lock()
 
     # ------------------------------------------------------------------
-    # Fix 8: session reset boundary
+    # session reset boundary
     # ------------------------------------------------------------------
 
     def reset_session_state(self) -> None:
@@ -137,10 +137,10 @@ class Pipeline:
         )
         ontology, profile = ont_agent.process_with_profile(question)
 
-        # Fix 9: single automatic retry on profiler parse failure — use a
-        # slightly warmer temperature to escape the deterministic zero-temp
-        # failure loop. A retry at temp=0.0 produces the exact same malformed
-        # JSON every time; temp=0.1 breaks the deterministic cycle.
+        # Single automatic retry on profiler parse failure — use a slightly
+        # warmer temperature to escape the deterministic zero-temp failure loop.
+        # A retry at temp=0.0 produces the exact same malformed JSON every time;
+        # temp=0.1 breaks the deterministic cycle.
         if profile.confidence is not None and profile.confidence == 0.0:
             log.warning(
                 "profiler parse failure on first attempt -- retrying with temp=0.1 for '%s...'",
@@ -316,9 +316,6 @@ class Pipeline:
             t0 = time.perf_counter()
             indexer = self._get_indexer()
 
-            # Fix 1: take a snapshot of doc URI/title keys BEFORE excerpt
-            # selection runs so the alignment guard has a real before/after
-            # window to compare against (not list-to-itself at the same instant).
             _doc_key_snapshot = self._key_snapshot(full_docs, abstract_docs)
 
             excerpts, excerpt_stats = indexer.select_excerpts_for_question(
@@ -331,8 +328,6 @@ class Pipeline:
             )
             log_excerpt_stats(log, excerpt_stats, elapsed=time.perf_counter() - t0)
 
-            # Fix 1: assert the doc lists were not mutated during excerpt
-            # selection. Raises RuntimeError if ordering or length changed.
             self._assert_doc_block_ref_alignment(
                 full_docs, abstract_docs, _doc_key_snapshot
             )
@@ -344,11 +339,6 @@ class Pipeline:
             log_excerpt_stats(log, {}, elapsed=0.0)
 
         # -- 5. refinement ----------------------------------------------------
-        # Fix C: use a tier-aware refinement max_tokens instead of the
-        # hardcoded 2000. Full-text tiers (excerpts_narrow / excerpts_full)
-        # pass large document blocks to the refinement model; 2000 tokens is
-        # not enough to summarise 6+ papers with full methodology sections.
-        # 4000 tokens @ 47 tok/s = ~85s, within the 360s timeout for large.
         refine_max_tokens = (
             4000 if cfg.evidence_mode in ("excerpts_narrow", "excerpts_full") else 2000
         )
@@ -359,9 +349,6 @@ class Pipeline:
             timeout_s=cfg.timeout_refine_s,
         )
 
-        # Build filtered_aql from the post-filter doc list so both branches
-        # always pass a non-empty JSON string to their refinement agent,
-        # regardless of whether the caller supplied aql_results_str= or docs=.
         filtered_aql = self._format_kg_context(full_docs + abstract_docs)
 
         t0 = time.perf_counter()
@@ -435,8 +422,6 @@ class Pipeline:
             enriched_context = fallback_ctx
 
         # -- 6. generation ----------------------------------------------------
-        # Fix 3: build answer-quality contract from profile and cfg.
-        # Build a local system_prompt — never mutate cfg globally.
         quality_contract = self._build_answer_quality_contract(profile, cfg)
         system_prompt = (
             (cfg.system_prompt_modifier + "\n\n" + quality_contract).strip()
@@ -456,7 +441,6 @@ class Pipeline:
         )
         t0 = time.perf_counter()
         try:
-            # Fix 4: pass the original question, not query_hint, to generation.
             answer_obj = gen_agent.generate(
                 question=question,
                 text_context=enriched_context,
@@ -501,30 +485,20 @@ class Pipeline:
                 kg_source=kg_source,
             )
 
-        # Fix 11: post-generation numeric faithfulness audit (diagnostics only).
         self._audit_numeric_faithfulness(answer_obj.answer, enriched_context, question)
 
         # -- 7. build verified references + sequential renumbering -----------
-        # Normalise the raw answer body first: some LLM variants write citations
-        # as bare comma-lists ("word 3, 7") or multi-index brackets ("[5,6,7]")
-        # instead of the canonical "[N][M]" form.  _normalize_citation_format()
-        # converts both forms to "[N][M]" so _renumber_inline_citations() and
-        # the scorer's re.findall(r'\[(\d+)\]') both see the correct markers.
         all_docs = full_docs + abstract_docs
         cited_indices = getattr(answer_obj, "cited_indices", set())
         fmt_refs, plain_refs, index_remap = self._build_verified_references(
             all_docs, cited_indices
         )
 
-        # Normalise citation format, then rewrite [N] to sequential [1]..[K].
         normalised_body = self._normalize_citation_format(answer_obj.answer)
         answer_text = self._renumber_inline_citations(normalised_body, index_remap)
 
-        # P3: strip any trailing [N] cluster left by a token-limit truncation.
-        # Primary fix is P1 (higher token ceiling); this is a safety net.
         answer_text = re.sub(r'(\[\d+\])+\s*$', '', answer_text).rstrip()
 
-        # Append ## References to the answer body.
         if fmt_refs:
             refs_block = "\n\n## References\n" + "\n".join(fmt_refs)
             answer_text = answer_text.rstrip() + refs_block
@@ -559,7 +533,7 @@ class Pipeline:
         )
 
     # ------------------------------------------------------------------
-    # Fix 3: answer quality contract
+    # answer quality contract
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -575,11 +549,9 @@ class Pipeline:
         """
         rules: List[str] = []
 
-        # Universal grounding rule for full-text evidence tiers.
         if cfg.evidence_mode in ("excerpts_narrow", "excerpts_full"):
             rules.append("Every factual claim must be grounded in the provided context passages.")
 
-        # Numeric precision rules.
         quant = getattr(profile, "quantitativity", 0.0) or 0.0
         needs_numeric = getattr(profile, "needs_numeric_emphasis", False)
         if quant >= 0.5 or needs_numeric:
@@ -591,21 +563,18 @@ class Pipeline:
                 "Do not paraphrase numeric values — state them exactly as reported in the sources."
             )
 
-        # Spatial scope rule.
         if (getattr(profile, "spatial_specificity", 0.0) or 0.0) >= 0.5:
             rules.append(
                 "State the spatial/geographic scope explicitly "
                 "(e.g., basin name, country, coordinates) for every spatial claim."
             )
 
-        # Temporal scope rule.
         if (getattr(profile, "temporal_specificity", 0.0) or 0.0) >= 0.5:
             rules.append(
                 "State the time period or observation window explicitly "
                 "for every temporal or trend claim."
             )
 
-        # Methodological depth rule.
         if (getattr(profile, "methodological_depth", 0.0) or 0.0) >= 0.6:
             rules.append(
                 "When describing methods, name the specific method and state its "
@@ -646,15 +615,13 @@ class Pipeline:
                   "2.16 Ma" (the "." before "16" matched, wrapping 16 as [16])
                   and "Ms 6.4" (same issue after the decimal point).
             Guard:     each digit token must be 1..30.
-            Lookahead: sentence-ending punctuation (.,;), newline, em-dash "--",
-                       or an opening "[".
+            Lookahead: Fix3 — dot only matches when NOT followed by a digit
+                       (prevents "4.85 mas/yr" -> "[4].85 mas/yr").
+                       \\n, ,, ; are kept as separate alternatives so the
+                       (?!\\d) negative lookahead applies only to the dot.
 
         All passes are no-ops when the LLM already used [N] form correctly.
         """
-        # Fix 8 pre-pass: handle line-start bare citation clusters.
-        # e.g. "\\n3, 7 show that..." -> "[3][7] show that..."
-        # Lookahead (?=\\s+[A-Za-z]) ensures we only match citation-like patterns,
-        # not years or sentences starting with a numeric subject.
         def _expand_line_start(m: re.Match) -> str:
             nums = re.split(r"[\s,]+", m.group(1).strip())
             valid = [n for n in nums if n.isdigit() and 1 <= int(n) <= 30]
@@ -676,6 +643,8 @@ class Pipeline:
         text = re.sub(r"\[(\d+(?:\s*,\s*\d+)+)\]", _expand_multi_bracket, text)
 
         # Pass 2: bare citation clusters after a word/symbol anchor.
+        # Fix3: split [\.\\n,;] into separate alternatives so (?!\d) applies
+        # only to the dot — prevents decimal false positives like "4.85" -> "[4].85".
         def _expand_bare_cluster(m: re.Match) -> str:
             nums = re.split(r"[\s,]+", m.group(2).strip())
             valid = [n for n in nums if n.isdigit() and 1 <= int(n) <= 30]
@@ -685,7 +654,7 @@ class Pipeline:
 
         text = re.sub(
             r"([a-zA-Z\)\]%] )(\d{1,2}(?:\s*,\s*\d{1,2}){0,4})"
-            r"(?=\s*(?:[\.\\n,;]|$|\s*[-]{2,}|\s*\[))",
+            r"(?=\s*(?:\.(?!\d)|\n|[,;]|$|\s*[-]{2,}|\s*\[))",
             _expand_bare_cluster,
             text,
         )
@@ -721,13 +690,11 @@ class Pipeline:
         doc's title and URI from the KG are used as a reliable fallback.
         Every cited doc that has at least a title or URI is guaranteed a line.
 
-        Fix 2 — P4 title-normalised duplicate deduplication (O(1) lookup):
+        Title-normalised duplicate deduplication (O(1) lookup):
             Two docs with near-identical titles (preprint + journal version of
             the same paper) are collapsed to one entry. The first occurrence wins;
             the duplicate's original index is remapped to the same sequential
-            output number. A norm_title_to_seq dict is built alongside
-            seen_norm_titles so duplicate lookup is O(1) — no inner scan loop,
-            no fragile docs[prev_i - 1] access.
+            output number.
         """
         from core.utils.openalex_client import OpenAlexClient, format_reference_from_metadata
 
@@ -750,9 +717,6 @@ class Pipeline:
         index_remap: Dict[int, int] = {}
         seq = 0
 
-        # Fix 2: O(1) duplicate tracking — norm_title_to_seq maps each
-        # normalised title to the sequential output position already assigned
-        # to its first occurrence.  Replaces the O(N) inner scan loop.
         seen_norm_titles: Set[str] = set()
         norm_title_to_seq: Dict[str, int] = {}
 
@@ -769,7 +733,6 @@ class Pipeline:
 
             norm_title = re.sub(r"\W+", " ", title[:100].lower()).strip()
 
-            # Fix 2: O(1) duplicate lookup via norm_title_to_seq.
             if norm_title and norm_title in seen_norm_titles:
                 index_remap[i] = norm_title_to_seq[norm_title]
                 log.debug(
@@ -785,7 +748,6 @@ class Pipeline:
             seq += 1
             index_remap[i] = seq
 
-            # Fix 2: record the seq for this norm_title immediately (O(1)).
             if norm_title:
                 norm_title_to_seq[norm_title] = seq
 
@@ -839,7 +801,7 @@ class Pipeline:
         return result
 
     # ------------------------------------------------------------------
-    # Fix 1: doc block / reference order alignment check
+    # doc block / reference order alignment check
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -847,12 +809,7 @@ class Pipeline:
         full_docs: List[Dict[str, Any]],
         abstract_docs: List[Dict[str, Any]],
     ) -> List[str]:
-        """Capture URI/title keys from both doc lists before excerpt selection.
-
-        Called in run() immediately BEFORE select_excerpts_for_question() so
-        that _assert_doc_block_ref_alignment() has a real before/after window
-        to compare against (not list-to-itself at the same instant).
-        """
+        """Capture URI/title keys from both doc lists before excerpt selection."""
         def _key(doc: Dict[str, Any]) -> str:
             return doc.get("uri") or doc.get("id") or doc.get("title") or ""
 
@@ -864,19 +821,7 @@ class Pipeline:
         abstract_docs: List[Dict[str, Any]],
         snapshot: List[str],
     ) -> None:
-        """Assert that doc lists were not mutated during excerpt selection.
-
-        Fix 1: accepts a pre-computed snapshot taken BEFORE excerpt selection
-        runs (via _key_snapshot). Compares snapshot against the current list
-        state position-by-position, raising RuntimeError on any ordering or
-        length divergence.
-
-        Because both _render_documents_block and _build_verified_references
-        concatenate full_docs + abstract_docs in the same order, any mutation
-        here would mis-align inline [N] markers with the ## References section.
-
-        Raises RuntimeError on mismatch.
-        """
+        """Assert that doc lists were not mutated during excerpt selection."""
         def _key(doc: Dict[str, Any]) -> str:
             return doc.get("uri") or doc.get("id") or doc.get("title") or ""
 
@@ -908,12 +853,7 @@ class Pipeline:
         docs: List[Dict[str, Any]],
         question: str,
     ) -> List[Dict[str, Any]]:
-        """Pre-filter: drop papers with retraction/withdrawal indicators in title.
-
-        Fix 9: conservative approach — only title-level markers, not abstracts.
-        Skipped entirely when the question itself is about retractions, so that
-        meta-questions about retracted literature still have access to those docs.
-        """
+        """Pre-filter: drop papers with retraction/withdrawal indicators in title."""
         q_lower = question.lower()
         if "retract" in q_lower or "withdrawn" in q_lower or "expression of concern" in q_lower:
             return docs
@@ -964,10 +904,6 @@ class Pipeline:
             rule_hit=cfg.rule_hit,
         )
 
-        # Fix 5 (strengthened): P6 cross-question full-text throttle.
-        # Read _session_full_doc_uris under lock to get a consistent snapshot,
-        # then use the local copy for the demotion loop (no lock held during
-        # iteration — prevents lock contention on concurrent questions).
         surplus = len(full_docs) - (cfg.doc_filter_min_keep + 2)
         with self._counter_lock:
             session_uris_snapshot = set(self._session_full_doc_uris)
@@ -990,8 +926,6 @@ class Pipeline:
             full_docs = new_full
             abstract_docs = new_abstract
 
-        # Fix 5 (strengthened): register new full-text URIs under lock to
-        # prevent data races when multiple questions run concurrently.
         new_uris = {
             doc.get("uri") or doc.get("id") or ""
             for doc in full_docs
@@ -1065,47 +999,78 @@ class Pipeline:
         abstract_docs: List[Dict[str, Any]],
         excerpts: List[Any],
     ) -> str:
+        """Render the documents block injected into the refinement prompt.
+
+        Fix1: excerpt_map is keyed by the normalised bare OpenAlex work ID
+        (e.g. "W2061234567") so that Chunk.to_dict() work_id values (always
+        bare) and doc URI values (always full https://openalex.org/W...)
+        both resolve to the same key.
+
+        Fix2: excerpt header now includes the page number
+        ("<<< Section: X | p. N >>>") to match the prompt spec.
+
+        Fix5: abstract_docs loop inspects download_status and annotates the
+        section heading with "[abstract only — full text unavailable]" when
+        the download previously failed, so the generation model can treat
+        numeric values from such docs as lower-confidence.
+        """
+        def _norm_key(raw: str) -> str:
+            """Normalise to bare OpenAlex work ID (strip base URL prefix)."""
+            return raw.rstrip("/").split("/")[-1] if raw else ""
+
+        # Build excerpt map keyed by NORMALISED work_id (bare ID)
         excerpt_map: Dict[str, List[Any]] = {}
         for exc in excerpts:
-            key = exc.get("work_id") or exc.get("uri") or ""
+            raw_key = exc.get("work_id") or exc.get("uri") or ""
+            key = _norm_key(raw_key)
             if key:
                 excerpt_map.setdefault(key, []).append(exc)
 
         lines: List[str] = []
         for i, doc in enumerate(full_docs, 1):
             title = doc.get("title", f"Document {i}")
-            uri = doc.get("uri") or doc.get("id") or ""
+            uri   = doc.get("uri") or doc.get("id") or ""
             lines.append(f"\n=== Document [{i}]: {title} ===")
             if uri:
                 lines.append(f"URI: {uri}")
-            doc_excerpts = excerpt_map.get(uri, [])
+
+            # Lookup uses NORMALISED key so bare work_id and full URI both match
+            doc_key = _norm_key(uri)
+            doc_excerpts = excerpt_map.get(doc_key, [])
+
             if doc_excerpts:
-                for exc in doc_excerpts:
-                    section = exc.get("section", "")
-                    text = exc.get("text", "")
-                    lines.append(f"\n<<< Section: {section} >>>")
+                for exc in sorted(doc_excerpts, key=lambda e: e.get("page", 0)):
+                    section = exc.get("section", "unknown")
+                    page    = exc.get("page", "?")
+                    text    = exc.get("text", "")
+                    lines.append(f"\n<<< Section: {section} | p. {page} >>>")
                     lines.append(text)
             else:
                 abstract = doc.get("abstract", "")
                 if abstract:
-                    # Fix 10: log a warning when a full doc has no excerpt cache
-                    # hit so the developer can tune FullTextIndexer population.
                     log.warning(
                         "_render_documents_block: full doc '%s' (URI=%s) has no "
-                        "excerpt cache hit — serving abstract only. "
-                        "Check FullTextIndexer cache population.",
+                        "excerpt cache hit — serving abstract only.",
                         doc.get("title", "")[:60], uri[:60],
                     )
-                    lines.append("\n[abstract only — no fulltext cache hit]")
+                    lines.append("\n[abstract only — no full-text cache hit]")
                     lines.append(abstract)
 
         for i, doc in enumerate(abstract_docs, len(full_docs) + 1):
-            title = doc.get("title", f"Document {i}")
-            uri = doc.get("uri") or doc.get("id") or ""
-            lines.append(f"\n=== Document [{i}]: {title} (abstract) ===")
+            title     = doc.get("title", f"Document {i}")
+            uri       = doc.get("uri") or doc.get("id") or ""
+            abstract  = doc.get("abstract", "")
+            dl_status = doc.get("download_status", "")
+            # Fix5: surface failed download status in heading so generation
+            # model can treat numeric values from such docs as lower-confidence.
+            status_suffix = (
+                " [abstract only — full text unavailable]"
+                if dl_status in ("already_failed", "failed")
+                else " (abstract)"
+            )
+            lines.append(f"\n=== Document [{i}]: {title}{status_suffix} ===")
             if uri:
                 lines.append(f"URI: {uri}")
-            abstract = doc.get("abstract", "")
             if abstract:
                 lines.append(abstract)
 
@@ -1113,12 +1078,7 @@ class Pipeline:
 
     @staticmethod
     def _build_query_hint(question: str, profile: QuestionProfile) -> str:
-        """Build a query hint string for refinement only.
-
-        Fix 4: also triggers numeric emphasis when quantitativity >= 0.5,
-        not only when needs_numeric_emphasis is explicitly True.
-        The hint is used ONLY for refinement (not passed to final generation).
-        """
+        """Build a query hint string for refinement only."""
         parts = [question]
         quant = getattr(profile, "quantitativity", 0.0) or 0.0
         if getattr(profile, "needs_numeric_emphasis", False) or quant >= 0.5:
@@ -1128,7 +1088,7 @@ class Pipeline:
         return " ".join(parts)
 
     # ------------------------------------------------------------------
-    # Fix 11: numeric faithfulness audit (diagnostics only)
+    # numeric faithfulness audit (diagnostics only)
     # ------------------------------------------------------------------
 
     @staticmethod
