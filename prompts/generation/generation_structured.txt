@@ -59,10 +59,14 @@ Treat the draft answer as a strong starting point and the context as high-priori
 6. When multiple CONTEXT items report related findings, synthesise them explicitly (e.g., 'Several studies show…') rather than describing each one separately.
    - Support each synthesis with one or more numeric citations like [1], [2] when the statements are backed by specific references. Do not write phrases such as '(from context synthesis)' or any other explanatory parenthetical; either attach a reference marker or omit the parenthetical entirely.
 
+7. Numeric values (quantities, measurements, years used as data, rates) from the draft answer that do not appear verbatim or in equivalent form in the CONTEXT must be discarded entirely. Do not carry forward any draft number that the context does not confirm. If the draft contains a value the context does not mention, omit it — do not approximate or paraphrase it.
+
+8. If a reference is marked [abstract only — full text unavailable], any specific numeric value attributed to it must be treated as lower-confidence. If you cite such a reference for a precise number, add (abstract-derived) immediately after the citation marker.
+
 ### DIRECTNESS — BOTTOM LINE UP FRONT
 
 The very first sentence of your answer must directly answer the question.
-- Do NOT open with background, topic importance, a generic definition, history, or “this is a complex topic”.
+- Do NOT open with background, topic importance, a generic definition, history, or "this is a complex topic".
 - For yes/no questions: state yes or no (with qualification if needed) immediately.
 - For comparison questions: state the key difference or outcome in the first sentence.
 - For mechanism questions: state the primary driver or process in the first sentence.
@@ -81,12 +85,12 @@ Before writing, identify every named entity, mechanism, region, method, or compa
 - Begin with a direct answer (first sentence answers the question — see DIRECTNESS above).
 
 - Then add 2–4 short sections with headings that match the question type, for example:
-  * “Key concepts” / “Definition” for “what is…” questions,
-  * “Main mechanisms” / “Impacts” for “how / why…” questions,
-  * “Comparison of X and Y” for comparison questions,
-  * “Strengths” / “Limitations” for evaluation questions.
+  * "Key concepts" / "Definition" for "what is…" questions,
+  * "Main mechanisms" / "Impacts" for "how / why…" questions,
+  * "Comparison of X and Y" for comparison questions,
+  * "Strengths" / "Limitations" for evaluation questions.
 
-- For “what is…” or definition questions, the answer must cover at minimum: (1) a clear definition, (2) key properties or components, and (3) at least one mechanism, application, or real-world impact. Do not stop after the definition alone.
+- For "what is…" or definition questions, the answer must cover at minimum: (1) a clear definition, (2) key properties or components, and (3) at least one mechanism, application, or real-world impact. Do not stop after the definition alone.
 
 - For comparison questions (X vs Y), include ONE small comparison table if it helps clarity.
 - When the question asks about mechanisms, model design, or evaluation, add a short section 'Detailed mechanisms and methods' where you explain processes, data sources, and methodological choices in more detail (2–4 sentences). Use this section when the CONTEXT includes methodological information.
@@ -95,6 +99,7 @@ Before writing, identify every named entity, mechanism, region, method, or compa
 - Your answer body must end with a complete sentence, not with a citation marker or reference list.
 - Do NOT add a generic concluding paragraph that restates the answer or includes future-work boilerplate unless the question explicitly asks for future directions.
 - Use compact sections or bullets only when they improve clarity; do not pad.
+- If the CONTEXT explicitly flags a dataset or study as short-term (< 5 years of observation), single-site, pilot-scale, or preliminary in a [CAVEATS & GAPS] block, do not give it a standalone top-level section heading. Instead, present it as a supporting example or caveat within a larger section. Reserve top-level section headings for multi-year, multi-site, or peer-confirmed findings.
 
 ### USE OF NUMBERS AND SCOPE
 
@@ -106,14 +111,14 @@ Before writing, identify every named entity, mechanism, region, method, or compa
 
 - If the question is global or very general in scope:
   * Keep the main narrative GENERAL (global or conceptual).
-  * Use regional details from the CONTEXT only as BRIEF examples, clearly labelled as such (e.g., “For example, in the HKH region…”).
+  * Use regional details from the CONTEXT only as BRIEF examples, clearly labelled as such (e.g., "For example, in the HKH region…").
   * Use at most one short paragraph per example region.
   * Do NOT let any single region dominate the answer unless the question explicitly asks about that region.
 
 - If the question is explicitly regional (e.g., names a region, country, or basin):
   * Focus the answer on that region.
   * Use global behaviour only as supporting context.
-  * If evidence in the CONTEXT covers only a subset of the named region or period, explicitly say so (e.g., “Evidence covers the upper basin only” or “Studies available for 2000–2015”).
+  * If evidence in the CONTEXT covers only a subset of the named region or period, explicitly say so (e.g., "Evidence covers the upper basin only" or "Studies available for 2000–2015").
 
 - When discussing frozen ground or permafrost albedo, distinguish explicitly between snow-covered surfaces (typical albedo 0.6–0.9) and snow-free bare soil (typical albedo 0.10–0.25). Never present a snow-covered albedo value as a radiative property of the underlying soil.
 
@@ -121,16 +126,16 @@ Before writing, identify every named entity, mechanism, region, method, or compa
 
 ### SCOPE AWARENESS
 
-- When evidence is spatially, temporally, or domain-limited, state that limitation explicitly in the relevant sentence or paragraph (e.g., “Based on studies from the Tibetan Plateau”, “as shown in 2000–2020 satellite records”).
-- Distinguish “shown in these studies” from “generally true” — do not globalise findings that are regional.
-- If the question asks globally but CONTEXT evidence is regional, say so: “Available evidence is predominantly from [region]; global behaviour may differ.”
-- If evidence is mixed, inconsistent, or covers only part of the question scope, state this concretely rather than using vague hedges like “results may vary”.
+- When evidence is spatially, temporally, or domain-limited, state that limitation explicitly in the relevant sentence or paragraph (e.g., "Based on studies from the Tibetan Plateau", "as shown in 2000–2020 satellite records").
+- Distinguish "shown in these studies" from "generally true" — do not globalise findings that are regional.
+- If the question asks globally but CONTEXT evidence is regional, say so: "Available evidence is predominantly from [region]; global behaviour may differ."
+- If evidence is mixed, inconsistent, or covers only part of the question scope, state this concretely rather than using vague hedges like "results may vary".
 
 ### UNCERTAINTY AND CAVEATS
 
 - Use the caveats and confidence information from the CONTEXT:
   * Reflect major data gaps (e.g., regions or periods not covered).
-  * Use calibrated language (“high confidence”, “medium confidence”, “limited evidence”) when suggested.
+  * Use calibrated language ("high confidence", "medium confidence", "limited evidence") when suggested.
   * Avoid long lists; highlight only the 2–3 most important limitations for interpreting the answer.
 
 - If your answer uses observational data or model output from the 2008–2009 solar minimum, note explicitly that this period was an anomalously deep solar minimum — the deepest in approximately a century — and that ionospheric, TEC, or magnetospheric values from that period may not represent typical solar-cycle minimum conditions.
@@ -163,11 +168,12 @@ YOUR ONLY JOB regarding references:
 
 Before submitting your answer, verify ALL of the following:
 
-1. **First sentence answers the question directly** — no preamble, no background, no “this is complex”.
+1. **First sentence answers the question directly** — no preamble, no background, no "this is complex".
 2. **Every numeric claim includes**: value, unit, spatial scope, temporal scope, and an inline [N] citation. If any element is missing from the context, omit the number rather than guessing.
 3. **Spatial/temporal scope is stated** wherever evidence is regional or time-limited; do not generalise beyond what the evidence supports.
 4. **Every named entity, mechanism, or comparison side in the question is addressed** at least once.
 5. **No generic concluding paragraph** and no future-work boilerplate unless explicitly asked.
 6. **No [N] citation IDs outside the [VALIDATED REFERENCES] list**; no self-written References section.
+7. **No draft numbers carried forward** unless they appear verbatim or equivalently in the CONTEXT (PRIORITY RULE 7).
 
 Now write the final refined answer (answer body only — no ## References section).
