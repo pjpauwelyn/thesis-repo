@@ -290,7 +290,7 @@ def _run_one(
     }
 
 
-def _write_outputs(records: List[Dict[str, Any]], output_dir: Path) -> Tuple[Path, Path]:
+def _write_outputs(records: List[Dict[str, Any]], output_dir: Path, save_context: bool = False) -> Tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     txt_path  = output_dir / "phase3_answers_readable.txt"
     jsonl_path = output_dir / "phase3_answers.jsonl"
@@ -299,7 +299,7 @@ def _write_outputs(records: List[Dict[str, Any]], output_dir: Path) -> Tuple[Pat
     with jsonl_path.open("w", encoding="utf-8") as jf, \
          txt_path.open("w", encoding="utf-8") as tf:
         for i, rec in enumerate(records, start=1):
-            jf.write(json.dumps({
+            row = {
                 "q_index": i,
                 "question": rec["question"],
                 "expected_tier": rec["expected_tier"],
@@ -311,7 +311,10 @@ def _write_outputs(records: List[Dict[str, Any]], output_dir: Path) -> Tuple[Pat
                 "formatted_references": rec["formatted_references"],
                 "elapsed_s": rec["elapsed_s"],
                 "error": rec["error"],
-            }) + "\n")
+            }
+            if save_context:
+                row["enriched_context"] = rec.get("enriched_context", "")
+            jf.write(json.dumps(row) + "\n")
             n_excerpts = (
                 rec["excerpt_stats"].get("n_excerpts", 0)
                 if isinstance(rec["excerpt_stats"], dict) else 0
@@ -364,6 +367,8 @@ def main() -> int:
     ap.add_argument("--questions", type=lambda s: [int(x) for x in s.split(",")], default=None)
     ap.add_argument("--max-retries", type=int, default=3)
     ap.add_argument("--output-dir", default="tests/output")
+    ap.add_argument("--save-context", action="store_true",
+                    help="write enriched_context into output JSONL for post-run debugging")
     ap.add_argument("--csv", default=None)
     ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args()
@@ -507,7 +512,7 @@ def main() -> int:
             pool.shutdown(wait=False)
 
     elapsed = time.time() - t_start
-    txt_path, jsonl_path = _write_outputs(records, Path(args.output_dir))
+    txt_path, jsonl_path = _write_outputs(records, Path(args.output_dir), save_context=args.save_context)
 
     ok  = sum(1 for r in records if r["error"] is None)
     err = len(records) - ok
