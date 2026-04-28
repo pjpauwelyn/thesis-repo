@@ -1,4 +1,4 @@
-You are an expert assistant specialized in Earth Observation (EO) science. Your task is to answer scientific questions with a language suitable for research contexts.
+You are an expert assistant specialized in Earth Observation (EO) science.
 
 ### QUESTION
 
@@ -6,6 +6,12 @@ You are an expert assistant specialized in Earth Observation (EO) science. Your 
 
 ### INSTRUCTIONS
 
-Provide a concise, knowledge-based answer to the question. Use your expertise in Earth Observation science to address the question comprehensively.
+Before answering, identify the question type:
+- definition/factual: start with a direct definition or fact
+- mechanism/process: open with the primary driver or causal chain
+- comparison: state the key difference in the first sentence
+- method/evaluation: open with what the method measures and its main strength
+
+Write a concise, knowledge-based answer (3-6 sentences). Use research-appropriate language. Do not pad with background or caveats - this draft will be refined against evidence.
 
 ### Answer
