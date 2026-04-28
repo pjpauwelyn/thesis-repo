@@ -210,19 +210,40 @@ class GenerationAgent(BaseAgent):
 
     @staticmethod
     def _strip_references_section(text: str) -> str:
-        """Remove everything from the first '## References' heading onward.
+        """Remove everything from the first References heading onward.
+
+        A line qualifies as a References heading only if it is:
+          - a Markdown heading (starts with #), OR
+          - a short standalone label (<= 30 chars) exactly matching known
+            reference-section names (case-insensitive, ignoring * and _).
+
+        This two-gate check prevents false-positive truncation on prose lines
+        that merely contain the word "references" mid-sentence, e.g.:
+          "This references the methodology of Smith et al."
+          "Cross-references between datasets suggest..."
 
         Returns the original text unchanged if no heading is found.
         """
+        _REFERENCE_LABELS = frozenset([
+            "references",
+            "## references",
+            "# references",
+            "sources",
+            "bibliography",
+        ])
         lines = text.split("\n")
         for i, line in enumerate(lines):
-            stripped = line.strip().lstrip("#").strip().strip("*_ ")
-            if (
-                "references" in stripped.lower()
-                and not stripped.lstrip("*_ ").startswith("[")
-            ):
-                # Keep everything before this line, strip trailing blank lines.
-                return "\n".join(lines[:i]).rstrip()
+            raw = line.strip()
+            is_heading = raw.startswith("#")
+            is_label = (
+                len(raw) <= 30
+                and raw.lower().replace("*", "").replace("_", "").strip()
+                in _REFERENCE_LABELS
+            )
+            if is_heading or is_label:
+                cleaned = raw.lstrip("#").strip().strip("*_ ")
+                if "references" in cleaned.lower() and not cleaned.startswith("["):
+                    return "\n".join(lines[:i]).rstrip()
         return text
 
     # ------------------------------------------------------------------
