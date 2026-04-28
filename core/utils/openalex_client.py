@@ -13,7 +13,9 @@ _MAX_RETRIES = 2
 
 
 class OpenAlexClient:
-    """stateless client; all methods are classmethods."""
+    """stateless client with module-level URI cache."""
+
+    _cache: Dict[str, Optional[Dict[str, str]]] = {}  # module-level, persists per process
 
     @classmethod
     def fetch_metadata(cls, uri: str) -> Optional[Dict[str, str]]:
@@ -21,8 +23,13 @@ class OpenAlexClient:
         if not uri or "openalex.org" not in uri:
             return None
 
+        # Return cached result immediately (None means previously failed)
+        if uri in cls._cache:
+            return cls._cache[uri]
+
         work_id = uri.rstrip("/").split("/")[-1]
         if not work_id:
+            cls._cache[uri] = None
             return None
 
         delay = 1.0
@@ -38,20 +45,24 @@ class OpenAlexClient:
                     author = authorships[0].get("author", {}).get("display_name", "No author")
 
                 year = data.get("publication_year")
-                return {
+                result = {
                     "author": author,
                     "year": str(year) if year else "No year",
                     "title": data.get("title") or "",
                     "uri": uri,
                 }
+                cls._cache[uri] = result
+                return result
             except requests.exceptions.HTTPError as exc:
                 if exc.response is not None and exc.response.status_code == 404:
+                    cls._cache[uri] = None
                     return None
                 if attempt < _MAX_RETRIES - 1:
                     time.sleep(delay)
                     delay *= 2
                 else:
                     logger.warning(f"openalex fetch failed for {uri}: {exc}")
+                    cls._cache[uri] = None
                     return None
             except requests.exceptions.RequestException as exc:
                 if attempt < _MAX_RETRIES - 1:
@@ -59,9 +70,11 @@ class OpenAlexClient:
                     delay *= 2
                 else:
                     logger.warning(f"openalex fetch failed for {uri}: {exc}")
+                    cls._cache[uri] = None
                     return None
             except Exception as exc:
                 logger.error(f"unexpected error fetching {uri}: {exc}")
+                cls._cache[uri] = None
                 return None
 
 
