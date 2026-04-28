@@ -209,7 +209,10 @@ class Pipeline:
             )
 
         # -- 3. document filter -----------------------------------------------
+        # Retraction filter runs unconditionally so retracted papers are
+        # excluded even when the doc count is at or below doc_filter_min_keep.
         t0 = time.perf_counter()
+        docs = self._remove_retracted_papers(docs, question)
         full_docs: List[Dict] = list(docs)
         abstract_docs: List[Dict] = []
         drop_docs: List[Dict] = []
@@ -389,6 +392,14 @@ class Pipeline:
         # -- 7. build verified references + sequential renumbering -----------
         all_docs = full_docs + abstract_docs
         cited_indices = getattr(answer_obj, "cited_indices", set())
+
+        if not cited_indices:
+            log.warning(
+                "no inline citations extracted for '%s...' (rule=%s) -- "
+                "all %d docs will be attached as references",
+                question[:60], cfg.rule_hit, len(all_docs),
+            )
+
         fmt_refs, plain_refs, index_remap = self._build_verified_references(
             all_docs, cited_indices
         )
@@ -646,7 +657,8 @@ class Pipeline:
         question: str,
         cfg: PipelineConfig,
     ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-        docs = self._remove_retracted_papers(docs, question)
+        # Note: retraction filtering is done in pipeline.run() before this
+        # method is called, so docs here are already retraction-clean.
         from core.agents.ontology_agent import OntologyAgent
         filter_agent = OntologyAgent(
             self._llm("mistral-small-latest", 0.0),
