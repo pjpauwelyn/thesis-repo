@@ -256,9 +256,10 @@ def test_phase2_filter() -> None:
 # ---------------------------------------------------------------------------
 
 def _load_completed_questions(jsonl_path: Path) -> Set[str]:
-    """Return the set of question strings already saved in the JSONL output.
+    """Return the set of lowercase question strings already saved in the JSONL output.
 
-    Used to skip completed questions when resuming an interrupted run.
+    Keys are lowercased to match the deduplication applied to _ROWS, so a
+    question that was saved with different casing is still recognised as done.
     Returns an empty set if the file does not exist.
     """
     done: Set[str] = set()
@@ -272,7 +273,7 @@ def _load_completed_questions(jsonl_path: Path) -> Set[str]:
                     continue
                 try:
                     rec = json.loads(line)
-                    q = rec.get("question", "").strip()
+                    q = rec.get("question", "").strip().lower()
                     if q:
                         done.add(q)
                 except json.JSONDecodeError:
@@ -368,6 +369,10 @@ def test_phase3_generation() -> None:
     - answer length > 50 chars
     - rule_hit is a valid tier string
 
+    Questions that raise an exception are recorded as error entries and
+    skipped on subsequent resumes; the overall test fails after all questions
+    have been attempted if any errors occurred.
+
     Timeout: 7200s (2 h) for ~70 questions including tier-3 (~360s each).
     """
     if not _ROWS:
@@ -381,7 +386,7 @@ def test_phase3_generation() -> None:
     txt_path   = OUTPUT_DIR / "phase3_answers_readable.txt"
 
     # ------------------------------------------------------------------
-    # resume: load already-completed questions
+    # resume: load already-completed questions (lowercase keys)
     # ------------------------------------------------------------------
     completed: Set[str] = _load_completed_questions(jsonl_path)
     n_skip = len(completed)
@@ -391,8 +396,6 @@ def test_phase3_generation() -> None:
             n_skip, len(all_questions) - n_skip,
         )
 
-    # Fix 6 adds tier-1-def-parse-rescue for parse-failure definitional questions.
-    # Fix 7 (branch D) keeps mechanism+mid-meth at tier-3 (already in set).
     valid_tiers = {
         "tier-1", "tier-1-def", "tier-1-def-parse-rescue",
         "tier-2", "tier-2a", "tier-2b",
@@ -403,7 +406,6 @@ def test_phase3_generation() -> None:
     with open(jsonl_path, "a", encoding="utf-8") as jf, \
          open(txt_path,   "a", encoding="utf-8") as tf:
 
-        # write a run header so individual runs are distinguishable in the txt
         import datetime
         run_ts = datetime.datetime.now().isoformat(timespec="seconds")
         if n_skip:
@@ -415,8 +417,9 @@ def test_phase3_generation() -> None:
         n_failed = 0
 
         for i, (question, aql_results_str) in enumerate(all_questions, start=1):
-            if question.strip() in completed:
-                continue  # already saved -- skip
+            # Skip questions already recorded (case-insensitive match).
+            if question.strip().lower() in completed:
+                continue
 
             docs: List[Dict[str, Any]] = []
             for row in _ROWS:
@@ -448,8 +451,8 @@ def test_phase3_generation() -> None:
                 err_msg = str(exc)
                 n_failed += 1
                 log_question_end(log, i, status, time.perf_counter() - t0, err_msg)
-                # write a failure record so the question is not re-attempted
-                # on the next run (avoids infinite retries on hard failures)
+                # Write a failure record so this question is not re-attempted
+                # on the next resume run.
                 fail_record = {
                     "q_index":              i,
                     "question":             question,
@@ -464,7 +467,7 @@ def test_phase3_generation() -> None:
                 }
                 jf.write(json.dumps(fail_record) + "\n")
                 jf.flush()
-                raise  # still fail the test so pytest reports it
+                continue  # isolate failure; remaining questions still run
 
             elapsed = time.perf_counter() - t0
             log_question_end(log, i, status, elapsed)
@@ -473,7 +476,7 @@ def test_phase3_generation() -> None:
             record = {
                 "q_index":                i,
                 "question":               question,
-                "expected_tier":          "N/A",  # no tier target in full-run mode
+                "expected_tier":          "N/A",
                 "actual_tier":            ans.rule_hit,
                 "use_draft":              ans.pipeline_config.use_draft if ans.pipeline_config else None,
                 "answer":                 ans.answer,
@@ -483,7 +486,7 @@ def test_phase3_generation() -> None:
                 "formatted_references":   ans.formatted_references,
             }
             jf.write(json.dumps(record) + "\n")
-            jf.flush()  # flush after every question so progress is not lost
+            jf.flush()
 
             tf.write("=" * 60 + "\n")
             tf.write(
@@ -505,7 +508,7 @@ def test_phase3_generation() -> None:
                 f"excerpts={ans.excerpt_stats.get('n_excerpts', 0)}\n"
             )
             tf.write("=" * 60 + "\n\n")
-            tf.flush()  # flush after every question
+            tf.flush()
 
             assert len(ans.answer) > 50, (
                 f"answer too short ({len(ans.answer)} chars) for: {question[:60]}"
@@ -519,3 +522,7 @@ def test_phase3_generation() -> None:
         n_done, n_skip, n_failed,
     )
     print(f"\nPhase 3 output: {txt_path}  (new={n_done} skip={n_skip} fail={n_failed})")
+
+    assert n_failed == 0, (
+        f"{n_failed} question(s) raised exceptions -- see phase3_answers.jsonl for details"
+    )
