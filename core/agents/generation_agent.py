@@ -88,6 +88,7 @@ class GenerationAgent(BaseAgent):
         ontology: Optional[DynamicOntology] = None,
         context_cap: int = _CONTEXT_WINDOW_60PCT_CHARS,
         max_output_tokens: int = 700,
+        draft_max_tokens: int = 1200,
         system_prompt: str = "",
         use_draft: bool = True,
         generation_prompt: str = "generation_structured.txt",
@@ -101,6 +102,8 @@ class GenerationAgent(BaseAgent):
                 context-grounded generation. Set to False for high-context
                 tiers (tier-2, tier-3) where a draft anchors the model to
                 parametric knowledge and fights against context grounding.
+            draft_max_tokens: token budget for the zero-shot draft call only.
+                irrelevant when use_draft=False. default 1200.
             generation_prompt: filename of the generation prompt template to
                 use, relative to prompt_dir. Passed from cfg.generation_prompt
                 by the pipeline so each tier uses its declared prompt.
@@ -140,7 +143,7 @@ class GenerationAgent(BaseAgent):
         if use_draft:
             # step 1: zero-shot draft (question only, no system prompt)
             zero_prompt = self.zero_shot_template.replace("{question}", question)
-            draft = self._call_llm(zero_prompt, max_tokens=max_output_tokens)
+            draft = self._call_llm(zero_prompt, max_tokens=draft_max_tokens)
         else:
             # skip draft -- context-grounded generation only
             draft = ""
@@ -212,38 +215,29 @@ class GenerationAgent(BaseAgent):
     def _strip_references_section(text: str) -> str:
         """Remove everything from the first References heading onward.
 
-        A line qualifies as a References heading only if it is:
-          - a Markdown heading (starts with #), OR
-          - a short standalone label (<= 30 chars) exactly matching known
-            reference-section names (case-insensitive, ignoring * and _).
-
-        This two-gate check prevents false-positive truncation on prose lines
-        that merely contain the word "references" mid-sentence, e.g.:
-          "This references the methodology of Smith et al."
-          "Cross-references between datasets suggest..."
+        Uses an exact-match set to identify reference section headings.
+        This prevents false-positive truncation on prose lines that merely
+        contain the word 'references' mid-sentence, e.g.:
+          'This references the methodology of Smith et al.'
+          'Cross-references between datasets suggest...'
 
         Returns the original text unchanged if no heading is found.
         """
-        _REFERENCE_LABELS = frozenset([
-            "references",
+        # exact set of heading strings that signal a reference section.
+        # strict exact-match prevents false-positive truncation on prose
+        # lines containing the word "references" mid-sentence.
+        _EXACT_HEADINGS = frozenset([
             "## references",
             "# references",
+            "references",
             "sources",
             "bibliography",
         ])
         lines = text.split("\n")
         for i, line in enumerate(lines):
-            raw = line.strip()
-            is_heading = raw.startswith("#")
-            is_label = (
-                len(raw) <= 30
-                and raw.lower().replace("*", "").replace("_", "").strip()
-                in _REFERENCE_LABELS
-            )
-            if is_heading or is_label:
-                cleaned = raw.lstrip("#").strip().strip("*_ ")
-                if "references" in cleaned.lower() and not cleaned.startswith("["):
-                    return "\n".join(lines[:i]).rstrip()
+            normalised = line.strip().lower().replace("*", "").replace("_", "").strip()
+            if normalised in _EXACT_HEADINGS:
+                return "\n".join(lines[:i]).rstrip()
         return text
 
     # ------------------------------------------------------------------
@@ -261,19 +255,22 @@ class GenerationAgent(BaseAgent):
     ) -> str:
         prompt = template
         prompt = prompt.replace("{question}", question)
-        # When use_draft=False the draft is empty string; replace placeholder
-        # so templates that include {draft_answer} don't break.
-        prompt = prompt.replace("{draft_answer}", draft if use_draft else "")
+        # when use_draft=True inject a labelled draft block so the model has
+        # clear context about its origin; when False inject empty string so
+        # the {draft_answer} placeholder in the prompt collapses cleanly.
+        if use_draft and draft:
+            draft_block = (
+                "You produced the following draft answer using your training knowledge. "
+                "Use it as a starting point and refine it with the CONTEXT below:\n\n"
+                + draft
+            )
+        else:
+            draft_block = ""
+        prompt = prompt.replace("{draft_answer}", draft_block)
         prompt = prompt.replace(
             "{context}",
             context.strip() if context else "No additional context available.",
         )
-
-        # Strip unfilled directive placeholders used in generation_structured.txt.
-        # These are currently not populated by the pipeline; removing them keeps
-        # the prompt clean without altering any instructions.
-        prompt = prompt.replace("{answer_shape_directives}", "")
-        prompt = prompt.replace("{synthesis_mode_directives}", "")
 
         if ontology and ontology.attribute_value_pairs:
             ont_lines = [
