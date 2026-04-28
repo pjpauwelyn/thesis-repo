@@ -122,7 +122,7 @@ class PipelineConfig(BaseModel):
     # prompts
     refinement_prompt: str = "refinement_1pass_refined_exp4.txt"
     # D2/D3: default was 'generation_prompt_exp4.txt' (deleted in D1).
-    # Changed to 'generation_structured.txt' — the canonical structured prompt.
+    # Changed to 'generation_structured.txt' -- the canonical structured prompt.
     # tier-1/fallback rules in rules.yaml override this to 'generation_direct.txt';
     # all other tiers use 'generation_structured.txt', matching their declaration.
     generation_prompt: str = "generation_structured.txt"
@@ -146,7 +146,9 @@ class PipelineConfig(BaseModel):
     # _CONTEXT_CAP_CHARS in router.py -- those are the source of truth;
     # this default must stay in sync with them.
     gen_context_cap: int = 307_200
-    max_output_tokens: int = 700
+    max_output_tokens: int = 2000
+    # token budget for the zero-shot draft call only; irrelevant when use_draft=False
+    draft_max_tokens: int = 1200
     system_prompt_modifier: str = ""
 
     # generation strategy
