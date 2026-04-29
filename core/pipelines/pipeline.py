@@ -448,7 +448,7 @@ class Pipeline:
                 "the spatial/temporal scope it applies to, and an inline citation [N]."
             )
             rules.append(
-                "Do not paraphrase numeric values — state them exactly as reported in the sources."
+                "Do not paraphrase numeric values -- state them exactly as reported in the sources."
             )
         if (getattr(profile, "spatial_specificity", 0.0) or 0.0) >= 0.5:
             rules.append(
@@ -573,7 +573,7 @@ class Pipeline:
                 formatted.append(line)
                 plain.append(re.sub(r"^\[\d+\]\s*", "", line))
             else:
-                fallback_title = title or "[No title \u2014 see URI]"
+                fallback_title = title or "[No title -- see URI]"
                 line = f"[{seq}] {fallback_title}. {uri}." if uri else f"[{seq}] {fallback_title}."
                 formatted.append(line)
                 plain.append(re.sub(r"^\[\d+\]\s*", "", line))
@@ -610,7 +610,7 @@ class Pipeline:
         current = [_key(d) for d in full_docs] + [_key(d) for d in abstract_docs]
         if len(snapshot) != len(current):
             raise RuntimeError(
-                f"Pipeline._assert_doc_block_ref_alignment: list length mismatch — "
+                f"Pipeline._assert_doc_block_ref_alignment: list length mismatch -- "
                 f"snapshot={len(snapshot)}, current={len(current)}."
             )
         for pos, (snap_key, cur_key) in enumerate(zip(snapshot, current), 1):
@@ -762,7 +762,17 @@ class Pipeline:
         excerpts: List[Any],
     ) -> str:
         from core.utils.fulltext_indexer import FullTextIndexer
-        return FullTextIndexer.render_documents_block(full_docs, abstract_docs, excerpts)
+        # Build aql_lookup from the docs themselves so render_documents_block
+        # can enrich title/abstract/year/authors without a live DB call.
+        all_docs = list(full_docs) + list(abstract_docs)
+        aql_lookup: Dict[str, Dict[str, Any]] = {
+            doc["uri"]: doc
+            for doc in all_docs
+            if doc.get("uri")
+        }
+        return FullTextIndexer.render_documents_block(
+            full_docs, abstract_docs, excerpts, aql_lookup
+        )
 
     @staticmethod
     def _build_query_hint(question: str, profile: QuestionProfile) -> str:
