@@ -391,7 +391,12 @@ class Pipeline:
 
         # -- 7. build verified references + sequential renumbering -----------
         all_docs = full_docs + abstract_docs
-        cited_indices = getattr(answer_obj, "cited_indices", set())
+
+        # Normalise first: collapses [doc N] -> [N] and fixes decimal edge cases
+        # before cited_indices extraction. answer_obj.cited_indices is derived
+        # from the pre-normalised text so we re-extract here from the clean body.
+        normalised_body = self._normalize_citation_format(answer_obj.answer)
+        cited_indices = self._extract_cited_indices(normalised_body)
 
         if not cited_indices:
             log.warning(
@@ -403,7 +408,6 @@ class Pipeline:
         fmt_refs, plain_refs, index_remap = self._build_verified_references(
             all_docs, cited_indices
         )
-        normalised_body = self._normalize_citation_format(answer_obj.answer)
         answer_text = self._renumber_inline_citations(normalised_body, index_remap)
         answer_text = re.sub(r'(\[\d+\])+\s*$', '', answer_text).rstrip()
 
@@ -473,6 +477,10 @@ class Pipeline:
 
     @staticmethod
     def _normalize_citation_format(text: str) -> str:
+        # Collapse [doc N] / [Doc N] tokens emitted by the refinement agent
+        # into plain [N] so all downstream passes see a uniform format.
+        text = re.sub(r"\[(?:doc|Doc)\s+(\d+)\]", r"[\1]", text)
+
         def _expand_line_start(m: re.Match) -> str:
             nums = re.split(r"[\s,]+", m.group(1).strip())
             valid = [n for n in nums if n.isdigit() and 1 <= int(n) <= 30]
@@ -499,13 +507,31 @@ class Pipeline:
                 return m.group(0)
             return m.group(1) + "".join(f"[{n}]" for n in valid)
 
+        # Lookahead excludes `.\d` so a decimal like 13.5 is never mis-parsed
+        # into citation [13] followed by orphaned .5.
         text = re.sub(
             r"([a-zA-Z\)\]%] )(\d{1,2}(?:\s*,\s*\d{1,2}){0,4})"
-            r"(?=\s*(?:[\.\\n,;]|$|\s*[-]{2,}|\s*\[))",
+            r"(?=\s*(?:(?:\.(?!\d))|\n|,|;|$|\s*[-]{2,}|\s*\[))",
             _expand_bare_cluster,
             text,
         )
         return text
+
+    @staticmethod
+    def _extract_cited_indices(answer_body: str) -> Set[int]:
+        """Return the set of 1-based integer doc indices cited inline.
+
+        Operates on the pipeline-normalised body (after [doc N] -> [N]
+        conversion) so all citation forms are captured before
+        _build_verified_references runs.
+        """
+        indices: Set[int] = set()
+        for bracket in re.findall(r"\[([\d,\s]+)\]", answer_body):
+            for token in bracket.split(","):
+                token = token.strip()
+                if token.isdigit():
+                    indices.add(int(token))
+        return indices
 
     @staticmethod
     def _build_verified_references(
