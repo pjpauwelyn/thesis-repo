@@ -295,6 +295,10 @@ def _pick_all_questions_with_docs() -> List[Tuple[str, str]]:
         aql = row.get("aql_results", "") or ""
         if q and aql.strip():
             result.append((q, aql))
+    # Sanity check: no duplicate questions (should be guaranteed by _ROWS dedup)
+    assert len(result) == len({q for q, _ in result}), (
+        "duplicate question strings in all_questions -- check _ROWS deduplication"
+    )
     return result
 
 
@@ -421,11 +425,17 @@ def test_phase3_generation() -> None:
             if question.strip().lower() in completed:
                 continue
 
+            # Robust row lookup: use case-insensitive, strip-normalised match
+            # and prefer the first row in CSV order that actually has docs.
+            # This avoids false matches when question strings are whitespace-
+            # variant duplicates of each other.
             docs: List[Dict[str, Any]] = []
             for row in _ROWS:
-                if _get_question(row) == question:
-                    docs = _parse_docs(row)
-                    break
+                if _get_question(row).strip().lower() == question.strip().lower():
+                    candidate = _parse_docs(row)
+                    if candidate:          # prefer the first row that actually has docs
+                        docs = candidate
+                        break
 
             # Clear LLM client cache between questions to prevent cross-question
             # draft bleed (stale LLM client conversation state).
@@ -497,12 +507,6 @@ def test_phase3_generation() -> None:
             tf.write("-" * 60 + "\n")
             tf.write(ans.answer + "\n")
             tf.write("-" * 60 + "\n")
-            # Guard: ans.answer already contains ## References (appended by
-            # pipeline.py). Only write formatted_references separately when
-            # the answer does NOT already include the block, to prevent the
-            # double-reference-block artifact seen in phase3_answers_readable.txt.
-            if "## References" not in ans.answer:
-                tf.write("\n".join(ans.formatted_references) + "\n")
             tf.write(
                 f"context={len(ans.enriched_context)} chars | "
                 f"excerpts={ans.excerpt_stats.get('n_excerpts', 0)}\n"
