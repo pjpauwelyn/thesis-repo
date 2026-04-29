@@ -409,6 +409,9 @@ class Pipeline:
             all_docs, cited_indices
         )
         answer_text = self._renumber_inline_citations(normalised_body, index_remap)
+        # Collapse adjacent identical brackets produced by title-dedup
+        # (e.g. [3][3] -> [3] when two old indices map to the same new index).
+        answer_text = re.sub(r'(\[\d+\])(?:\1)+', r'\1', answer_text)
         answer_text = re.sub(r'(\[\d+\])+\s*$', '', answer_text).rstrip()
 
         if fmt_refs:
