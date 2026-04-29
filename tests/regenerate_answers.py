@@ -45,35 +45,80 @@ log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # questions flagged for regeneration
+#
+# Criteria for inclusion (any one is sufficient):
+#   WRONG_DOCS  – wrong-domain documents leaked into context or reference list
+#   TIER_M      – routed to tier-m (generic intro question; specialist pass needed)
+#   SHALLOW     – thin answer: ≤3 usable references or visibly incomplete body
 # ---------------------------------------------------------------------------
 
 REGEN_QUESTIONS: List[str] = [
-    # --- forced (critical bugs) ---
-    "how do variations in the geomagnetic field affect rock magnetic properties"
-    " and what are the implications for palaeomagnetic studies?",
+    # Q13 – TIER_M: intro question; frozen-soil refs leaked into reference list
+    "what is solar activity and how does it influence the earth's ionosphere?",
+
+    # Q14 – TIER_M: only 5 docs retrieved, 3 alreadyfailed → sparse context
+    "how does solar activity influence the dynamics of the earth's ionosphere"
+    " and magnetosphere?",
+
+    # Q15 – TIER_M + WRONG_DOCS: sea-turtle paper in reference list
     "what is the relationship between solar activity levels and variations in"
     " ionosphere dynamics, particularly during solar maximum and minimum phases?",
-    "what is the relationship between surface radiative properties and the rate"
-    " of thawing in frozen ground?",
-    "how do radar and lidar sensors compare in their ability to characterise"
-    " vegetation structure and terrain morphology?",
-    "how does lidar technology compare to other remote sensing methods in its"
-    " ability to accurately measure surface elevations?",
-    "how does the chemical composition of groundwater change in response to"
-    " glacier retreat and permafrost thaw?",
-    "how do ocean circulation patterns influence the distribution of heat and"
-    " salinity in the deep ocean?",
-    # --- worth a second try (medium quality / contamination) ---
+
+    # Q17 – TIER_M + SHALLOW: only 6 refs; irrigation table appeared mid-answer
+    "how do the surface radiative properties of permafrost regions compare to"
+    " those of seasonally frozen ground in terms of their influence on soil"
+    " temperature dynamics?",
+
+    # Q18 – TIER_M + SHALLOW: tier-1-def with only 3 refs; answer very thin
     "what are the radiative properties of the land surface that influence the"
     " scattering, absorption, and reflection of electromagnetic radiation?",
-    "what is lidar and how is it used in remote sensing applications?",
+
+    # Q19 – TIER_M: answer good but microwave irrigation docs leaked into context
+    "how does the reflectivity of frozen ground influence surface radiative"
+    " properties in permafrost regions?",
+
+    # Q20 – TIER_M + WRONG_DOCS: irrigation/cotton farming table injected mid-answer
+    "what is the relationship between surface radiative properties and the rate"
+    " of thawing in frozen ground?",
+
+    # Q27 – TIER_M + SHALLOW: only 2 geographic regions; no long-term data
+    "how do the chemical characteristics of groundwater compare to those of"
+    " surface water in regions influenced by glacial melt?",
+
+    # Q29 – TIER_M + WRONG_DOCS: aerosol-cloud indirect-effect docs leaked
+    "how does groundwater contamination influence the chemical characteristics"
+    " of nearby surface water systems?",
+
+    # Q34 – TIER_M + WRONG_DOCS: 4/5 docs alreadyfailed; sea-turtle paper present
+    "how does ocean circulation influence the distribution of chemical"
+    " constituents in seawater?",
+
+    # Q35 – TIER_M + WRONG_DOCS: 4/6 docs failed; same North-Pacific doc as Q34
+    "what is the relationship between ocean circulation patterns and the"
+    " distribution of chemical constituents in seawater?",
+
+    # Q36 – TIER_M + WRONG_DOCS: ice-shelf/permafrost/sea-ice context injected
+    "how do variations in vegetation structure influence the genomic and"
+    " metabolomic profiles of associated microbial communities in different"
+    " ecological systems?",
+
+    # Q45 – SHALLOW: irrigation docs leaked into adjacent question context
+    "what is the relationship between soil moisture levels and crop yield"
+    " variability in agricultural plant science?",
+
+    # Q59 – TIER_M + WRONG_DOCS: irrigation/cotton/crop docs in context
+    "how does the melting of sea ice influence ocean circulation patterns?",
+
+    # Q60 – TIER_M + WRONG_DOCS: soil moisture + cotton irrigation docs leaked
+    "what is the relationship between changes in sea ice extent and the"
+    " stability of glaciers and ice sheets in polar regions?",
 ]
 
 # normalise once at import time for fast lookup
 _REGEN_SET: Set[str] = {q.strip().lower() for q in REGEN_QUESTIONS}
 
-assert len(_REGEN_SET) == 9, (
-    f"Expected exactly 9 unique REGEN_QUESTIONS entries, got {len(_REGEN_SET)}"
+assert len(_REGEN_SET) == 15, (
+    f"Expected exactly 15 unique REGEN_QUESTIONS entries, got {len(_REGEN_SET)}"
 )
 
 # ---------------------------------------------------------------------------
