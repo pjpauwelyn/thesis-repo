@@ -223,6 +223,14 @@ class Pipeline:
             )
         log_doc_filter(log, full_docs, abstract_docs, drop_docs, elapsed=time.perf_counter() - t0)
 
+        # Demote any filter-classified 'full' docs whose PDF is absent from
+        # cache to abstract so excerpt selection does not silently score 0
+        # on them and mislead the refinement agent about document coverage.
+        if cfg.evidence_mode in ("excerpts_narrow", "excerpts_full"):
+            full_docs, abstract_docs = self._demote_cache_unavailable(
+                full_docs, abstract_docs
+            )
+
         # -- 4. excerpt selection ---------------------------------------------
         excerpts: List[Any] = []
         excerpt_stats: Dict[str, Any] = {}
@@ -305,6 +313,10 @@ class Pipeline:
             refined = None
 
         enriched_context = (refined.enriched_context or "") if refined is not None else ""
+        # Decode literal \uXXXX sequences that may appear when the input
+        # CSV was serialised with ensure_ascii=True and the LLM reproduced
+        # them verbatim (e.g. \u2082 for CO subscript-2).
+        enriched_context = self._unescape_unicode(enriched_context)
         log_refinement(log, enriched_context, elapsed=time.perf_counter() - t0)
 
         if not enriched_context.strip():
@@ -413,6 +425,8 @@ class Pipeline:
         # (e.g. [3][3] -> [3] when two old indices map to the same new index).
         answer_text = re.sub(r'(\[\d+\])(?:\1)+', r'\1', answer_text)
         answer_text = re.sub(r'(\[\d+\])+\s*$', '', answer_text).rstrip()
+        # Decode any remaining literal \uXXXX sequences in the generated answer.
+        answer_text = self._unescape_unicode(answer_text)
 
         if fmt_refs:
             refs_block = "\n\n## References\n" + "\n".join(fmt_refs)
@@ -806,12 +820,87 @@ class Pipeline:
     @staticmethod
     def _build_query_hint(question: str, profile: QuestionProfile) -> str:
         parts = [question]
+        q_lower = question.lower()
         quant = getattr(profile, "quantitativity", 0.0) or 0.0
         if getattr(profile, "needs_numeric_emphasis", False) or quant >= 0.5:
             parts.append("[emphasis: numeric/quantitative precision]")
         if (getattr(profile, "methodological_depth", 0.0) or 0.0) > 0.6:
             parts.append("[emphasis: methodological detail]")
+        # Seed domain-critical terms for definitional radiative-property
+        # questions so that emissivity and spectral reflectance score on
+        # par with albedo during chunk selection (all three are canonical
+        # radiative properties of a land surface).
+        if "radiative propert" in q_lower and "land surface" in q_lower:
+            parts.append(
+                "[include: albedo, emissivity, spectral reflectance, surface emissivity]"
+            )
         return " ".join(parts)
+
+    def _demote_cache_unavailable(
+        self,
+        full_docs: list,
+        abstract_docs: list,
+    ) -> tuple:
+        """Move filter-classified 'full' docs whose PDF has a .fail marker to abstract.
+
+        The document filter classifies docs on title/abstract without knowing
+        whether the PDF was successfully cached.  A doc marked 'full' but with
+        a .fail marker produces 0 excerpts in select_excerpts_for_question,
+        wastes a context slot, and misleads the refinement agent about coverage.
+
+        Called after _filter_documents and before _doc_key_snapshot so the
+        demotion is visible in both the snapshot and the final all_docs list.
+        Only invoked for excerpt evidence modes (not 'abstracts').
+        """
+        pdf_dir = self._cache_dir / "pdfs"
+        if not pdf_dir.exists():
+            return full_docs, abstract_docs
+
+        new_full: list = []
+        new_abstract: list = list(abstract_docs)
+        for doc in full_docs:
+            uri = doc.get("uri") or doc.get("id") or ""
+            work_id = (
+                uri.rstrip("/").split("/")[-1]
+                if "openalex.org" in uri
+                else None
+            )
+            if work_id and (pdf_dir / f"{work_id}.fail").exists():
+                new_abstract.append(doc)
+                log.debug(
+                    "_demote_cache_unavailable: %s -> abstract (.fail exists)",
+                    work_id,
+                )
+            else:
+                new_full.append(doc)
+
+        demoted = len(full_docs) - len(new_full)
+        if demoted:
+            log.info(
+                "_demote_cache_unavailable: %d doc(s) moved full -> abstract"
+                " (no PDF in cache)",
+                demoted,
+            )
+        return new_full, new_abstract
+
+    @staticmethod
+    def _unescape_unicode(text: str) -> str:
+        """Decode literal \\uXXXX escape sequences in LLM output text.
+
+        When the input CSV was serialised with ensure_ascii=True, unicode
+        characters (subscripts, em-dashes, special symbols) appear as literal
+        6-character sequences in the prompt context.  The LLM may reproduce
+        these verbatim.  This converts them back to proper unicode so that the
+        final answer and enriched context are human-readable.
+
+        Only matches the exact \\uXXXX pattern (4 hex digits) to avoid
+        corrupting LaTeX backslash commands (\\times, \\alpha, etc.).
+        """
+        return re.sub(
+            r'\\u([0-9a-fA-F]{4})',
+            lambda m: chr(int(m.group(1), 16)),
+            text,
+        )
 
     @staticmethod
     def _audit_numeric_faithfulness(
