@@ -14,6 +14,11 @@ from core.utils.data_models import DynamicOntology
 # truth; rules.yaml and router.py carry the same value for config clarity.
 _CONTEXT_WINDOW_60PCT_CHARS = 307_200  # 76_800 tokens x 4
 
+# Maximum doc index the LLM is allowed to cite.  Indices above this cap are
+# considered hallucinated and are dropped before they reach the reference
+# builder.  Consistent with the existing guard in _normalize_citation_format.
+_MAX_CITE_INDEX = 30
+
 
 @dataclass
 class Answer:
@@ -198,13 +203,20 @@ class GenerationAgent(BaseAgent):
         ([1,2,3] or [1, 2, 3]) that the upstream citation-format guard
         prevents from being written, but which may appear in pre-existing
         CSV docs or old test fixtures.
+
+        Indices above _MAX_CITE_INDEX (30) are treated as hallucinated and
+        dropped so they never reach _build_verified_references without a
+        corresponding index_remap entry, which would leave an orphan [N]
+        bracket in the final answer body.
         """
         indices: Set[int] = set()
-        for bracket in re.findall(r"\[([\d,\s]+)\]", answer_body):
+        for bracket in re.findall(r"\[([\\d,\\s]+)\]", answer_body):
             for token in bracket.split(","):
                 token = token.strip()
                 if token.isdigit():
-                    indices.add(int(token))
+                    n = int(token)
+                    if 1 <= n <= _MAX_CITE_INDEX:
+                        indices.add(n)
         return indices
 
     # ------------------------------------------------------------------
@@ -255,11 +267,14 @@ class GenerationAgent(BaseAgent):
     ) -> str:
         prompt = template
         prompt = prompt.replace("{question}", question)
-        # when use_draft=True inject a labelled draft block so the model has
-        # clear context about its origin; when False inject empty string so
-        # the {draft_answer} placeholder in the prompt collapses cleanly.
+        # Issue 1 fix: use a clearly labelled INITIAL DRAFT block so the
+        # model unambiguously treats this content as a draft to refine, not
+        # as a persona or role definition.  When use_draft=False, draft_block
+        # is an empty string and the {draft_answer} placeholder collapses
+        # cleanly, leaving no confusing section header in the prompt.
         if use_draft and draft:
             draft_block = (
+                "### INITIAL DRAFT\n\n"
                 "You produced the following draft answer using your training knowledge. "
                 "Use it as a starting point and refine it with the CONTEXT below:\n\n"
                 + draft
