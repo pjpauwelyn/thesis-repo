@@ -521,7 +521,20 @@ class Pipeline:
         unambiguous: they cannot appear in prose, decimal numbers, table
         references, quantities like 4,000, or year values. Out-of-range
         indices (N > _MAX_CITE_INDEX) are silently dropped.
+
+        Pre-pass: the model occasionally emits <<CITE:1,6>> (comma-separated
+        multi-cite) instead of <<CITE:1>><<CITE:6>>, particularly inside
+        markdown table cells. The pre-pass expands these to individual
+        single-integer sentinels before the main extraction loop runs.
         """
+        # Pre-pass: expand <<CITE:N,M,...>> → <<CITE:N>><<CITE:M>>...
+        def _expand_multi(m: re.Match) -> str:
+            parts = re.split(r"[\s,]+", m.group(1).strip())
+            return "".join(f"<<CITE:{p}>>" for p in parts if p.isdigit())
+
+        text = re.sub(r"<<CITE:([\d,\s]+)>>", _expand_multi, text)
+
+        # Main extraction: single-integer sentinels only.
         indices: Set[int] = set()
 
         def _replace(m: re.Match) -> str:
