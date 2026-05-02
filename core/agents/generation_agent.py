@@ -269,14 +269,22 @@ class GenerationAgent(BaseAgent):
     ) -> str:
         prompt = template
         prompt = prompt.replace("{question}", question)
-        # When use_draft=True, inject a clearly labelled INITIAL DRAFT block
-        # so the model unambiguously treats this content as a draft to refine,
-        # not as a persona or role definition. When use_draft=False (or draft
-        # is empty), draft_block is an empty string and the {draft_answer}
-        # placeholder collapses cleanly, leaving no confusing section header.
+        # The prompt templates already contain '### INITIAL DRAFT (refine against
+        # the CONTEXT below)' as the section heading for the {draft_answer} slot.
+        # The injected block must NOT prepend another '### INITIAL DRAFT' heading --
+        # that would produce a duplicate nested heading in the rendered prompt:
+        #
+        #   ### INITIAL DRAFT (refine against the CONTEXT below)  <- template
+        #   ### INITIAL DRAFT                                       <- duplicate (removed)
+        #   You produced the following draft answer...
+        #
+        # When use_draft=True, inject only the explanatory preamble + draft text
+        # directly under the template's existing heading.
+        # When use_draft=False (or draft is empty), draft_block is an empty string
+        # so {draft_answer} collapses cleanly; the template heading remains but has
+        # no body, which the model treats as a no-op.
         if use_draft and draft:
             draft_block = (
-                "### INITIAL DRAFT\n\n"
                 "You produced the following draft answer using your training knowledge. "
                 "Use it as a starting point and refine it with the CONTEXT below:\n\n"
                 + draft
@@ -317,7 +325,7 @@ class GenerationAgent(BaseAgent):
 
         system is forwarded to llm.invoke() as a proper kwarg so both
         MistralLLMWrapper and OpenRouterLLMWrapper insert it as a
-        {role: system} message before the user turn — not as raw user text.
+        {role: system} message before the user turn -- not as raw user text.
         max_tokens is forwarded so tier-specific token ceilings are honoured
         per call rather than only at LLM construction time.
         """
