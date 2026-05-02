@@ -349,6 +349,13 @@ def test_phase3_generation() -> None:
                 log.debug("phase3: skipping already-completed Q%d '%s...'", i, question[:50])
                 continue
 
+            # Reset the LLM client cache before every question so each question
+            # gets a fresh HTTP connection.  Without this, Mistral's httpx
+            # connection pool can carry a half-written stream from Q(n-1) into
+            # Q(n) when the previous stream was interrupted (rate-limit retry,
+            # timeout), producing content bleed between questions.
+            _PIPELINE.reset_llm_cache()
+
             log_question_start(log, i, question)
             t0 = time.perf_counter()
 

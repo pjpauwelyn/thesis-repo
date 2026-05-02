@@ -108,6 +108,12 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
 
         Fix 2: abstract preview is capped at _ABSTRACT_PREVIEW_CAP chars
         (named constant) instead of the previous 200-char hard-code.
+
+        Fix (doc-order parity): after the JSON round-trip we verify that the
+        parsed list length matches the input so a silently dropped document
+        (due to a non-serialisable field coerced to null by json.dumps) does
+        not shift every subsequent index and cause _build_verified_references
+        to assign the wrong paper to a cited [N] marker.
         """
         from core.utils.aql_parser import parse_aql_results
 
