@@ -163,11 +163,15 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
     def _format_documents_for_references(self, documents: List[Dict[str, Any]]) -> str:
         """Build a clean numbered reference list for the {documents} prompt slot.
 
-        Prepends a CITATION FORMAT instruction so the downstream generation
-        LLM writes [1] [2] [3] rather than [1,2,3] or [1, 2, 3].  This
-        eliminates grouped citation markers at the source, making the
-        post-hoc _extract_cited_indices + _renumber_inline_citations pipeline
-        fully reliable without any regex extension.
+        Prepends a CITATION FORMAT instruction directing the downstream
+        generation LLM to write <<CITE:N>> sentinel markers instead of [N]
+        square brackets. Sentinels are unambiguous tokens that cannot appear
+        in natural prose (no collision with years, Table 3, 4,000, decimals,
+        etc.), which eliminates the entire class of post-hoc normalisation
+        failures handled by the legacy _normalize_citation_format path.
+
+        The pipeline preserves full legacy [N] fallback handling for backward
+        compatibility with old fixtures and cached runs.
 
         Every document that survived the filter gets a line.  OpenAlex metadata
         is fetched when possible; if the fetch fails we still emit a fallback
@@ -210,8 +214,10 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
                 formatted.append(ref)
 
         header = (
-            "CITATION FORMAT: write each reference as a separate marker "
-            "[1] [2] [3] — never grouped as [1,2,3] or [1, 2, 3].\n\n"
+            "CITATION FORMAT: cite sources using <<CITE:N>> sentinel markers "
+            "(double angle brackets, the word CITE, colon, number). "
+            "Example: Sea ice loss is accelerating <<CITE:3>> due to albedo feedback <<CITE:1>><<CITE:3>>. "
+            "Never use [N] square-bracket format. Never write a References section.\n\n"
         )
         return header + "\n".join(formatted)
 
