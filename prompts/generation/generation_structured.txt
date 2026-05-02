@@ -22,6 +22,10 @@ The context contains publications and their related topics extracted from an Ear
 
 {context}
 
+RE-SCAN FOCUS: Remember the QUERY {question}
+
+### INITIAL DRAFT (refine against the CONTEXT below)
+
 {draft_answer}
 
 - Ground your answer primarily in the CONTEXT.
@@ -49,7 +53,7 @@ The context contains publications and their related topics extracted from an Ear
    - Otherwise, remove it or mark it clearly as a tentative interpretation.
 
 6. When multiple CONTEXT items report related findings, synthesise them explicitly (e.g., 'Several studies show…') rather than describing each one separately.
-   - Support each synthesis with one or more citation markers when the statements are backed by specific references. Do not write phrases such as '(from context synthesis)' or any other explanatory parenthetical; either attach a citation marker or omit the parenthetical entirely.
+   - Support each synthesis with one or more citation markers when the statements are backed by specific references. Do not write phrases such as '(from context synthesis)' or any other explanatory parenthetical; either attach a reference marker or omit the parenthetical entirely.
 
 7. Observational or study-specific numeric values from the draft answer (e.g., measured rates, regional extents, study-reported percentages, specific year ranges tied to a dataset) that do not appear verbatim in the CONTEXT with the same unit and scope must be discarded. Do not carry forward or paraphrase such numbers. Exception: widely established physical constants and standard baseline values (e.g., Stefan-Boltzmann constant, standard atmospheric lapse rate) may be retained without context confirmation — they are domain background, not study claims.
 
@@ -135,21 +139,22 @@ Before writing, identify every named entity, mechanism, region, method, or compa
 - Write in clear, neutral, research-appropriate language.
 - Be informative but not verbose; avoid repeating the same numbers or phrases unnecessarily.
 - Do NOT copy internal context headers or markers such as "[ONTOLOGY SUMMARY]", "[TOPICS AND INFORMATION]", "[CAVEATS & GAPS]", "Generation guidance", topic labels, or any other bracketed labels from the context.
+- The ONLY inline markers you may output are <<CITE:N>> sentinel markers (e.g., <<CITE:1>>, <<CITE:2>>).
 - Do NOT mention AQL, knowledge graphs, models, prompts, or any internal pipeline details.
 - Provide ONLY the final refined answer, with no meta-commentary about the process.
 
-### CITATIONS — SENTINEL MARKERS ONLY
+### CITATIONS — INLINE MARKERS ONLY
 
 The CONTEXT includes a [VALIDATED REFERENCES] block listing the papers available for citation.
 
-CITATION FORMAT: cite each source using a <<CITE:N>> sentinel marker, where N is the reference number.
-- Example: "Glacier retreat has accelerated significantly <<CITE:3>> driven by rising temperatures <<CITE:1>><<CITE:3>>."
-- Each citation is a separate marker. NEVER group citations as <<CITE:1,2,3>> or <<CITE:1,2>>.
+YOUR ONLY JOB regarding references:
+- Cite sources using <<CITE:N>> sentinel markers (double angle brackets, the word CITE, colon, number).
+  Example: Sea ice loss is accelerating <<CITE:3>> due to albedo feedback <<CITE:1>><<CITE:3>>.
 - Only use IDs that exist in [VALIDATED REFERENCES]. Never cite an ID that is not listed there.
 - Cite every factual or numeric claim that depends on the provided CONTEXT with a <<CITE:N>> marker.
-- Aim to cite each paper you substantively draw on at least once.
-- Do NOT write a "## References" section or reproduce any reference lines, URIs, or author strings.
-- The pipeline will automatically append a verified ## References section after your answer.
+- Aim to cite each paper you substantively draw on at least once. If you use content from a paper across multiple paragraphs, cite it at the first relevant claim; you do not need to repeat it on every sentence.
+- Do NOT write a "## References" section or "References" section. Do NOT reproduce any reference lines, URIs, or author strings.
+- The pipeline will automatically append a verified ## References section after your answer. You do not need to and must not write it yourself.
 - If NO [VALIDATED REFERENCES] block is present in the CONTEXT, omit all citation markers entirely.
 
 ---
@@ -159,11 +164,11 @@ CITATION FORMAT: cite each source using a <<CITE:N>> sentinel marker, where N is
 Before submitting your answer, verify ALL of the following:
 
 1. **First sentence answers the question directly** — no preamble, no background, no "this is complex".
-2. **Every numeric claim includes**: value, unit, spatial scope, temporal scope, and a <<CITE:N>> marker. If any element is missing from the context, omit the number rather than guessing.
+2. **Every numeric claim includes**: value, unit, spatial scope, temporal scope, and an inline <<CITE:N>> marker. If any element is missing from the context, omit the number rather than guessing.
 3. **Spatial/temporal scope is stated** wherever evidence is regional or time-limited; do not generalise beyond what the evidence supports.
 4. **Every named entity, mechanism, or comparison side in the question is addressed** at least once.
 5. **No generic concluding paragraph** and no future-work boilerplate unless explicitly asked.
-6. **No citation IDs outside the [VALIDATED REFERENCES] list**; no self-written References section.
+6. **No <<CITE:N>> IDs outside the [VALIDATED REFERENCES] list**; no self-written References section.
 7. **No draft numbers carried forward** unless they appear verbatim in the CONTEXT with the same unit and scope (PRIORITY RULE 7).
 
 Now write the final refined answer (answer body only — no ## References section).
