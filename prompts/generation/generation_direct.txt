@@ -9,7 +9,7 @@ Most important rules (follow these even if other instructions conflict):
 - When the CONTEXT provides sufficient evidence, give a deep answer: explain mechanisms, methods, and uncertainties step‑by‑step, instead of only listing findings. Prefer 2‑3 short reasoning steps over a single high‑level sentence.
 - Complexity of the question should match depth and detail of the answer you generate.
 - Explicitly mention major uncertainties or data gaps when they appear in the CONTEXT.
-- Only include numeric citation markers (e.g., [1]) if the CONTEXT contains a [VALIDATED REFERENCES] block. If no such block is present, omit all citation markers entirely. When citing, only use IDs that actually exist in the [VALIDATED REFERENCES] block; never cite an ID larger than the last ID listed there.
+- Only include numeric citation markers if the CONTEXT contains a [VALIDATED REFERENCES] block. If no such block is present, omit all citation markers entirely. When citing, only use IDs that actually exist in the [VALIDATED REFERENCES] block; never cite an ID larger than the last ID listed there.
 - Before citing a paper for a specific technical claim, check that the paper's title in [VALIDATED REFERENCES] is relevant to that claim's domain. If the title does not match the domain of the claim (for example, an optics or astrophysics paper cited for a geophysics claim, or a crop-science paper cited for an ecology claim), state the claim as established background knowledge without a citation marker rather than attaching a mismatched citation.
 
 ### QUESTION
@@ -53,7 +53,7 @@ RE-SCAN FOCUS: Remember the QUERY {question}
    - Otherwise, remove it or mark it clearly as a tentative interpretation.
 
 6. When multiple CONTEXT items report related findings, synthesise them explicitly (e.g., 'Several studies show…') rather than describing each one separately.
-   - Support each synthesis with one or more numeric citations like [1], [2] when the statements are backed by specific references. Do not write phrases such as '(from context synthesis)' or any other explanatory parenthetical; either attach a reference marker or omit the parenthetical entirely.
+   - Support each synthesis with one or more citation markers when the statements are backed by specific references. Do not write phrases such as '(from context synthesis)' or any other explanatory parenthetical; either attach a reference marker or omit the parenthetical entirely.
 
 ### DIRECTNESS — BOTTOM LINE UP FRONT
 
@@ -111,7 +111,7 @@ Before writing, identify every named entity, mechanism, region, or comparison si
 - Write in clear, neutral, research-appropriate language.
 - Be informative but not verbose; avoid repeating the same numbers or phrases unnecessarily.
 - Do NOT copy internal context headers or markers such as "[ONTOLOGY SUMMARY]", "[TOPICS AND INFORMATION]", "[CAVEATS & GAPS]", "Generation guidance", topic labels, or any other bracketed labels from the context.
-- The ONLY bracketed items you may output are simple numeric citation markers like [1], [2].
+- The ONLY inline markers you may output are <<CITE:N>> sentinel markers (e.g., <<CITE:1>>, <<CITE:2>>).
 - Do NOT mention AQL, knowledge graphs, models, prompts, or any internal pipeline details.
 - Provide ONLY the final refined answer, with no meta-commentary about the process.
 
@@ -120,9 +120,10 @@ Before writing, identify every named entity, mechanism, region, or comparison si
 The CONTEXT includes a [VALIDATED REFERENCES] block listing the papers available for citation.
 
 YOUR ONLY JOB regarding references:
-- Insert numeric markers [N] inline in your answer body wherever a claim is backed by a reference.
+- Cite sources using <<CITE:N>> sentinel markers (double angle brackets, the word CITE, colon, number).
+  Example: Sea ice loss is accelerating <<CITE:3>> due to albedo feedback <<CITE:1>><<CITE:3>>.
 - Only use IDs that exist in [VALIDATED REFERENCES]. Never cite an ID that is not listed there.
-- Cite every factual or numeric claim that depends on the provided CONTEXT with an inline [N] marker.
+- Cite every factual or numeric claim that depends on the provided CONTEXT with a <<CITE:N>> marker.
 - Aim to cite each paper you substantively draw on at least once.
 - Do NOT write a "## References" section or reproduce any reference lines, URIs, or author strings.
 - The pipeline will automatically append a verified ## References section after your answer.
@@ -135,11 +136,11 @@ YOUR ONLY JOB regarding references:
 Before submitting your answer, verify ALL of the following:
 
 1. **First sentence answers the question directly** — no preamble, no background, no "this is complex".
-2. **Every numeric claim includes**: value, unit, spatial scope, temporal scope, and an inline [N] citation if available in the CONTEXT.
+2. **Every numeric claim includes**: value, unit, spatial scope, temporal scope, and an inline <<CITE:N>> marker if available in the CONTEXT.
 3. **Spatial/temporal scope is stated** wherever evidence is regional or time-limited.
 4. **Every named entity or comparison side in the question is addressed** at least once.
 5. **No generic concluding paragraph**; no future-work boilerplate unless explicitly asked.
-6. **No [N] citation IDs outside the [VALIDATED REFERENCES] list**; no self-written References section.
+6. **No <<CITE:N>> IDs outside the [VALIDATED REFERENCES] list**; no self-written References section.
 7. **No draft numbers carried forward** unless they appear verbatim in the CONTEXT with the same unit and scope (observational values only — standard physical constants are exempt).
 
 Now write the final refined answer (answer body only — no ## References section).
