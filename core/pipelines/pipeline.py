@@ -409,11 +409,15 @@ class Pipeline:
         # -- 7. build verified references + sequential renumbering -----------
         all_docs = full_docs + abstract_docs
 
-        # Normalise first: collapses [doc N] -> [N] and fixes decimal edge cases
-        # before cited_indices extraction. answer_obj.cited_indices is derived
-        # from the pre-normalised text so we re-extract here from the clean body.
-        normalised_body = self._normalize_citation_format(answer_obj.answer)
-        cited_indices = self._extract_cited_indices(normalised_body)
+        # Unified citation extraction.
+        # Primary path: <<CITE:N>> sentinel markers emitted by the updated
+        # generation prompts. These are unambiguous and cannot collide with
+        # prose numbers (decimals, years, table labels, quantities).
+        # Fallback path: legacy [N] square-bracket handling, preserved for
+        # backward compatibility with old prompts and cached test fixtures.
+        normalised_body, cited_indices = self._normalize_and_extract_citations(
+            answer_obj.answer
+        )
 
         if not cited_indices:
             log.warning(
@@ -427,11 +431,9 @@ class Pipeline:
         )
         answer_text = self._renumber_inline_citations(normalised_body, index_remap)
 
-        # fix4: orphan sweep -- strip any [N] whose integer is not among the
-        # remapped output indices. These are phantom citations that were never
-        # in any document list and therefore have no entry in index_remap.
-        # Only runs when index_remap is non-empty (verified refs exist) so we
-        # never silently remove markers when the reference system has no data.
+        # Strip any orphan [N] whose integer is not among the remapped output
+        # indices. These are phantom citations that were never in any document
+        # list and therefore have no entry in index_remap.
         if index_remap:
             valid_new = set(index_remap.values())
             answer_text = re.sub(
@@ -482,14 +484,10 @@ class Pipeline:
             rules.append("Every factual claim must be grounded in the provided context passages.")
         quant = getattr(profile, "quantitativity", 0.0) or 0.0
         needs_numeric = getattr(profile, "needs_numeric_emphasis", False)
-        # fix6: lowered threshold from 0.5 to 0.40 so questions in the
-        # 0.40-0.49 quant band that carry real numeric claims also receive
-        # the numeric faithfulness contract. The needs_numeric flag already
-        # covers the explicit edge case; this catches the soft-threshold zone.
         if quant >= 0.40 or needs_numeric:
             rules.append(
                 "Numeric claims must include: the numeric value, its unit, "
-                "the spatial/temporal scope it applies to, and an inline citation [N]."
+                "the spatial/temporal scope it applies to, and an inline citation marker if available."
             )
             rules.append(
                 "Do not paraphrase numeric values -- state them exactly as reported in the sources."
@@ -516,14 +514,46 @@ class Pipeline:
         return f"{header}\n{numbered}"
 
     @staticmethod
-    def _normalize_citation_format(text: str) -> str:
-        # Collapse [doc N] / [Doc N] tokens emitted by the refinement agent
-        # into plain [N] so all downstream passes see a uniform format.
+    def _extract_sentinel_citations(text: str) -> Tuple[str, Set[int]]:
+        """Convert <<CITE:N>> sentinel markers to [N] and collect cited indices.
+
+        This is the primary citation extraction path. <<CITE:N>> markers are
+        unambiguous: they cannot appear in prose, decimal numbers, table
+        references, quantities like 4,000, or year values. Out-of-range
+        indices (N > _MAX_CITE_INDEX) are silently dropped.
+        """
+        indices: Set[int] = set()
+
+        def _replace(m: re.Match) -> str:
+            n = int(m.group(1))
+            if 1 <= n <= _MAX_CITE_INDEX:
+                indices.add(n)
+                return f"[{n}]"
+            return ""
+
+        clean = re.sub(r"<<CITE:(\d+)>>", _replace, text)
+        return clean, indices
+
+    @staticmethod
+    def _normalize_and_extract_citations(text: str) -> Tuple[str, Set[int]]:
+        """Normalise citation markers and return (clean_body, cited_indices).
+
+        Primary path: structured <<CITE:N>> sentinel markers (new prompts).
+        Fallback path: legacy square-bracket normalisation chain, retained for
+        backward compatibility with old prompts, fixtures, and cached runs.
+        The two paths produce the same downstream format: plain [N] markers
+        and a Set[int] of cited 1-based doc indices.
+        """
+        if "<<CITE:" in text:
+            return Pipeline._extract_sentinel_citations(text)
+
+        # --- Legacy fallback ---------------------------------------------------
+        # Collapse [doc N] / [Doc N] tokens emitted by older refinement variants.
         text = re.sub(r"\[(?:doc|Doc)\s+(\d+)\]", r"[\1]", text)
 
         def _expand_line_start(m: re.Match) -> str:
             nums = re.split(r"[\s,]+", m.group(1).strip())
-            valid = [n for n in nums if n.isdigit() and 1 <= int(n) <= 30]
+            valid = [n for n in nums if n.isdigit() and 1 <= int(n) <= _MAX_CITE_INDEX]
             if not valid:
                 return m.group(0)
             return "".join(f"[{n}]" for n in valid)
@@ -536,21 +566,19 @@ class Pipeline:
 
         def _expand_multi_bracket(m: re.Match) -> str:
             nums = re.split(r"[\s,]+", m.group(1).strip())
-            return "".join(f"[{n}]" for n in nums if n.isdigit())
+            return "".join(
+                f"[{n}]" for n in nums if n.isdigit() and 1 <= int(n) <= _MAX_CITE_INDEX
+            )
 
         text = re.sub(r"\[(\d+(?:\s*,\s*\d+)+)\]", _expand_multi_bracket, text)
 
         def _expand_bare_cluster(m: re.Match) -> str:
             nums = re.split(r"[\s,]+", m.group(2).strip())
-            valid = [n for n in nums if n.isdigit() and 1 <= int(n) <= 30]
+            valid = [n for n in nums if n.isdigit() and 1 <= int(n) <= _MAX_CITE_INDEX]
             if not valid:
                 return m.group(0)
             return m.group(1) + "".join(f"[{n}]" for n in valid)
 
-        # fix9: five fixed-width negative lookbehinds prevent the bare-cluster
-        # sub from converting "Table 3", "Figure 2", "Section 4", "Equation 1",
-        # "Appendix 2" into inline citation markers. Each lookbehind is exactly
-        # 8 chars (word + space) so Python re accepts fixed-width alternation.
         text = re.sub(
             r"(?<!Table )(?<!Figure )(?<!Section )(?<!Equation )(?<!Appendix )"
             r"([a-zA-Z\)\]%] )(\d{1,2}(?:\s*,\s*\d{1,2}){0,4})"
@@ -558,26 +586,17 @@ class Pipeline:
             _expand_bare_cluster,
             text,
         )
-        return text
 
-    @staticmethod
-    def _extract_cited_indices(answer_body: str) -> Set[int]:
-        """Return the set of 1-based integer doc indices cited inline.
-
-        fix3: indices above _MAX_CITE_INDEX (30) are dropped here so phantom
-        hallucinated indices never reach _build_verified_references without a
-        corresponding index_remap entry, which would leave an orphan [N]
-        bracket in the final answer body after _renumber_inline_citations.
-        """
         indices: Set[int] = set()
-        for bracket in re.findall(r"\[([\d,\s]+)\]", answer_body):
+        for bracket in re.findall(r"\[([\d,\s]+)\]", text):
             for token in bracket.split(","):
                 token = token.strip()
                 if token.isdigit():
                     n = int(token)
                     if 1 <= n <= _MAX_CITE_INDEX:
                         indices.add(n)
-        return indices
+
+        return text, indices
 
     @staticmethod
     def _build_verified_references(
