@@ -16,7 +16,7 @@ _CONTEXT_WINDOW_60PCT_CHARS = 307_200  # 76_800 tokens x 4
 
 # Maximum doc index the LLM is allowed to cite.  Indices above this cap are
 # considered hallucinated and are dropped before they reach the reference
-# builder.  Consistent with the existing guard in _normalize_citation_format.
+# builder.  Consistent with the existing guard in pipeline.py (_MAX_CITE_INDEX).
 _MAX_CITE_INDEX = 30
 
 
@@ -178,7 +178,7 @@ class GenerationAgent(BaseAgent):
         )
         if not cited:
             self.logger.warning(
-                "generation no inline [N] markers found -- "
+                "generation no inline citation markers found -- "
                 "pipeline will attach all available references"
             )
 
@@ -195,22 +195,27 @@ class GenerationAgent(BaseAgent):
     def _extract_cited_indices(answer_body: str) -> Set[int]:
         """Return the set of 1-based integer doc indices cited inline.
 
-        Scans only the answer body (after _strip_references_section has
-        removed any ## References block), so stray numbers in a reference
-        list do not inflate the set.
-
-        Handles both separate markers ([1] [2]) and grouped forms
-        ([1,2,3] or [1, 2, 3]) that the upstream citation-format guard
-        prevents from being written, but which may appear in pre-existing
-        CSV docs or old test fixtures.
+        Supports both citation formats:
+        - Sentinel format (primary): <<CITE:N>> markers emitted by the
+          updated generation prompts. Unambiguous and collision-free.
+        - Legacy format (fallback): [N] square-bracket markers from older
+          prompts or cached test fixtures.
 
         Indices above _MAX_CITE_INDEX (30) are treated as hallucinated and
         dropped so they never reach _build_verified_references without a
-        corresponding index_remap entry, which would leave an orphan [N]
-        bracket in the final answer body.
+        corresponding index_remap entry.
         """
         indices: Set[int] = set()
-        for bracket in re.findall(r"\[([\\d,\\s]+)\]", answer_body):
+
+        if "<<CITE:" in answer_body:
+            for m in re.finditer(r"<<CITE:(\d+)>>", answer_body):
+                n = int(m.group(1))
+                if 1 <= n <= _MAX_CITE_INDEX:
+                    indices.add(n)
+            return indices
+
+        # Legacy fallback: scan for [N] and [N,M,...] markers.
+        for bracket in re.findall(r"\[([\d,\s]+)\]", answer_body):
             for token in bracket.split(","):
                 token = token.strip()
                 if token.isdigit():
@@ -235,9 +240,6 @@ class GenerationAgent(BaseAgent):
 
         Returns the original text unchanged if no heading is found.
         """
-        # exact set of heading strings that signal a reference section.
-        # strict exact-match prevents false-positive truncation on prose
-        # lines containing the word "references" mid-sentence.
         _EXACT_HEADINGS = frozenset([
             "## references",
             "# references",
@@ -267,11 +269,11 @@ class GenerationAgent(BaseAgent):
     ) -> str:
         prompt = template
         prompt = prompt.replace("{question}", question)
-        # Issue 1 fix: use a clearly labelled INITIAL DRAFT block so the
-        # model unambiguously treats this content as a draft to refine, not
-        # as a persona or role definition.  When use_draft=False, draft_block
-        # is an empty string and the {draft_answer} placeholder collapses
-        # cleanly, leaving no confusing section header in the prompt.
+        # When use_draft=True, inject a clearly labelled INITIAL DRAFT block
+        # so the model unambiguously treats this content as a draft to refine,
+        # not as a persona or role definition. When use_draft=False (or draft
+        # is empty), draft_block is an empty string and the {draft_answer}
+        # placeholder collapses cleanly, leaving no confusing section header.
         if use_draft and draft:
             draft_block = (
                 "### INITIAL DRAFT\n\n"
