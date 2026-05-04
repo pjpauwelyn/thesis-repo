@@ -852,6 +852,9 @@ class Pipeline:
         aql_params: Optional[Dict[str, Any]],
     ) -> Optional[List[Dict[str, Any]]]:
         import os
+        # Guard: live KG is disabled in evaluation runs where
+        # ARANGO_ROOT_PASSWORD is not set; returns None immediately so
+        # the pipeline falls through to the CSV path.
         if not os.getenv("ARANGO_ROOT_PASSWORD"):
             return None
         try:
@@ -961,19 +964,25 @@ class Pipeline:
         excerpt_stats: Dict[str, Any],
         threshold: int = 50,
     ) -> None:
-        """Emit a WARNING for each doc whose kepttokens falls below *threshold*.
+        """Emit a WARNING for each doc whose kept_tokens falls below *threshold*.
 
         Fix 4 (log-only observability): fires after excerpt selection and records
         thin-evidence sources so evaluation runs can identify which questions
         relied on near-empty documents.  No documents are filtered or removed.
+
+        Keys match what FullTextIndexer.select_excerpts_for_question returns:
+            excerpt_stats["per_doc"]  -> list of per-doc info dicts
+            info["kept_tokens"]       -> total tokens kept for that doc
+            info["work_id"]           -> OpenAlex work identifier
+            info["title"]             -> document title
         """
-        for pd in excerpt_stats.get("perdoc", []):
-            kt = pd.get("kepttokens", threshold)
+        for pd in excerpt_stats.get("per_doc", []):
+            kt = pd.get("kept_tokens", threshold)
             if kt < threshold:
                 log.warning(
-                    "thin_source: work=%s title='%s' kepttokens=%d -- "
+                    "thin_source: work=%s title='%s' kept_tokens=%d -- "
                     "answer may rely on near-empty evidence for this document",
-                    pd.get("workid", "?"),
+                    pd.get("work_id", "?"),
                     (pd.get("title") or "?")[:60],
                     kt,
                 )

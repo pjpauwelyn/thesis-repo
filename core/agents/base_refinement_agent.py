@@ -97,51 +97,40 @@ class BaseRefinementAgent(BaseAgent):
     def _parse_documents(
         self, context_string: str, aql_results_str: Optional[str] = None
     ) -> List[Dict[str, Any]]:
+        """Parse documents from aql_results_str.
+
+        The pipeline always passes structured_context="" and provides documents
+        via aql_results_str (a JSON-serialised list of doc dicts from the KG
+        retrieval step).  The older RELATED DOCUMENTS block format is no longer
+        produced by any active code path and has been removed.
+        """
         documents: List[Dict[str, Any]] = []
 
-        if "RELATED DOCUMENTS" in context_string:
-            docs_section = context_string.split("RELATED DOCUMENTS")[1]
-            if "RELATED TOPICS" in docs_section:
-                docs_section = docs_section.split("RELATED TOPICS")[0]
-
-            for i, block in enumerate(docs_section.split("---"), 1):
-                block = block.strip()
-                if not block or block.startswith("#"):
-                    continue
-
-                title_m = re.search(r"[#\s]*Title[:\s]+([^\n]+)", block, re.MULTILINE)
-                content_m = re.search(
-                    r"[#\s]*Content[:\s]+(.+?)(?:---|$)", block, re.MULTILINE | re.DOTALL
-                )
-
-                if title_m:
-                    title = title_m.group(1).strip()
-                elif content_m:
-                    first_sent = content_m.group(1).strip().split(".")[0]
-                    title = f"EO Study on {first_sent[:50]}..." if first_sent else f"Document {i}"
-                else:
-                    title = f"Document {i}"
-
-                content = content_m.group(1).strip() if content_m else block[:500]
-
-                documents.append(
-                    {
-                        "id": f"doc{i}",
-                        "title": title,
-                        "title_or_name": title,
-                        "position": i,
-                        "type": "publication",
-                        "content": content[:3000],
-                        "aql_data": "",
-                    }
-                )
-
-        if aql_results_str and documents:
+        if aql_results_str:
             from core.utils.aql_parser import parse_aql_results
             clean_aql = parse_aql_results(aql_results_str)
-            documents[0]["aql_data"] = clean_aql
+            if clean_aql:
+                try:
+                    import json
+                    parsed = json.loads(clean_aql)
+                    if isinstance(parsed, list):
+                        for i, doc in enumerate(parsed, 1):
+                            if not isinstance(doc, dict):
+                                continue
+                            title = doc.get("title") or f"Document {i}"
+                            documents.append({
+                                "id": doc.get("id") or f"doc{i}",
+                                "title": title,
+                                "title_or_name": title,
+                                "position": i,
+                                "type": "publication",
+                                "content": (doc.get("abstract") or "")[:3000],
+                                "aql_data": clean_aql if i == 1 else "",
+                            })
+                except Exception:
+                    pass
 
-        self.logger.info(f"parsed {len(documents)} documents from structured context")
+        self.logger.info(f"parsed {len(documents)} documents from aql_results_str")
         return documents
 
     def _reorder_by_ontology(
@@ -169,14 +158,16 @@ class BaseRefinementAgent(BaseAgent):
         context_filter: str = "full",
         structured_context: str = "",
     ) -> str:
+        """Build the enriched context string from assessed documents.
+
+        Only context_filter="full" is used by the active pipeline.
+        The "slim" and "scores_only" variants have been removed as dead code:
+        every process_context() call-site passes context_filter="full".
+        """
         included = [a for a in assessments if a.include]
         if not included:
             return "No documents included after assessment."
 
-        if context_filter == "scores_only":
-            return self._build_scores_only_context(included, structured_context)
-        if context_filter == "slim":
-            return self._build_slim_context(included)
         return self._build_full_context(included)
 
     def _build_full_context(self, assessments: List[DocumentAssessment]) -> str:
@@ -207,46 +198,6 @@ class BaseRefinementAgent(BaseAgent):
                 lines.append(f"**Temporal Context (detailed):** {a.temporal_context_text}")
             if a.supporting_details_text:
                 lines.append(f"**Supporting Details:** {a.supporting_details_text}")
-            if a.generation_instruction:
-                lines.append(f"**Usage Guidance:** {a.generation_instruction}")
-            self._append_citation_lines(lines, a)
-        return "\n".join(lines)
-
-    def _build_slim_context(self, assessments: List[DocumentAssessment]) -> str:
-        lines = ["# Refined Context (Slim)"]
-        for idx, a in enumerate(assessments, 1):
-            title = self._clean_title(a.title_or_name)
-            lines.append(f"\n## Document {idx}: {title}")
-            lines.append(f"**Relevance:** {a.relevance_score:.2f}")
-            if a.geographic_scope:
-                geo = f"**Geographic Scope:** {a.geographic_scope}"
-                if a.geographic_match and a.geographic_match.lower() != "none":
-                    geo += f" ({a.geographic_match})"
-                lines.append(geo)
-            if a.temporal_scope:
-                tmp = f"**Temporal Scope:** {a.temporal_scope}"
-                if a.temporal_match and a.temporal_match.lower() != "none":
-                    tmp += f" ({a.temporal_match})"
-                lines.append(tmp)
-            if a.what_is_relevant:
-                lines.append(f"**Relevant Content:** {a.what_is_relevant}")
-            if a.supporting_details_text:
-                lines.append(f"**Supporting Details:** {a.supporting_details_text}")
-            if a.instruction and a.instruction.strip():
-                lines.append(f"**Usage Guidance:** {a.instruction}")
-            self._append_citation_lines(lines, a)
-        return "\n".join(lines)
-
-    def _build_scores_only_context(
-        self,
-        assessments: List[DocumentAssessment],
-        structured_context: str,
-    ) -> str:
-        lines = [structured_context.strip(), "\n" + "=" * 60, "# Document Relevance Scores"]
-        for idx, a in enumerate(assessments, 1):
-            title = self._clean_title(a.title_or_name)
-            lines.append(f"\n## Document {idx}: {title}")
-            lines.append(f"**Relevance Score:** {a.relevance_score:.2f}")
             if a.generation_instruction:
                 lines.append(f"**Usage Guidance:** {a.generation_instruction}")
             self._append_citation_lines(lines, a)
