@@ -201,6 +201,14 @@ class GenerationAgent(BaseAgent):
         - Legacy format (fallback): [N] square-bracket markers from older
           prompts or cached test fixtures.
 
+        Fix C: multi-cite pre-pass added here to mirror the expansion in
+        pipeline._extract_sentinel_citations so Answer.cited_indices is
+        always consistent with what the pipeline extracts from the same
+        answer body.  Without the pre-pass, <<CITE:1,6>> emitted inside a
+        markdown table cell would be silently skipped by the single-integer
+        regex, leaving cited_indices under-counted relative to the pipeline
+        extraction path.
+
         Indices above _MAX_CITE_INDEX (30) are treated as hallucinated and
         dropped so they never reach _build_verified_references without a
         corresponding index_remap entry.
@@ -208,6 +216,15 @@ class GenerationAgent(BaseAgent):
         indices: Set[int] = set()
 
         if "<<CITE:" in answer_body:
+            # Fix C -- Pre-pass: expand <<CITE:N,M,...>> -> <<CITE:N>><<CITE:M>>...
+            # The model occasionally emits comma-separated multi-cites inside
+            # markdown table cells. Mirrors the pre-pass in pipeline.py's
+            # _extract_sentinel_citations so both extraction paths stay in sync.
+            def _expand(m: re.Match) -> str:
+                parts = re.split(r"[\s,]+", m.group(1).strip())
+                return "".join(f"<<CITE:{p}>>" for p in parts if p.isdigit())
+            answer_body = re.sub(r"<<CITE:([\d,\s]+)>>", _expand, answer_body)
+
             for m in re.finditer(r"<<CITE:(\d+)>>", answer_body):
                 n = int(m.group(1))
                 if 1 <= n <= _MAX_CITE_INDEX:
@@ -232,13 +249,26 @@ class GenerationAgent(BaseAgent):
     def _strip_references_section(text: str) -> str:
         """Remove everything from the first References heading onward.
 
+        Fix A: extended heading set now includes '[validated references]'
+        and 'validated references' to catch the structured section header
+        emitted by refinement_1pass_refined_exp4.txt when the generation
+        LLM echoes it verbatim or paraphrased into the answer body.
+
+        Post-body sweep: after the heading scan, any trailing lines that
+        look like numbered bibliography entries (e.g. '[1] Smith et al.')
+        are stripped from the tail of the text.  This catches reference
+        blocks that leaked past the heading guard when the LLM reproduced
+        the [VALIDATED REFERENCES] section content without emitting a
+        recognisable section heading first.
+
         Uses an exact-match set to identify reference section headings.
         This prevents false-positive truncation on prose lines that merely
         contain the word 'references' mid-sentence, e.g.:
           'This references the methodology of Smith et al.'
           'Cross-references between datasets suggest...'
 
-        Returns the original text unchanged if no heading is found.
+        Returns the original text unchanged if no heading or trailing ref
+        lines are found.
         """
         _EXACT_HEADINGS = frozenset([
             "## references",
@@ -246,13 +276,24 @@ class GenerationAgent(BaseAgent):
             "references",
             "sources",
             "bibliography",
+            # Fix A: catch the structured section header from the refinement prompt
+            "[validated references]",
+            "validated references",
         ])
         lines = text.split("\n")
         for i, line in enumerate(lines):
             normalised = line.strip().lower().replace("*", "").replace("_", "").strip()
             if normalised in _EXACT_HEADINGS:
                 return "\n".join(lines[:i]).rstrip()
-        return text
+
+        # Fix A -- Post-body sweep: strip trailing numbered bibliography lines
+        # like "[1] Smith et al. ..." that leaked past the heading guard.
+        # Only trims from the END of the text so in-body citation markers
+        # (e.g. "Sea ice loss [1] is accelerating") are never touched.
+        _REF_LINE_RE = re.compile(r"^\s*\[\d+\]\s+\S")
+        while lines and _REF_LINE_RE.match(lines[-1]):
+            lines.pop()
+        return "\n".join(lines).rstrip()
 
     # ------------------------------------------------------------------
     # prompt building

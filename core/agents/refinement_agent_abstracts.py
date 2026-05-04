@@ -17,6 +17,7 @@ from core.utils.data_models import (
 from core.utils.openalex_client import OpenAlexClient, format_reference_from_metadata
 
 _debug_logger = logging.getLogger("raw_prompts")
+log = logging.getLogger(__name__)
 
 # Fix 2: named constant for the per-abstract character cap.
 # 200 chars was too short and starved the refinement step.
@@ -109,13 +110,26 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
         Fix 2: abstract preview is capped at _ABSTRACT_PREVIEW_CAP chars
         (named constant) instead of the previous 200-char hard-code.
 
-        Fix (doc-order parity): after the JSON round-trip we verify that the
-        parsed list length matches the input so a silently dropped document
-        (due to a non-serialisable field coerced to null by json.dumps) does
-        not shift every subsequent index and cause _build_verified_references
-        to assign the wrong paper to a cited [N] marker.
+        Fix E (doc-order parity): before calling parse_aql_results we record
+        the document count from the raw input.  After the round-trip we
+        compare and emit a WARNING if the count changed.  A silently dropped
+        document (due to a non-serialisable field coerced to null by
+        json.dumps inside parse_aql_results) shifts every subsequent index
+        and causes _build_verified_references to assign the wrong paper to
+        a cited [N] marker.  The warning makes the problem visible in the log
+        so it can be investigated; the method continues with the parsed list
+        as-is (no silent truncation on either side).
         """
         from core.utils.aql_parser import parse_aql_results
+
+        # Fix E -- record pre-round-trip document count for parity check.
+        pre_count: Optional[int] = None
+        try:
+            raw_parsed = json.loads(aql_results_str)
+            if isinstance(raw_parsed, list):
+                pre_count = len(raw_parsed)
+        except Exception:
+            pass
 
         compact_json = parse_aql_results(aql_results_str)
         try:
@@ -124,6 +138,15 @@ class RefinementAgentAbstracts(BaseRefinementAgent):
                 return compact_json, []
         except json.JSONDecodeError:
             return compact_json, []
+
+        # Fix E -- parity check: warn if parse_aql_results silently dropped docs.
+        if pre_count is not None and len(documents) != pre_count:
+            log.warning(
+                "_parse_aql_for_prompt: doc count changed during parse_aql_results "
+                "round-trip (before=%d, after=%d) -- citation indices may be shifted. "
+                "Investigate parse_aql_results for non-serialisable fields.",
+                pre_count, len(documents),
+            )
 
         lines: List[str] = []
         for i, doc in enumerate(documents, 1):

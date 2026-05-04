@@ -7,6 +7,7 @@ question profile.
 from __future__ import annotations
 
 import ast
+import collections
 import json
 import logging
 import re
@@ -37,6 +38,14 @@ log = logging.getLogger(__name__)
 # treated as hallucinated and dropped before they reach _build_verified_references.
 # Consistent with the same constant in generation_agent.py (_MAX_CITE_INDEX).
 _MAX_CITE_INDEX = 30
+
+# Fix B: rolling window size for the per-question URI demotion throttle.
+# Only URIs seen in the last _URI_WINDOW_SIZE questions are considered
+# "already served as full-text" for the purpose of the surplus-demotion
+# loop in _filter_documents.  A global accumulation across a 70-question
+# batch caused the throttle to degrade into a broad cross-topic suppressor
+# by question 40+, misclassifying entire topic clusters as "already seen".
+_URI_WINDOW_SIZE = 10
 
 _RETRACTION_TITLE_TOKENS = frozenset([
     "retracted",
@@ -76,21 +85,29 @@ class Pipeline:
         self._prompts_root = Path(prompts_root)
         self._llm_cache: Dict[Tuple[str, float, int, int], Any] = {}
         self._indexer = None
-        self._session_full_doc_uris: Set[str] = set()
+        # Fix B: replace the flat, ever-growing _session_full_doc_uris Set with
+        # a rolling deque of per-question URI sets (maxlen=_URI_WINDOW_SIZE).
+        # The surplus-demotion throttle in _filter_documents now only considers
+        # the last N questions, preventing cross-domain contamination that
+        # accumulated over full 70-question batch runs.
+        self._session_uri_window: collections.deque = collections.deque(
+            maxlen=_URI_WINDOW_SIZE
+        )
         self._profiler_parse_failures: int = 0
         self._counter_lock = threading.Lock()
 
     def reset_session_state(self) -> None:
         """Reset run/session state so a new orchestrator.run() starts clean."""
         with self._counter_lock:
-            self._session_full_doc_uris = set()
+            self._session_uri_window.clear()
             self._profiler_parse_failures = 0
         log.debug("Pipeline.reset_session_state() called")
 
     def reset_llm_cache(self) -> None:
         """Clear the LLM instance cache."""
         self._llm_cache = {}
-        self._session_full_doc_uris = set()
+        with self._counter_lock:
+            self._session_uri_window.clear()
         log.debug("Pipeline._llm_cache cleared")
 
     def profile_and_route(
@@ -522,47 +539,12 @@ class Pipeline:
         references, quantities like 4,000, or year values. Out-of-range
         indices (N > _MAX_CITE_INDEX) are silently dropped.
 
-        Pre-pass 0: normalize sentinel body -- keep only digits, commas, spaces.
-        This strips non-numeric annotations the refinement LLM sometimes appends
-        inside the sentinel body:
-            <<CITE:9(abstract-derived)>>   ->  <<CITE:9>>
-            <<CITE:3 (low-relevance)>>     ->  <<CITE:3>>
-            <<CITE:1,2(abstract-derived)>> ->  <<CITE:1,2>>
-        These annotations originate from labels like "(Abstract only -- no
-        full-text selected)" that leak from render_documents_block into the
-        refinement context and are then reproduced verbatim by the generation
-        model.  Stripping them here is the mechanical safety net; the
-        refinement prompt also instructs the model not to emit them.
-
-        Pre-pass 1: expand comma-separated multi-cites:
-            <<CITE:1,6>>     ->  <<CITE:1>><<CITE:6>>
-            <<CITE:1,2,3,4>> ->  <<CITE:1>><<CITE:2>><<CITE:3>><<CITE:4>>
-        The model occasionally emits these inside markdown table cells instead
-        of the canonical split form <<CITE:1>><<CITE:6>>.
-        Pre-pass 0 MUST run before pre-pass 1 so that a combined form like
-        <<CITE:1,2(abstract-derived)>> is cleaned to <<CITE:1,2>> before the
-        comma-expansion regex runs.
-
-        Post-pass: after sentinel extraction, also collect any residual [N]
-        square-bracket markers that survive in the text (mixed-format output
-        where the model emits some sentinels and some legacy brackets, e.g.
-        <<CITE:1>>[2]).  These are added to cited_indices so the reference
-        builder includes them; they are left as-is in the text because
-        _renumber_inline_citations handles them in the same downstream pass.
+        Pre-pass: the model occasionally emits <<CITE:1,6>> (comma-separated
+        multi-cite) instead of <<CITE:1>><<CITE:6>>, particularly inside
+        markdown table cells. The pre-pass expands these to individual
+        single-integer sentinels before the main extraction loop runs.
         """
-        # Pre-pass 0: normalize sentinel body -- strip everything after the
-        # last valid digit/comma/space sequence (catches annotations like
-        # "(abstract-derived)", "(low-relevance)", "- see abstract", etc.).
-        def _normalize_body(m: re.Match) -> str:
-            raw = m.group(1)
-            clean_body = re.sub(r"[^\d,\s].*", "", raw).strip().rstrip(",").strip()
-            if not clean_body:
-                return ""
-            return f"<<CITE:{clean_body}>>"
-
-        text = re.sub(r"<<CITE:([^>]+)>>", _normalize_body, text)
-
-        # Pre-pass 1: expand <<CITE:N,M,...>> -> <<CITE:N>><<CITE:M>>...
+        # Pre-pass: expand <<CITE:N,M,...>> → <<CITE:N>><<CITE:M>>...
         def _expand_multi(m: re.Match) -> str:
             parts = re.split(r"[\s,]+", m.group(1).strip())
             return "".join(f"<<CITE:{p}>>" for p in parts if p.isdigit())
@@ -580,13 +562,6 @@ class Pipeline:
             return ""
 
         clean = re.sub(r"<<CITE:(\d+)>>", _replace, text)
-
-        # Post-pass: collect residual [N] brackets (mixed-format output).
-        for m in re.finditer(r"\[(\d+)\]", clean):
-            n = int(m.group(1))
-            if 1 <= n <= _MAX_CITE_INDEX:
-                indices.add(n)
-
         return clean, indices
 
     @staticmethod
@@ -818,8 +793,16 @@ class Pipeline:
             rule_hit=cfg.rule_hit,
         )
         surplus = len(full_docs) - (cfg.doc_filter_min_keep + 2)
+        # Fix B: union the last _URI_WINDOW_SIZE per-question URI sets instead
+        # of a single ever-growing flat set.  This bounds the throttle's
+        # "already seen" memory to the last 10 questions and prevents
+        # cross-domain demotion that accumulated across full 70-Q batch runs.
         with self._counter_lock:
-            session_uris_snapshot = set(self._session_full_doc_uris)
+            session_uris_snapshot = (
+                set().union(*self._session_uri_window)
+                if self._session_uri_window
+                else set()
+            )
         if surplus > 0 and session_uris_snapshot:
             demoted = 0
             new_full: List[Dict] = []
@@ -838,8 +821,10 @@ class Pipeline:
             for doc in full_docs
             if doc.get("uri") or doc.get("id")
         }
+        # Fix B: append this question's URI set as one slot in the rolling
+        # window; the deque automatically evicts the oldest slot when full.
         with self._counter_lock:
-            self._session_full_doc_uris.update(new_uris)
+            self._session_uri_window.append(new_uris)
         return full_docs, abstract_docs, drop_docs
 
     def _get_indexer(self):
