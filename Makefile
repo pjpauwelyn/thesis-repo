@@ -39,17 +39,13 @@ diag-filter:
 # -----------------------------------------------------------------------
 N ?= 10
 test-profile:
-	python -c "
-import csv, sys
-sys.path.insert(0, '.')
-from core.pipelines.pipeline import Pipeline
-p = Pipeline()
-rows = list(csv.DictReader(open('data/dlr/questions.csv')))
-for r in rows[:int('$(N)')]:
-    q = r.get('question', '').strip()
-    if not q: continue
-    _, _, cfg = p.profile_and_route(q)
-    print(f'[{cfg.rule_hit:<14}] {q[:90]}')
+	python -c "\
+import csv, sys;\
+sys.path.insert(0, '.');\
+from core.pipelines.pipeline import Pipeline;\
+p = Pipeline();\
+rows = list(csv.DictReader(open('data/dlr/questions.csv')));\
+[print(f'[{cfg.rule_hit:<14}] {q[:90]}') for r in rows[:int('$(N)')] for q in [r.get('question','').strip()] if q for _,_,cfg in [p.profile_and_route(q)]]\
 "
 
 # -----------------------------------------------------------------------
