@@ -11,7 +11,7 @@ Covers (without LLM calls where possible):
   Fix 7  -- GenerationAgent.process() loud behaviour
   Fix 7b -- rules.yaml tier-3 branch D (mechanism + mid-meth + cx>=0.60)
   Fix C  -- tier-aware refinement max_tokens
-  Fix 8  -- reset_session_state() on Pipeline
+  Fix 8  -- reset_session_state() on Pipeline  [updated for Fix-B URI window rename]
   Fix 9  -- retracted paper filter
   Fix 11 -- numeric faithfulness audit (no crash, logs correctly)
   D2/D3  -- generation_prompt default no longer points to deleted file
@@ -25,6 +25,7 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import threading
 from typing import Any, Dict, List
@@ -429,17 +430,24 @@ def test_refinement_max_tokens_tier_aware():
 
 # ============================================================
 # Fix 8 — reset_session_state() on Pipeline
+# Updated for Fix B: _session_full_doc_uris renamed to _session_uri_window (deque)
 # ============================================================
 
 def test_reset_session_state_clears_uris():
-    from core.pipelines.pipeline import Pipeline
+    """reset_session_state() must clear the URI window deque and reset counters.
+
+    Fix B renamed _session_full_doc_uris (Set) -> _session_uri_window (deque).
+    This test now uses the new attribute so it stays in sync with pipeline.py.
+    """
+    from core.pipelines.pipeline import Pipeline, _URI_WINDOW_SIZE
     p = Pipeline.__new__(Pipeline)
-    p._session_full_doc_uris = {"http://ex.org/1", "http://ex.org/2"}
+    p._session_uri_window = collections.deque(maxlen=_URI_WINDOW_SIZE)
+    p._session_uri_window.append({"http://ex.org/1", "http://ex.org/2"})
     p._profiler_parse_failures = 5
     p._counter_lock = threading.Lock()
     p._llm_cache = {"key": "value"}
     p.reset_session_state()
-    assert p._session_full_doc_uris == set(), "Session URIs not cleared"
+    assert len(p._session_uri_window) == 0, "Session URI window not cleared by reset_session_state()"
     assert p._profiler_parse_failures == 0, "Parse failure counter not reset"
     assert p._llm_cache == {"key": "value"}, "reset_session_state should not clear LLM cache"
 
@@ -454,10 +462,14 @@ def test_reset_session_state_method_exists():
 # ============================================================
 
 def _make_pipeline_stub():
-    from core.pipelines.pipeline import Pipeline
+    """Lightweight Pipeline stub; _remove_retracted_papers is a @staticmethod
+    so no instance attributes are needed, but we set the new URI window
+    attribute for correctness after Fix B.
+    """
+    from core.pipelines.pipeline import Pipeline, _URI_WINDOW_SIZE
     p = Pipeline.__new__(Pipeline)
     p._counter_lock = threading.Lock()
-    p._session_full_doc_uris = set()
+    p._session_uri_window = collections.deque(maxlen=_URI_WINDOW_SIZE)
     p._profiler_parse_failures = 0
     return p
 
@@ -546,6 +558,7 @@ def test_numeric_audit_skips_years():
     from core.pipelines.pipeline import Pipeline
     answer = "Measurements from 2020 show a change."
     context = "Recent observations confirm this trend."
+    # No assertion -- just verify it doesn't raise
     Pipeline._audit_numeric_faithfulness(answer, context, "When did change occur?")
 
 
@@ -553,6 +566,7 @@ def test_numeric_audit_skips_single_digits():
     from core.pipelines.pipeline import Pipeline
     answer = "There are 3 methods commonly used."
     context = "Two main approaches exist."
+    # No assertion -- just verify it doesn't raise
     Pipeline._audit_numeric_faithfulness(answer, context, "What methods exist?")
 
 
