@@ -1,11 +1,13 @@
-.PHONY: run diag test-profile lint format clean
+.PHONY: run run-one diag diag-cache diag-filter test-profile \
+        test-gen test-dist test-filter test-router test-fixes test-all \
+        lint format clean
 
 # -----------------------------------------------------------------------
 # run the parallel pipeline (defaults: 1 question per tier, 4 workers)
 # override: make run TIER_MIX=2,2,2,2,2 WORKERS=8
 # -----------------------------------------------------------------------
-TIER_MIX  ?= 1,1,1,1,1
-WORKERS   ?= 4
+TIER_MIX   ?= 1,1,1,1,1
+WORKERS    ?= 4
 OUTPUT_DIR ?= tests/output
 
 run:
@@ -49,6 +51,55 @@ for r in rows[:int('$(N)')]:
     _, _, cfg = p.profile_and_route(q)
     print(f'[{cfg.rule_hit:<14}] {q[:90]}')
 "
+
+# -----------------------------------------------------------------------
+# test runs  (OPENALEX_OFFLINE=1 = no live API calls)
+#
+# usage:
+#   make test-gen       <- generation phase (adaptive v2)
+#   make test-dist      <- tier distribution
+#   make test-filter    <- document filter phase 2
+#   make test-router    <- routing rules
+#   make test-fixes     <- phase 3 fix validation
+#   make test-all       <- full test suite
+# -----------------------------------------------------------------------
+TEST_ENV = OPENALEX_OFFLINE=1 PYTHONPATH=.
+PYTEST   = python -m pytest -q -s --tb=short
+
+test-gen:
+	mkdir -p logs tests/output
+	$(TEST_ENV) $(PYTEST) \
+		tests/test_adaptive_v2.py::test_phase3_generation \
+		2>&1 | tee logs/gen_$(shell date +%Y%m%d_%H%M%S).log
+
+test-dist:
+	mkdir -p logs tests/output
+	$(TEST_ENV) $(PYTEST) \
+		tests/test_adaptive_distribution.py \
+		2>&1 | tee logs/dist_$(shell date +%Y%m%d_%H%M%S).log
+
+test-filter:
+	mkdir -p logs tests/output
+	$(TEST_ENV) $(PYTEST) \
+		tests/test_filter_phase2.py \
+		2>&1 | tee logs/filter_$(shell date +%Y%m%d_%H%M%S).log
+
+test-router:
+	mkdir -p logs tests/output
+	$(TEST_ENV) $(PYTEST) \
+		tests/test_router_rules.py \
+		2>&1 | tee logs/router_$(shell date +%Y%m%d_%H%M%S).log
+
+test-fixes:
+	mkdir -p logs tests/output
+	$(TEST_ENV) $(PYTEST) \
+		tests/test_fixes_phase3.py \
+		2>&1 | tee logs/fixes_$(shell date +%Y%m%d_%H%M%S).log
+
+test-all:
+	mkdir -p logs tests/output
+	$(TEST_ENV) $(PYTEST) tests/ \
+		2>&1 | tee logs/all_$(shell date +%Y%m%d_%H%M%S).log
 
 # -----------------------------------------------------------------------
 # code quality
