@@ -32,32 +32,36 @@ Core ideas:
 ```
 core/
   agents/
-    ontology_agent.py          # OntologyAgent (profile + filter)
+    ontology_agent.py              # OntologyAgent (profile + filter)
     refinement_agent_abstracts.py  # RefinementAgentAbstracts
     refinement_agent_fulltext.py   # RefinementAgent1PassFullText
     generation_agent.py
     base_agent.py / base_refinement_agent.py
   pipelines/
-    pipeline.py                # Pipeline  (AdaptivePipeline alias kept)
-    adaptive_pipeline.py       # compat shim → re-exports Pipeline
+    pipeline.py                    # Pipeline  (AdaptivePipeline alias kept)
+    adaptive_pipeline.py           # compat shim -> re-exports Pipeline
   policy/
     router.py / rules.yaml
   utils/
-    data_models.py             # Pydantic models (PipelineConfig, RouteConfig, …)
+    data_models.py                 # Pydantic models (PipelineConfig, RouteConfig, …)
     fulltext_indexer.py
     aql_parser.py
     openalex_client.py
     helpers.py
 scripts/
-  run_pipeline.py              # parallel batch runner (was phase3_parallel.py)
-  diag.py                      # cache + filter diagnostics (was diag_cache_filter.py)
+  run_pipeline.py                  # parallel batch runner
+  diag.py                          # cache + filter diagnostics
+  audit_phase3.py                  # structural audit of JSONL output
+  score_phase3_full.py             # 9-dimension answer scorecard
+  check_retraction.py              # retraction scan on retrieved docs
+  _test_profile.py                 # routing smoke-test helper (used by make test-profile)
 prompts/
   ontology/ refinement/ generation/
 tests/
 data/
-  dlr/                         # DLR EO question set + AQL result cache
+  dlr/                             # DLR EO question set + AQL result cache
 cache/
-  fulltext/                    # PDF + text extraction cache
+  fulltext/                        # PDF + text extraction cache
 ```
 
 ---
@@ -65,26 +69,36 @@ cache/
 ## Quick start
 
 ```bash
-# 1. install deps
+# 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. set your Mistral API key
+# 2. Set your Mistral API key
 export MISTRAL_API_KEY=...
 
-# 3. run the pipeline (1 question per tier, 4 workers)
-make run
+# 3. Sanity check — 5 questions (1 per tier), ~5 min
+make smoke
 
-# run a single question by CSV row index
+# 4. Full evaluation run — ~70 questions, 30-90 min
+make eval
+
+# 5. Analyse results
+make audit   # structural scan
+make score   # 9-dimension scorecard
+
+# Run a single question by 1-based CSV row index
 make run-one IDX=5
 
-# diagnostics
+# Diagnostics
 make diag          # full: cache audit + filter probe
 make diag-cache    # cache audit only
 make diag-filter   # filter + refinement handoff only
 
-# routing smoke-test (no generation)
+# Routing smoke-test (no generation)
 make test-profile N=20
 ```
+
+For the full operator guide including all CLI flags, tier reference, and
+typical workflows, see **[RUNBOOK.md](RUNBOOK.md)**.
 
 ---
 
