@@ -94,7 +94,7 @@ Before writing, identify every named entity, mechanism, region, or comparison si
 
 ### USE OF NUMBERS AND SCOPE
 
-- You are encouraged to use quantitative details (percent changes, rates, ranges) from the CONTEXT and your training knowledge, as long as they are consistent.
+- Use quantitative details from the CONTEXT whenever available. Use training knowledge only for standard conceptual background or well-established physical constants — not for study-specific rates, years, regions, percentages, areas, or observational estimates.
 - When using quantitative details from training knowledge, only add a value if the CONTEXT does not already provide one and there is no conflict.
 - For every quantitative value from the CONTEXT, state: (a) the value and unit, (b) the geographic scope (e.g., “Hindu Kush Himalaya, 27–37°N”), and (c) the temporal scope (e.g., “2000–2024”).
 - If the CONTEXT gives a range or uncertainty, preserve it — do not simplify.
