@@ -339,6 +339,9 @@ class Pipeline:
         # Decode literal \uXXXX sequences that may appear when the input
         # CSV was serialised with ensure_ascii=True and the LLM reproduced
         # them verbatim (e.g. \u2082 for CO subscript-2).
+        # Also sanitize invalid \u escapes (e.g. \units, \uncertainty) that
+        # are not followed by 4 hex digits and would cause json.JSONDecodeError
+        # when the string is later serialised as part of a JSON prompt payload.
         enriched_context = self._unescape_unicode(enriched_context)
         log_refinement(log, enriched_context, elapsed=time.perf_counter() - t0)
 
@@ -1014,12 +1017,26 @@ class Pipeline:
 
     @staticmethod
     def _unescape_unicode(text: str) -> str:
-        r"""Decode literal \uXXXX escape sequences in LLM output text."""
-        return re.sub(
+        r"""Decode literal \uXXXX escape sequences in LLM output text.
+
+        Two-pass strategy:
+        1. Replace valid \uXXXX sequences (exactly 4 hex digits) with the
+           corresponding Unicode character.
+        2. Replace any remaining bare \u not followed by 4 hex digits
+           (e.g. \units, \uncertainty) with a literal backslash + u so the
+           string is safe for downstream JSON serialisation (e.g. inside the
+           Mistral SDK's httpx request payload).  Without this second pass,
+           json.loads / the SDK raises JSONDecodeError: bad escape \u.
+        """
+        # Pass 1: decode valid \uXXXX -> Unicode char
+        text = re.sub(
             r'\\u([0-9a-fA-F]{4})',
             lambda m: chr(int(m.group(1), 16)),
             text,
         )
+        # Pass 2: escape remaining bare \u (not followed by 4 hex digits)
+        text = re.sub(r'\\u(?![0-9a-fA-F]{4})', r'\\\\u', text)
+        return text
 
     @staticmethod
     def _audit_numeric_faithfulness(
