@@ -508,7 +508,10 @@ def main():
     parser.add_argument("--indices", type=int, nargs="+", default=None)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--context-filter", default="full", choices=["full", "slim", "scores_only"])
+    # Note: 'slim' and 'scores_only' were removed from base_refinement_agent
+    # (commit 83f18a3). Only 'full' is active; this argument is ignored by the
+    # adaptive pipeline and kept only for non-adaptive pipeline compatibility.
+    parser.add_argument("--context-filter", default="full", choices=["full"])
     parser.add_argument("--experiment-type", default="default")
     parser.add_argument("--include-relationships", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
