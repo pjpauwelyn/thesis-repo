@@ -425,6 +425,14 @@ class Pipeline:
                 kg_source=kg_source,
             )
 
+        # Sanitise bare \u escapes in the raw answer BEFORE any re.sub call.
+        # The LLM can emit \units, \upwelling, etc. which cause re.sub to raise
+        # 'bad escape \u at position N' when the string is used as a pattern
+        # input or flows through _normalize_and_extract_citations /
+        # _renumber_inline_citations. _unescape_unicode() decodes valid \uXXXX
+        # and escapes the rest to \\u so re is never exposed to a bare \u.
+        answer_obj.answer = self._unescape_unicode(answer_obj.answer)
+
         self._audit_numeric_faithfulness(answer_obj.answer, enriched_context, question)
 
         # -- 7. build verified references + sequential renumbering -----------
@@ -467,7 +475,8 @@ class Pipeline:
         # (e.g. [3][3] -> [3] when two old indices map to the same new index).
         answer_text = re.sub(r'(\[\d+\])(?:\1)+', r'\1', answer_text)
         answer_text = re.sub(r'(\[\d+\])+\s*$', '', answer_text).rstrip()
-        # Decode any remaining literal \uXXXX sequences in the generated answer.
+        # Decode any remaining literal \uXXXX sequences in the generated answer
+        # (belt-and-suspenders: catches any \u introduced by citation renumbering).
         answer_text = self._unescape_unicode(answer_text)
         # Fix 1-3: strip context-assembly artifacts from the answer body.
         answer_text = self._clean_answer_artifacts(answer_text)
