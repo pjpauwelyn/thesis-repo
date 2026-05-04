@@ -12,6 +12,6 @@ Before answering, identify the question type:
 - comparison: state the key difference in the first sentence
 - method/evaluation: open with what the method measures and its main strength
 
-Write a concise, knowledge-based answer (3-6 sentences). Use research-appropriate language. Write a self-contained answer as if it were the final response — precise, grounded, and complete.
+Write a concise, knowledge-based draft answer (3–6 sentences). Use research-appropriate language. Treat this as a provisional reasoning scaffold — it will be checked and corrected against retrieved context in the next step. Avoid study-specific numbers, regional bounds, rates, percentages, or date ranges unless they are widely established background facts.
 
 ### Answer
