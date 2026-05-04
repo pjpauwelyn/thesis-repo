@@ -1,7 +1,10 @@
 # Runbook — Adaptive RAG Pipeline
 
-This document is the single reference for running, evaluating, and debugging
-the pipeline.  All commands are run from the **repo root**.
+This document is the single reference for running and debugging the
+pipeline. All commands are run from the **repo root**.
+
+Answer evaluation is done manually — feed `phase3_answers_readable.txt`
+to your evaluation prompt of choice.
 
 ---
 
@@ -12,7 +15,7 @@ pip install -r requirements.txt
 export MISTRAL_API_KEY=<your-key>
 ```
 
-The live ArangoDB KG is optional.  If `ARANGO_ROOT_PASSWORD` is not set the
+The live ArangoDB KG is optional. If `ARANGO_ROOT_PASSWORD` is not set the
 pipeline falls back to the pre-parsed CSV documents automatically.
 
 ---
@@ -25,8 +28,8 @@ pipeline falls back to the pre-parsed CSV documents automatically.
 make smoke
 ```
 
-Runs **5 questions** (1 per tier) in parallel.  Takes ~5 minutes.  Use this
-to confirm the pipeline is healthy before committing or before a long eval run.
+Runs **5 questions** (1 per tier) in parallel. Takes ~5 minutes. Use this
+to confirm the pipeline is healthy before committing or before a long run.
 
 ```bash
 # Override number per tier or worker count
@@ -39,14 +42,14 @@ Output files written to `tests/output/`:
 
 ---
 
-### 2 — Full evaluation run (~70 questions)
+### 2 — Full generation run (~70 questions)
 
 ```bash
 make eval
 ```
 
-Processes the full DLR question set (~70 questions) using the production tier
-mix `5,15,10,10,30`.  Takes **30–90 minutes** depending on API latency.
+Processes the full DLR question set (~70 questions) using the production
+tier mix `5,15,10,10,30`. Takes **30–90 minutes** depending on API latency.
 
 ```bash
 # More workers for faster throughput (watch rate limits)
@@ -85,55 +88,30 @@ python scripts/run_pipeline.py --indices 1 5 12 --workers 3
 make test-profile N=20
 ```
 
-No API calls to the generation model are made.  Only the ontology/profiler
-LLM call (mistral-small-latest) runs.  Useful for checking routing rules.
+No API calls to the generation model are made. Only the ontology/profiler
+LLM call (mistral-small-latest) runs. Useful for checking routing rules.
 
 ---
 
 ### 5 — Diagnostics
 
 ```bash
-make diag          # full: cache audit + filter probe
-make diag-cache    # phase 1: PDF cache status only
-make diag-filter   # phase 2: document filter + refinement handoff
+make diag         # full: cache audit + filter probe
+make diag-cache   # phase 1: PDF cache status only
+make diag-filter  # phase 2: document filter + refinement handoff
 ```
 
 ---
 
-### 6 — Post-run scoring and auditing
-
-Run these **after** `make eval` or `make smoke` has written a JSONL file.
+### 6 — Test suite
 
 ```bash
-# Structural audit: blank refs, truncation, citation gaps
-make audit
-# → tests/output/phase3_audit.txt
-
-# 9-dimension scorecard for every answer
-make score
-# → tests/output/phase3_scorecard_full.txt
-
-# Scan retrieved documents for retracted papers
-make check-retraction
-```
-
-All three scripts also accept `--jsonl` to point at a custom output file:
-```bash
-python scripts/audit_phase3.py --jsonl path/to/my_run.jsonl
-python scripts/score_phase3_full.py --jsonl path/to/my_run.jsonl
-```
-
----
-
-### 7 — Test suite
-
-```bash
-make test-all       # entire tests/ suite (offline, no real API calls)
-make test-gen       # tests/test_adaptive_v2.py::test_phase3_generation
-make test-dist      # tier distribution tests
-make test-filter    # document filter phase
-make test-router    # routing rule tests
-make test-fixes     # phase 3 fix validation
+make test-all      # entire tests/ suite (offline, no real API calls)
+make test-gen      # tests/test_adaptive_v2.py::test_phase3_generation
+make test-dist     # tier distribution tests
+make test-filter   # document filter phase
+make test-router   # routing rule tests
+make test-fixes    # phase 3 fix validation
 ```
 
 All test targets set `OPENALEX_OFFLINE=1` and `PYTHONPATH=.` automatically.
@@ -182,12 +160,11 @@ Routing rules are defined in `core/policy/rules.yaml`.
 # 1. After any code change — quick health check
 make smoke
 
-# 2. Full research run
+# 2. Full generation run
 make eval
 
-# 3. Analyse results
-make audit
-make score
+# 3. Hand `tests/output/phase3_answers_readable.txt` to your evaluation
+#    prompt / external AI for scoring.
 
 # 4. If a specific question failed, re-run it alone
 make run-one IDX=12
@@ -201,6 +178,4 @@ make run-one IDX=12
 |------|-------------|
 | `tests/output/phase3_answers.jsonl` | One JSON record per question; primary output |
 | `tests/output/phase3_answers_readable.txt` | Human-readable answers + formatted references |
-| `tests/output/phase3_audit.txt` | Structural failure report (after `make audit`) |
-| `tests/output/phase3_scorecard_full.txt` | 9-dimension scorecard (after `make score`) |
 | `logs/*.log` | Timestamped logs from test-suite targets |
