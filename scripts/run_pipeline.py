@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -23,6 +24,22 @@ from core.pipelines.pipeline import Pipeline
 
 csv.field_size_limit(int(1e8))
 log = logging.getLogger("run_pipeline")
+
+# ---------------------------------------------------------------------------
+# JSON-safety helpers
+# ---------------------------------------------------------------------------
+_BAD_ESCAPE_RE = re.compile(r'\\u(?![0-9a-fA-F]{4})')
+
+def _sanitise(s: str) -> str:
+    """Escape bare \\u not followed by 4 hex digits so json.dumps is safe.
+
+    The LLM occasionally emits strings like \\units or \\upward which are
+    not valid JSON Unicode escapes and cause json.JSONDecodeError when the
+    JSONL file is read back.
+    """
+    if not s:
+        return s
+    return _BAD_ESCAPE_RE.sub(r'\\\\u', s)
 
 
 _CSV_CANDIDATES = [
@@ -304,7 +321,7 @@ def _write_outputs(records: List[Dict[str, Any]], output_dir: Path, save_context
                 "question": rec["question"],
                 "expected_tier": rec["expected_tier"],
                 "actual_tier": rec["actual_tier"],
-                "answer": rec["answer"],
+                "answer": _sanitise(rec["answer"]),
                 "enriched_context_chars": rec["enriched_context_chars"],
                 "excerpt_stats": rec["excerpt_stats"],
                 "references": rec["references"],
@@ -313,7 +330,7 @@ def _write_outputs(records: List[Dict[str, Any]], output_dir: Path, save_context
                 "error": rec["error"],
             }
             if save_context:
-                row["enriched_context"] = rec.get("enriched_context", "")
+                row["enriched_context"] = _sanitise(rec.get("enriched_context", ""))
             jf.write(json.dumps(row) + "\n")
             n_excerpts = (
                 rec["excerpt_stats"].get("n_excerpts", 0)
