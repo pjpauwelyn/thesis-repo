@@ -9,8 +9,6 @@ class AttributeValuePair(BaseModel):
     attribute: str = Field(..., description="attribute concept")
     value: str = Field(..., description="specific value")
     description: str = Field(..., description="short explanation")
-    value_type: Literal["numeric", "categorical", "temporal", "spatial"] = "categorical"
-    constraints: List[str] = Field(default_factory=list)
     centrality: float = Field(..., ge=0.0, le=1.0, description="importance score 0-1")
 
 
