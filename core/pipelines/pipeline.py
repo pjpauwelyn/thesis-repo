@@ -522,12 +522,47 @@ class Pipeline:
         references, quantities like 4,000, or year values. Out-of-range
         indices (N > _MAX_CITE_INDEX) are silently dropped.
 
-        Pre-pass: the model occasionally emits <<CITE:1,6>> (comma-separated
-        multi-cite) instead of <<CITE:1>><<CITE:6>>, particularly inside
-        markdown table cells. The pre-pass expands these to individual
-        single-integer sentinels before the main extraction loop runs.
+        Pre-pass 0: normalize sentinel body -- keep only digits, commas, spaces.
+        This strips non-numeric annotations the refinement LLM sometimes appends
+        inside the sentinel body:
+            <<CITE:9(abstract-derived)>>   ->  <<CITE:9>>
+            <<CITE:3 (low-relevance)>>     ->  <<CITE:3>>
+            <<CITE:1,2(abstract-derived)>> ->  <<CITE:1,2>>
+        These annotations originate from labels like "(Abstract only -- no
+        full-text selected)" that leak from render_documents_block into the
+        refinement context and are then reproduced verbatim by the generation
+        model.  Stripping them here is the mechanical safety net; the
+        refinement prompt also instructs the model not to emit them.
+
+        Pre-pass 1: expand comma-separated multi-cites:
+            <<CITE:1,6>>     ->  <<CITE:1>><<CITE:6>>
+            <<CITE:1,2,3,4>> ->  <<CITE:1>><<CITE:2>><<CITE:3>><<CITE:4>>
+        The model occasionally emits these inside markdown table cells instead
+        of the canonical split form <<CITE:1>><<CITE:6>>.
+        Pre-pass 0 MUST run before pre-pass 1 so that a combined form like
+        <<CITE:1,2(abstract-derived)>> is cleaned to <<CITE:1,2>> before the
+        comma-expansion regex runs.
+
+        Post-pass: after sentinel extraction, also collect any residual [N]
+        square-bracket markers that survive in the text (mixed-format output
+        where the model emits some sentinels and some legacy brackets, e.g.
+        <<CITE:1>>[2]).  These are added to cited_indices so the reference
+        builder includes them; they are left as-is in the text because
+        _renumber_inline_citations handles them in the same downstream pass.
         """
-        # Pre-pass: expand <<CITE:N,M,...>> → <<CITE:N>><<CITE:M>>...
+        # Pre-pass 0: normalize sentinel body -- strip everything after the
+        # last valid digit/comma/space sequence (catches annotations like
+        # "(abstract-derived)", "(low-relevance)", "- see abstract", etc.).
+        def _normalize_body(m: re.Match) -> str:
+            raw = m.group(1)
+            clean_body = re.sub(r"[^\d,\s].*", "", raw).strip().rstrip(",").strip()
+            if not clean_body:
+                return ""
+            return f"<<CITE:{clean_body}>>"
+
+        text = re.sub(r"<<CITE:([^>]+)>>", _normalize_body, text)
+
+        # Pre-pass 1: expand <<CITE:N,M,...>> -> <<CITE:N>><<CITE:M>>...
         def _expand_multi(m: re.Match) -> str:
             parts = re.split(r"[\s,]+", m.group(1).strip())
             return "".join(f"<<CITE:{p}>>" for p in parts if p.isdigit())
@@ -545,6 +580,13 @@ class Pipeline:
             return ""
 
         clean = re.sub(r"<<CITE:(\d+)>>", _replace, text)
+
+        # Post-pass: collect residual [N] brackets (mixed-format output).
+        for m in re.finditer(r"\[(\d+)\]", clean):
+            n = int(m.group(1))
+            if 1 <= n <= _MAX_CITE_INDEX:
+                indices.add(n)
+
         return clean, indices
 
     @staticmethod
