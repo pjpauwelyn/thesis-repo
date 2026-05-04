@@ -1,0 +1,150 @@
+TASK: Extract semantic attributes from Earth Observation questions
+
+Extract 4-8 attribute-value pairs capturing key concepts essential for answering the question.
+Focus on semantic completeness - cover all major scientific dimensions mentioned.
+
+MANDATORY CATEGORIES (cover ≥4 of 5):
+1. BIOPHYSICAL_VARIABLE: What's measured? (glacier_retreat, sea_ice_extent, albedo, carbon_flux)
+2. SENSOR/METHOD: How measured? (Sentinel-2, MODIS, SAR, time_series_analysis)
+3. SPATIAL_QUALIFIER: Where? (global, polar_regions, 1km_resolution)
+4. TEMPORAL_QUALIFIER: When? (decadal_trends, 1990-present, seasonal_cycle)
+5. APPLICATION_DOMAIN: Why? (climate_assessment, ecosystem_monitoring)
+
+CENTRALITY SCALE (6-point):
+- 1.0: ABSOLUTELY CRITICAL (answer impossible without this)
+- 0.9: CORE MECHANISM (primary driver of answer)
+- 0.7: IMPORTANT ENABLER (significantly constrains/enables)
+- 0.5: CONTEXTUAL SUPPORT (enriches but not essential)
+- 0.3: BACKGROUND FRAMEWORK (contextual framing)
+- 0.1: PERIPHERAL (minimal value)
+
+QUESTION
+{question}
+
+SEMANTIC COMPLETENESS GUIDANCE (CRITICAL)
+
+Focus on COMPLETE semantic coverage, NOT arbitrary pair counts.
+Extract ALL distinct concepts needed to fully answer the question.
+
+SEMANTIC COVERAGE REQUIREMENTS:
+1. Every major biophysical variable mentioned MUST be captured
+2. All measurement/observation methods implied MUST be included
+3. Geographic and temporal constraints MUST be represented
+4. Application context and scientific purpose MUST be clear
+
+COMPLEXITY TIERS (pair counts are GUIDELINES, not targets):
+
+Simple questions (typically 4–5 pairs):
+  Example: "What is albedo?"
+  - Core concept (1.0): albedo
+  - Measurement approach (0.9): satellite_observation
+  - Temporal context (0.7): seasonal_variation
+  - Application (0.5): climate_modeling
+
+Standard questions (typically 5–6 pairs):
+  Example: "How do glaciers influence climate?"
+  - Core mechanisms (1.0/0.9): glacier_retreat, albedo_feedback
+  - Observational methods (0.7): satellite_altimetry
+  - Temporal dynamics (0.7): long_term_trends
+  - Spatial context (0.5): polar_regions
+  - Applications (0.5): climate_change_assessment
+
+Complex questions (typically 6–8 pairs):
+  Example: "How do variations in glacier retreat, sea ice extent, and albedo influence carbon flux and heat absorption?"
+  - Multiple core variables (1.0/0.9): glacier_retreat, sea_ice_extent, albedo, carbon_flux
+  - Interaction mechanisms (0.9): ice_albedo_feedback, carbon_cycle_dynamics
+  - Measurement approaches (0.7): multi_sensor_integration
+  - Temporal dimensions (0.7): decadal_trends, seasonal_cycles
+  - Spatial dimensions (0.5): Arctic_vs_Antarctic, regional_variability
+  - Applications (0.5): climate_projections, ecosystem_impacts
+
+SEMANTIC VALIDATION CHECKLIST:
+✓ Does every major scientific concept in the question have a corresponding attribute?
+✓ Are all implied measurement/observation methods captured?
+✓ Are geographic and temporal constraints properly represented?
+✓ Is the scientific purpose/application context included?
+✓ Can a domain expert answer the question using ONLY these pairs?
+
+DO NOT:
+- Add pairs that don't correspond to actual question concepts
+- Omit concepts just to hit a specific pair count
+- Create redundant pairs (same concept with slightly different wording)
+- Include peripheral concepts that don't affect the answer
+
+CENTRALITY GUIDANCE (ENHANCED 6-POINT SCALE)
+
+Use this precise 6-point scale for more nuanced semantic importance:
+
+- 1.0 → ABSOLUTELY CRITICAL: The answer is impossible without addressing this concept
+- 0.9 → CORE MECHANISM: Primary driver of the answer (direct causal role)
+- 0.7 → IMPORTANT ENABLER: Significantly constrains or enables the core mechanism
+- 0.5 → CONTEXTUAL SUPPORT: Enriches understanding but not essential for basic answer
+- 0.3 → BACKGROUND FRAMEWORK: Provides contextual framing or historical perspective
+- 0.1 → PERIPHERAL: Rarely mentioned, provides minimal value
+
+Centrality distribution MUST reflect actual semantic importance, NOT artificial balance.
+
+KEY PRINCIPLES:
+- Multiple pairs CAN have 1.0/0.9 if they're genuinely critical (common in complex EO questions)
+- Avoid forcing lower scores just to create artificial distribution
+- Use the full 6-point range when question complexity warrants it
+- For simple questions, 1.0/0.7/0.3 may suffice (skip intermediate values)
+
+INSTRUCTIONS
+
+1. Read the QUESTION very carefully, identifying all distinct concepts and mechanisms.
+
+2. Assess question complexity:
+   - Simple (definition-focused): 4 pairs
+   - Standard (causal/comparative): 5–6 pairs
+   - Complex (multi-mechanism): 7–8 pairs
+
+3. Extract pairs according to complexity. Do NOT pad or truncate.
+
+4. MANDATORY CHECK: Ensure you cover ≥4 of the 5 categories above.
+   - If you're missing a major category, revisit the question and add it (even if implicit).
+   - Example: If no TEMPORAL_QUALIFIER appears but the question is about long-term trends, infer "long_term".
+
+5. DIVERSITY CHECK: Don't over-concentrate in one attribute category.
+   - Good: 2 biophysical_variables, 1 sensor_type, 1 temporal, 1 spatial, 1 application (6 pairs across 5 types).
+   - Acceptable: 3 biophysical_variables, 1 sensor_type, 1 temporal, 1 application (6 pairs, 4 types covered).
+   - Bad: 6 biophysical_variables, 0 sensors, 0 temporal (over-concentrated, under-specified).
+
+6. CENTRALITY: Use the full range when it reflects the question.
+   - Assign centrality based on the question structure, not on forcing a distribution.
+   - Simple Q: Expect 1–2 @ 1.0, 1–2 @ 0.8, 0–1 @ 0.5, 0 @ 0.2.
+   - Complex Q: Expect 2–4 @ 1.0, 2–4 @ 0.8, 1–2 @ 0.5, 0–1 @ 0.2.
+   - Clustering at 0.8 is honest if the question has multiple important drivers.
+
+7. DESCRIPTION QUALITY: Each description must be 1–2 sentences, specific to the question context.
+   - Good: "Column-integrated aerosol optical depth, a key atmospheric variable used to quantify particulate pollution and radiative forcing in the region of interest."
+   - Bad: "AOD is important."
+
+8. VALUE SPECIFICITY: Avoid vague or generic values.
+   - Good: glacier_velocity, surface_albedo_change, CH4_flux, PM2_5_concentration, NDVI_anomaly, ENSO_index.
+   - Bad: change, data, context, conditions.
+
+9. OUTPUT VALIDATION:
+   Before returning JSON, verify:
+   □ I have extracted 4–8 pairs based on question complexity (not forced to a fixed count).
+   □ I cover ≥4 of the 5 mandatory categories.
+   □ Centrality reflects question structure (honest, not forced).
+   □ No redundant or overlapping pairs.
+   □ All values are concrete and domain-appropriate for the EO question.
+   □ All descriptions explain the specific role in answering the question.
+   □ If this is a simple question, pair count should be ≤5. If complex, ≥6.
+
+RETURN ONLY THIS JSON STRUCTURE (valid JSON, no markdown):
+
+{{
+  "pairs": [
+    {{
+      "attribute": "attribute_name",
+      "value": "specific_value",
+      "description": "what this means in the context of the question",
+      "value_type": "categorical",
+      "constraints": ["optional unit or property, can be empty if none"],
+      "centrality": 1.0
+    }}
+  ]
+}}
