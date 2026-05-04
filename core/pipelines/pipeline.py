@@ -271,6 +271,7 @@ class Pipeline:
                 top_k_per_doc=cfg.top_k_per_doc,
             )
             log_excerpt_stats(log, excerpt_stats, elapsed=time.perf_counter() - t0)
+            self._warn_thin_sources(excerpt_stats)  # Fix 4: log thin sources
             self._assert_doc_block_ref_alignment(full_docs, abstract_docs, _doc_key_snapshot)
             documents_block = self._render_documents_block(full_docs, abstract_docs, excerpts)
         else:
@@ -465,6 +466,8 @@ class Pipeline:
         answer_text = re.sub(r'(\[\d+\])+\s*$', '', answer_text).rstrip()
         # Decode any remaining literal \uXXXX sequences in the generated answer.
         answer_text = self._unescape_unicode(answer_text)
+        # Fix 1-3: strip context-assembly artifacts from the answer body.
+        answer_text = self._clean_answer_artifacts(answer_text)
 
         if fmt_refs:
             refs_block = "\n\n## References\n" + "\n".join(fmt_refs)
@@ -544,7 +547,7 @@ class Pipeline:
         markdown table cells. The pre-pass expands these to individual
         single-integer sentinels before the main extraction loop runs.
         """
-        # Pre-pass: expand <<CITE:N,M,...>> → <<CITE:N>><<CITE:M>>...
+        # Pre-pass: expand <<CITE:N,M,...>> -> <<CITE:N>><<CITE:M>>...
         def _expand_multi(m: re.Match) -> str:
             parts = re.split(r"[\s,]+", m.group(1).strip())
             return "".join(f"<<CITE:{p}>>" for p in parts if p.isdigit())
@@ -952,6 +955,53 @@ class Pipeline:
                 demoted,
             )
         return new_full, new_abstract
+
+    @staticmethod
+    def _warn_thin_sources(
+        excerpt_stats: Dict[str, Any],
+        threshold: int = 50,
+    ) -> None:
+        """Emit a WARNING for each doc whose kepttokens falls below *threshold*.
+
+        Fix 4 (log-only observability): fires after excerpt selection and records
+        thin-evidence sources so evaluation runs can identify which questions
+        relied on near-empty documents.  No documents are filtered or removed.
+        """
+        for pd in excerpt_stats.get("perdoc", []):
+            kt = pd.get("kepttokens", threshold)
+            if kt < threshold:
+                log.warning(
+                    "thin_source: work=%s title='%s' kepttokens=%d -- "
+                    "answer may rely on near-empty evidence for this document",
+                    pd.get("workid", "?"),
+                    (pd.get("title") or "?")[:60],
+                    kt,
+                )
+
+    @staticmethod
+    def _clean_answer_artifacts(text: str) -> str:
+        """Strip known context-assembly artifacts that bleed into answer bodies.
+
+        Fixes 1-3 (post-render string cleanup only; no semantic changes):
+        1. TITLE <section> header bleed  -- context section labels copied verbatim
+           by the LLM from the documents block into the answer body.
+        2. httpsopenalex.org URL bleed   -- raw URIs with missing colon/slashes
+           that leaked from reference block serialisation into the answer.
+        3. Broken unit strings           -- missing spaces produced by context
+           serialisation (e.g. "13.5Wm" -> "13.5 W/m2", "0.5mday" -> "0.5 m/day").
+
+        Intentionally excluded: CO/CH4 subscript normalisation (ambiguous --
+        CO is a valid compound distinct from CO2).
+        """
+        # Fix 1: strip "TITLE <Header Text>" lines anchored to start-of-line.
+        text = re.sub(r'(?m)^TITLE\s+[A-Z][^\n]*\n?', '', text)
+        # Fix 2: strip raw OpenAlex URL bleed (missing "://" -> httpsopenalex...).
+        text = re.sub(r'https?openalex\.org\w+', '', text)
+        # Fix 3a: digit immediately followed by "Wm" -> "W/m\u00b2".
+        text = re.sub(r'(\d)(Wm)\b', r'\1 W/m\u00b2', text)
+        # Fix 3b: digit immediately followed by "mday" -> "m/day".
+        text = re.sub(r'(\d)(mday)\b', r'\1 m/day', text)
+        return text
 
     @staticmethod
     def _unescape_unicode(text: str) -> str:
