@@ -70,7 +70,7 @@ rules:
 #   2000 tok ~= 15s at 130 tok/s, well within the 45s ceiling.
   - name: tier_1_def
     when:
-      question_type: {in: [definition, factual]}
+      question_type: {in: [definition]}
       quantitativity: {lt: 0.45}
       complexity: {lt: 0.60}
     config:
