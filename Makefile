@@ -1,9 +1,8 @@
 .PHONY: smoke run run-one eval eval-full \
-        diag diag-cache diag-filter \
-        test-profile \
-        audit score check-retraction \
-        test-gen test-dist test-filter test-router test-fixes test-all \
-        lint format clean
+	diag diag-cache diag-filter \
+	test-profile \
+	test-gen test-dist test-filter test-router test-fixes test-all \
+	lint format clean
 
 # ============================================================
 # Configuration
@@ -11,8 +10,8 @@
 TIER_MIX   ?= 1,1,1,1,1
 WORKERS    ?= 4
 OUTPUT_DIR ?= tests/output
-TEST_ENV    = OPENALEX_OFFLINE=1 PYTHONPATH=.
-PYTEST      = python -m pytest -q -s --tb=short
+TEST_ENV   = OPENALEX_OFFLINE=1 PYTHONPATH=.
+PYTEST     = python -m pytest -q -s --tb=short
 
 # ============================================================
 # Quick sanity check  (1 question per tier = 5 questions total)
@@ -46,14 +45,14 @@ eval-full: eval
 
 # ============================================================
 # Run a single question by 1-based CSV row index
-# Example:  make run-one IDX=7
+# Example: make run-one IDX=7
 # ============================================================
 IDX ?= 1
 run-one:
 	python scripts/run_pipeline.py --indices $(IDX) --workers 1
 
 # ============================================================
-# Diagnostics  (cache audit + document filter inspection)
+# Diagnostics (cache audit + document filter inspection)
 # ============================================================
 diag:
 	python scripts/diag.py
@@ -65,32 +64,15 @@ diag-filter:
 	python scripts/diag.py --phase 2
 
 # ============================================================
-# Routing smoke-test  (profile N questions, no generation)
-# Example:  make test-profile N=20
+# Routing smoke-test (profile N questions, no generation)
+# Example: make test-profile N=20
 # ============================================================
 N ?= 10
 test-profile:
 	python scripts/_test_profile.py $(N)
 
 # ============================================================
-# Post-run analysis
-# audit: structural scan of a JSONL output for bad references,
-#        truncation, citation gaps.  Writes phase3_audit.txt.
-# score: 9-dimension scorecard for all answers.
-#        Writes phase3_scorecard_full.txt.
-# check-retraction: scan retrieved docs for retracted papers.
-# ============================================================
-audit:
-	python scripts/audit_phase3.py
-
-score:
-	python scripts/score_phase3_full.py
-
-check-retraction:
-	python scripts/check_retraction.py
-
-# ============================================================
-# Test suite  (OPENALEX_OFFLINE=1 = no live API calls)
+# Test suite (OPENALEX_OFFLINE=1 = no live API calls)
 # ============================================================
 test-gen:
 	mkdir -p logs tests/output
