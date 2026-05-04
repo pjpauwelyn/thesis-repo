@@ -25,6 +25,9 @@ Core ideas:
   `RefinementAgent1PassFullText` (full-text mode) compress retrieved docs into
   a grounded context block before generation.
 
+Answer evaluation is **manual** — hand `phase3_answers_readable.txt` to
+your evaluation prompt of choice.
+
 ---
 
 ## Repo layout
@@ -32,36 +35,35 @@ Core ideas:
 ```
 core/
   agents/
-    ontology_agent.py              # OntologyAgent (profile + filter)
-    refinement_agent_abstracts.py  # RefinementAgentAbstracts
-    refinement_agent_fulltext.py   # RefinementAgent1PassFullText
+    ontology_agent.py            # OntologyAgent (profile + filter)
+    refinement_agent_abstracts.py # RefinementAgentAbstracts
+    refinement_agent_fulltext.py  # RefinementAgent1PassFullText
     generation_agent.py
     base_agent.py / base_refinement_agent.py
   pipelines/
-    pipeline.py                    # Pipeline  (AdaptivePipeline alias kept)
-    adaptive_pipeline.py           # compat shim -> re-exports Pipeline
+    pipeline.py                  # Pipeline  (AdaptivePipeline alias kept)
+    adaptive_pipeline.py         # compat shim -> re-exports Pipeline
   policy/
     router.py / rules.yaml
   utils/
-    data_models.py                 # Pydantic models (PipelineConfig, RouteConfig, …)
+    data_models.py               # Pydantic models (PipelineConfig, RouteConfig, …)
     fulltext_indexer.py
     aql_parser.py
     openalex_client.py
     helpers.py
 scripts/
-  run_pipeline.py                  # parallel batch runner
-  diag.py                          # cache + filter diagnostics
-  audit_phase3.py                  # structural audit of JSONL output
-  score_phase3_full.py             # 9-dimension answer scorecard
-  check_retraction.py              # retraction scan on retrieved docs
-  _test_profile.py                 # routing smoke-test helper (used by make test-profile)
+  run_pipeline.py                # parallel batch runner
+  diag.py                        # cache + filter diagnostics
+  _test_profile.py               # routing smoke-test helper (used by make test-profile)
 prompts/
-  ontology/ refinement/ generation/
+  ontology/
+  refinement/
+  generation/
 tests/
 data/
-  dlr/                             # DLR EO question set + AQL result cache
+  dlr/                           # DLR EO question set + AQL result cache
 cache/
-  fulltext/                        # PDF + text extraction cache
+  fulltext/                      # PDF + text extraction cache
 ```
 
 ---
@@ -78,20 +80,16 @@ export MISTRAL_API_KEY=...
 # 3. Sanity check — 5 questions (1 per tier), ~5 min
 make smoke
 
-# 4. Full evaluation run — ~70 questions, 30-90 min
+# 4. Full generation run — ~70 questions, 30-90 min
 make eval
-
-# 5. Analyse results
-make audit   # structural scan
-make score   # 9-dimension scorecard
 
 # Run a single question by 1-based CSV row index
 make run-one IDX=5
 
 # Diagnostics
-make diag          # full: cache audit + filter probe
-make diag-cache    # cache audit only
-make diag-filter   # filter + refinement handoff only
+make diag         # full: cache audit + filter probe
+make diag-cache   # cache audit only
+make diag-filter  # filter + refinement handoff only
 
 # Routing smoke-test (no generation)
 make test-profile N=20
