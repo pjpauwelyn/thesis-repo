@@ -47,6 +47,7 @@ RE-SCAN FOCUS: Remember the QUERY {question}
 
 4. If something important is in the context but missing from the draft:
    - Add it only if it clearly helps answer the question (not just because it is interesting).
+   - This includes prioritisation signals in the context — if you see sub-items labelled ‘Emphasise:’ or ‘Caveat:’, incorporate their guidance into the answer structure.
 
 5. If something is in the draft but NOT in the context:
    - Keep it if it is standard, well-established background knowledge AND does not contradict the context.
@@ -56,6 +57,8 @@ RE-SCAN FOCUS: Remember the QUERY {question}
    - Support each synthesis with one or more citation markers when the statements are backed by specific references. Do not write phrases such as ‘(from context synthesis)’ or any other explanatory parenthetical; either attach a reference marker or omit the parenthetical entirely.
 
 7. Observational or study-specific numeric values from the draft answer (e.g., measured rates, regional extents, study-reported percentages, specific year ranges tied to a dataset) that do not appear verbatim in the CONTEXT with the same unit and scope must be discarded. Do not carry forward or paraphrase such numbers. Exception: widely established physical constants and standard baseline values (e.g., Stefan-Boltzmann constant, standard atmospheric lapse rate) may be retained without context confirmation — they are domain background, not study claims.
+
+8. If a reference is marked [abstract only — full text unavailable], any specific numeric value attributed to it must be treated as lower-confidence. If you cite such a reference for a precise number, add (abstract-derived) immediately after the citation marker. If such a reference is used to support a mechanistic or process claim (rather than a numeric value), present it as indicative rather than established, and add (abstract-derived) after the citation marker.
 
 ### DIRECTNESS — BOTTOM LINE UP FRONT
 
@@ -95,6 +98,7 @@ Before writing, identify every named entity, mechanism, region, or comparison si
 ### USE OF NUMBERS AND SCOPE
 
 - Use quantitative details from the CONTEXT whenever available. Use training knowledge only for standard conceptual background or well-established physical constants — not for study-specific rates, years, regions, percentages, areas, or observational estimates.
+- When the CONTEXT contains a [QUANTITATIVE VALUES EXTRACTED] table, prefer values from that table over the same claim stated only in narrative text — the table represents the verified distillation.
 - When using quantitative details from training knowledge, only add a value if the CONTEXT does not already provide one and there is no conflict.
 - For every quantitative value from the CONTEXT, state: (a) the value and unit, (b) the geographic scope (e.g., “Hindu Kush Himalaya, 27–37°N”), and (c) the temporal scope (e.g., “2000–2024”).
 - If the CONTEXT gives a range or uncertainty, preserve it — do not simplify.
