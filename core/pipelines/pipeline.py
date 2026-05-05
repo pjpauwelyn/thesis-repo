@@ -1009,7 +1009,7 @@ class Pipeline:
         2. httpsopenalex.org URL bleed   -- raw URIs with missing colon/slashes
            that leaked from reference block serialisation into the answer.
         3. Broken unit strings           -- missing spaces produced by context
-           serialisation (e.g. "13.5Wm" -> "13.5 W/m2", "0.5mday" -> "0.5 m/day").
+           serialisation (e.g. "13.5Wm" -> "13.5 W/m²", "0.5mday" -> "0.5 m/day").
 
         Intentionally excluded: CO/CH4 subscript normalisation (ambiguous --
         CO is a valid compound distinct from CO2).
@@ -1018,8 +1018,11 @@ class Pipeline:
         text = re.sub(r'(?m)^TITLE\s+[A-Z][^\n]*\n?', '', text)
         # Fix 2: strip raw OpenAlex URL bleed (missing "://" -> httpsopenalex...).
         text = re.sub(r'https?openalex\.org\w+', '', text)
-        # Fix 3a: digit immediately followed by "Wm" -> "W/m\u00b2".
-        text = re.sub(r'(\d)(Wm)\b', r'\1 W/m\u00b2', text)
+        # Fix 3a: digit immediately followed by "Wm" -> "W/m²".
+        # NOTE: use a plain string (not r'...') so \u00b2 is decoded to ²
+        # at Python parse time; raw strings leave \u00b2 as literal characters
+        # which re.sub rejects with "bad escape \u at position 6".
+        text = re.sub(r'(\d)(Wm)\b', '\\1 W/m\u00b2', text)
         # Fix 3b: digit immediately followed by "mday" -> "m/day".
         text = re.sub(r'(\d)(mday)\b', r'\1 m/day', text)
         return text
