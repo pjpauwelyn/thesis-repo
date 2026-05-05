@@ -14,7 +14,7 @@ DOCUMENTS are numbered; scan them from 1 to N and use only the 3–8 most ontolo
 When selecting the 3–8 most relevant DOCUMENTS:
 - Prefer items whose title, abstract, or full-text excerpts explicitly mention the key ONTOLOGY attributes in {ontology} (e.g., main biophysical variables or application domains).
 - Among matches, prefer items that HAVE full-text excerpts (these offer richer evidence than abstracts).
-- If more than 8 items match, choose the 3–8 most recent by publication year.
+- If more than 8 items match, prefer those whose title, abstract, or full-text excerpts explicitly name the most attributes from {ontology}. Among equally relevant items, prefer the most recent by publication year.
 - If fewer than 3 items match, use all matching items and state the limited coverage in [CAVEATS & GAPS].
 
 - DOCUMENTS (numbered 1 to N; each entry contains title, authors, year, abstract,
@@ -22,7 +22,7 @@ When selecting the 3–8 most relevant DOCUMENTS:
 {documents_block}
 
   Format of each entry:
-  === Document [N]: "Title" ===
+  === Document [N]: “Title” ===
   Authors: ... (Year) | URI
   Abstract: ...
   Full-text excerpts:
@@ -39,7 +39,7 @@ EVIDENCE PRECEDENCE (critical — this is the main reason full-text is provided)
 - For each document, also track whether full-text excerpts are available; this feeds [CAVEATS & GAPS].
 
 EXCERPT-SAFETY RULES
-- Excerpts are CHUNKED; a sentence may be truncated at chunk boundaries. If a sentence ends mid-clause or mid-number, do not reconstruct the missing part — either skip it or flag it as "(excerpt truncated)".
+- Excerpts are CHUNKED; a sentence may be truncated at chunk boundaries. If a sentence ends mid-clause or mid-number, do not reconstruct the missing part — either skip it or flag it as “(excerpt truncated)”.
 - Respect the section tag on each excerpt:
    * Methods / Materials → source of method, instrument, algorithm, resolution, study area, study period.
    * Results → source of numeric findings, trends, significance, effect sizes. Prefer these for quantitative claims.
@@ -49,7 +49,7 @@ EXCERPT-SAFETY RULES
 - Each excerpt is labelled `<<< Section: S | p. P >>>`. Use these exact identifiers when citing.
 
 CITATION CONVENTION
-- Every quantitative claim MUST carry an evidence tag: `[doc N, Section, p. P]` (e.g., `[doc 3, Results, p. 7]`). If a section is "unknown", write `[doc N, p. P]`.
+- Every quantitative claim MUST carry an evidence tag: `[doc N, Section, p. P]` (e.g., `[doc 3, Results, p. 7]`). If a section is “unknown”, write `[doc N, p. P]`.
 - Every non-quantitative claim also carries `[doc N]` (page optional).
 - Short verbatim quotes (≤25 words) are allowed and encouraged for exact numeric statements; wrap them in double quotes and keep units verbatim.
 - Never merge numbers from two documents into a single claim; each value cites exactly one doc.
@@ -59,8 +59,8 @@ GENERAL RULES
 - Use ONLY information from the ONTOLOGY and DOCUMENTS. Do NOT use training knowledge.
 - Hallucination guardrail:
    - Do NOT invent numbers, regions, years, methods, sensors, algorithms, or citations.
-   - Do NOT "round" or "clean up" verbatim numbers from excerpts — copy exactly, including decimal precision and units as written.
-   - If something is missing, write "Not available in evidence" instead of leaving a placeholder.
+   - Do NOT “round” or “clean up” verbatim numbers from excerpts — copy exactly, including decimal precision and units as written.
+   - If something is missing, write “Not available in evidence” instead of leaving a placeholder.
    - Do NOT create new references or modify any reference metadata.
 - Be concise but informative. Use bullets, but include key methodological details (sensor, algorithm, resolution, period) and at least one short explanatory sentence per topic when available.
 - Always specify scope (region + time) when giving quantitative results.
@@ -83,12 +83,12 @@ Supporting attributes found:
 [TOPICS AND INFORMATION]
 # Topic name 1
 Findings: 1–3 key findings. For every numeric claim, quote the exact value and unit from the excerpt and attach [doc N, Section, p. P]. Prefer Results-section numbers; supplement with Methods for the instrument/algorithm.
-Evidence: Short citation (e.g., "Author et al., 2020") AND the doc index, e.g., "Smith et al., 2020 [doc 3]".
-Mechanisms / methods: Brief description of the measurement approach or main drivers, quoting the relevant Methods-section detail where available (e.g., "Trend derived from Sentinel‑1 backscatter at 10 m; Theil–Sen regression [doc 3, Methods, p. 4]").
-Scope: Geographic: {region or "global"} | Temporal: {years}.
-Confidence: {0–1} with 1 short reason grounded in the excerpts (e.g., "direct in-situ measurements with n=240 plots [doc 3, Methods, p. 3]").
+Evidence: Short citation (e.g., “Author et al., 2020”) AND the doc index, e.g., “Smith et al., 2020 [doc 3]”.
+Mechanisms / methods: Brief description of the measurement approach or main drivers, quoting the relevant Methods-section detail where available (e.g., “Trend derived from Sentinel‑01 backscatter at 10 m; Theil–Sen regression [doc 3, Methods, p. 4]”).
+Scope: Geographic: {region or “global”} | Temporal: {years}.
+Confidence: {0–1} with 1 short reason grounded in the excerpts (e.g., “direct in-situ measurements with n=240 plots [doc 3, Methods, p. 3]”).
 Limitations: 1–2 specific caveats drawn from the Discussion/Limitations excerpts when available.
-Use: Short instruction for the answer model (e.g., "Use as primary quantitative trend; note regional coverage gap from [doc 3, Discussion, p. 11]").
+Use: Short instruction for the answer model (e.g., “Use as primary quantitative trend; note regional coverage gap from [doc 3, Discussion, p. 11]”).
 
 Topic name 2 (optional)
 [same fields as above, only if it clearly adds value]
@@ -100,11 +100,11 @@ Topic name 3 (optional)
 [QUANTITATIVE VALUES EXTRACTED]
 If any numeric values are present in the evidence above, list them here in a compact table.
 Include ONLY values explicitly stated in full-text excerpts or abstracts — do NOT invent or round.
-If no numeric values appear in the evidence, write exactly: "No explicit quantitative values found."
+If no numeric values appear in the evidence, write exactly: “No explicit quantitative values found.”
 
 | value | unit | scope (region / time / material / method) | uncertainty / qualifier | source |
 |-------|------|-------------------------------------------|------------------------|--------|
-| [exact value as in excerpt] | [unit as written] | [region, time window, or study context] | [±, CI, p, range, or "none stated"] | [doc N, Section, p. P] |
+| [exact value as in excerpt] | [unit as written] | [region, time window, or study context] | [±, CI, p, range, or “none stated”] | [doc N, Section, p. P] |
 
 Rules for this table:
 - One row per distinct value (do not merge values from different documents).
@@ -140,7 +140,7 @@ Data coverage:
 Full-text coverage:
 - Documents with PDF excerpts available: {count}/{total}.
 - Documents relying on abstract only: {list doc numbers}.
-- Sections represented in excerpts: {e.g., "Methods, Results for docs 1,3; Discussion only for doc 5"}.
+- Sections represented in excerpts: {e.g., “Methods, Results for docs 1,3; Discussion only for doc 5”}.
 
 Key limitations:
 - 1–3 bullets with the most important limitations for answering the question, drawn from Discussion/Conclusion excerpts where possible.
