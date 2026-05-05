@@ -209,6 +209,10 @@ class GenerationAgent(BaseAgent):
         regex, leaving cited_indices under-counted relative to the pipeline
         extraction path.
 
+        Fix D: extraction regexes now accept >{1,2} instead of requiring
+        exactly >> so that <<CITE:3> (single closing >) emitted by the model
+        is handled identically to the well-formed <<CITE:3>> variant.
+
         Indices above _MAX_CITE_INDEX (30) are treated as hallucinated and
         dropped so they never reach _build_verified_references without a
         corresponding index_remap entry.
@@ -216,16 +220,15 @@ class GenerationAgent(BaseAgent):
         indices: Set[int] = set()
 
         if "<<CITE:" in answer_body:
-            # Fix C -- Pre-pass: expand <<CITE:N,M,...>> -> <<CITE:N>><<CITE:M>>...
-            # The model occasionally emits comma-separated multi-cites inside
-            # markdown table cells. Mirrors the pre-pass in pipeline.py's
-            # _extract_sentinel_citations so both extraction paths stay in sync.
+            # Fix C+D -- Pre-pass: expand <<CITE:N,M,...>>{1,2} -> <<CITE:N>><<CITE:M>>...
+            # Accepts both >> and single > closing so malformed sentinels are
+            # normalised before the single-integer extraction loop.
             def _expand(m: re.Match) -> str:
                 parts = re.split(r"[\s,]+", m.group(1).strip())
                 return "".join(f"<<CITE:{p}>>" for p in parts if p.isdigit())
-            answer_body = re.sub(r"<<CITE:([\d,\s]+)>>", _expand, answer_body)
+            answer_body = re.sub(r"<<CITE:([\d,\s]+)>{1,2}", _expand, answer_body)
 
-            for m in re.finditer(r"<<CITE:(\d+)>>", answer_body):
+            for m in re.finditer(r"<<CITE:(\d+)>{1,2}", answer_body):
                 n = int(m.group(1))
                 if 1 <= n <= _MAX_CITE_INDEX:
                     indices.add(n)

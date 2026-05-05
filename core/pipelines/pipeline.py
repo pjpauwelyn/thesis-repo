@@ -558,13 +558,19 @@ class Pipeline:
         multi-cite) instead of <<CITE:1>><<CITE:6>>, particularly inside
         markdown table cells. The pre-pass expands these to individual
         single-integer sentinels before the main extraction loop runs.
+
+        Fix D: both regexes now use >{1,2} instead of requiring exactly >>
+        so that <<CITE:3> (single closing >) is handled identically to the
+        well-formed <<CITE:3>> variant.  The safety-net strip in
+        _clean_answer_artifacts removes any residual markers that still
+        survive all extraction paths.
         """
-        # Pre-pass: expand <<CITE:N,M,...>> -> <<CITE:N>><<CITE:M>>...
+        # Pre-pass: expand <<CITE:N,M,...>> or <<CITE:N,M,...> -> <<CITE:N>><<CITE:M>>...
         def _expand_multi(m: re.Match) -> str:
             parts = re.split(r"[\s,]+", m.group(1).strip())
             return "".join(f"<<CITE:{p}>>" for p in parts if p.isdigit())
 
-        text = re.sub(r"<<CITE:([\d,\s]+)>>", _expand_multi, text)
+        text = re.sub(r"<<CITE:([\d,\s]+)>{1,2}", _expand_multi, text)
 
         # Main extraction: single-integer sentinels only.
         indices: Set[int] = set()
@@ -576,7 +582,7 @@ class Pipeline:
                 return f"[{n}]"
             return ""
 
-        clean = re.sub(r"<<CITE:(\d+)>>", _replace, text)
+        clean = re.sub(r"<<CITE:(\d+)>{1,2}", _replace, text)
         return clean, indices
 
     @staticmethod
@@ -1009,7 +1015,11 @@ class Pipeline:
         2. httpsopenalex.org URL bleed   -- raw URIs with missing colon/slashes
            that leaked from reference block serialisation into the answer.
         3. Broken unit strings           -- missing spaces produced by context
-           serialisation (e.g. "13.5Wm" -> "13.5 W/m²", "0.5mday" -> "0.5 m/day").
+           serialisation (e.g. "13.5Wm" -> "13.5 W/m\u00b2", "0.5mday" -> "0.5 m/day").
+
+        Fix D (safety net): any <<CITE:...> or <<CITE:...>> marker that survived
+        all extraction paths (e.g. because the model emitted a single closing >)
+        is stripped here as a last resort so it never appears in the final output.
 
         Intentionally excluded: CO/CH4 subscript normalisation (ambiguous --
         CO is a valid compound distinct from CO2).
@@ -1018,13 +1028,18 @@ class Pipeline:
         text = re.sub(r'(?m)^TITLE\s+[A-Z][^\n]*\n?', '', text)
         # Fix 2: strip raw OpenAlex URL bleed (missing "://" -> httpsopenalex...).
         text = re.sub(r'https?openalex\.org\w+', '', text)
-        # Fix 3a: digit immediately followed by "Wm" -> "W/m²".
-        # NOTE: use a plain string (not r'...') so \u00b2 is decoded to ²
+        # Fix 3a: digit immediately followed by "Wm" -> "W/m\u00b2".
+        # NOTE: use a plain string (not r'...') so \u00b2 is decoded to \u00b2
         # at Python parse time; raw strings leave \u00b2 as literal characters
         # which re.sub rejects with "bad escape \u at position 6".
         text = re.sub(r'(\d)(Wm)\b', '\\1 W/m\u00b2', text)
         # Fix 3b: digit immediately followed by "mday" -> "m/day".
         text = re.sub(r'(\d)(mday)\b', r'\1 m/day', text)
+        # Fix D: safety-net strip for any residual <<CITE:...> or <<CITE:...>>
+        # that escaped extraction (e.g. single closing > instead of >>).
+        # This runs AFTER all extraction paths so it never interferes with
+        # index collection -- it only removes the now-dead marker text.
+        text = re.sub(r'<<CITE:[^>\n]*>{1,2}', '', text)
         return text
 
     @staticmethod
