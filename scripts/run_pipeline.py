@@ -307,10 +307,54 @@ def _run_one(
     }
 
 
-def _write_outputs(records: List[Dict[str, Any]], output_dir: Path, save_context: bool = False) -> Tuple[Path, Path]:
+# ---------------------------------------------------------------------------
+# Generation lineage helpers
+# ---------------------------------------------------------------------------
+_MIN_QUESTIONS_TO_KEEP = 4
+_GEN_DIR_PREFIX = "full_gen_attempt-"
+
+
+def _next_gen_index(base_dir: Path) -> int:
+    """Return the next available full_gen_attempt-N index (1-based)."""
+    existing = [
+        d for d in base_dir.iterdir()
+        if d.is_dir() and d.name.startswith(_GEN_DIR_PREFIX)
+    ] if base_dir.exists() else []
+    indices = []
+    for d in existing:
+        try:
+            indices.append(int(d.name[len(_GEN_DIR_PREFIX):]))
+        except ValueError:
+            pass
+    return max(indices, default=0) + 1
+
+
+def _write_outputs(
+    records: List[Dict[str, Any]],
+    output_dir: Path,
+    save_context: bool = False,
+) -> Tuple[Optional[Path], Optional[Path]]:
+    """Write outputs into a versioned full_gen_attempt-N subdirectory.
+
+    Skips writing entirely when fewer than _MIN_QUESTIONS_TO_KEEP records are
+    present — those runs are treated as throwaway smoke-tests.
+    Returns (txt_path, jsonl_path) or (None, None) when skipped.
+    """
+    ok_records = [r for r in records if r["error"] is None]
+    if len(records) < _MIN_QUESTIONS_TO_KEEP:
+        log.warning(
+            "only %d record(s) produced; skipping lineage write (threshold=%d)",
+            len(records), _MIN_QUESTIONS_TO_KEEP,
+        )
+        return None, None
+
     output_dir.mkdir(parents=True, exist_ok=True)
-    txt_path  = output_dir / "phase3_answers_readable.txt"
-    jsonl_path = output_dir / "phase3_answers.jsonl"
+    gen_index = _next_gen_index(output_dir)
+    gen_dir = output_dir / f"{_GEN_DIR_PREFIX}{gen_index}"
+    gen_dir.mkdir(parents=True, exist_ok=True)
+
+    txt_path   = gen_dir / "answers_readable.txt"
+    jsonl_path = gen_dir / "answers.jsonl"
     records = sorted(records, key=lambda r: r["job_idx"])
 
     with jsonl_path.open("w", encoding="utf-8") as jf, \
@@ -352,6 +396,7 @@ def _write_outputs(records: List[Dict[str, Any]], output_dir: Path, save_context
             )
             tf.write("=" * 60 + "\n\n")
 
+    log.info("lineage: wrote attempt-%d (%d questions) -> %s", gen_index, len(records), gen_dir)
     return txt_path, jsonl_path
 
 
@@ -535,8 +580,11 @@ def main() -> int:
     err = len(records) - ok
     print("\n" + "=" * 72)
     print(f"pipeline complete: ok={ok}, err={err}, total_elapsed={elapsed:.1f}s")
-    print(f"output txt:   {txt_path}")
-    print(f"output jsonl: {jsonl_path}")
+    if txt_path:
+        print(f"output txt:   {txt_path}")
+        print(f"output jsonl: {jsonl_path}")
+    else:
+        print(f"output: skipped (fewer than {_MIN_QUESTIONS_TO_KEEP} questions)")
     print("=" * 72)
     return 0 if err == 0 else 1
 
