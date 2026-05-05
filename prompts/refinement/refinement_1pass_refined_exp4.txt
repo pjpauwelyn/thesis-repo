@@ -13,7 +13,7 @@ INPUT
 AQL RESULTS are numbered; scan them from 1 to N and use only the 3–8 most ontology-relevant items for the context.
 When selecting the 3–8 most relevant AQL RESULTS:
 - Prefer items whose title or first 3 sentences explicitly mention the key ONTOLOGY attributes in {ontology} (e.g., main biophysical variables or application domains).
-- If more than 8 items match, choose the 3–8 most recent by publication year.
+- If more than 8 items match, prefer those whose title or abstract explicitly name the most attributes from {ontology}. Among equally relevant items, prefer the most recent by publication year.
 - If fewer than 3 items match, use all matching items and state the limited coverage in [CAVEATS & GAPS].
 
 - AQL RESULTS (primary evidence: data + document metadata):
@@ -29,7 +29,7 @@ GENERAL RULES
 - Be concise but informative. Use bullets, but include key methodological details (sensor, algorithm, resolution) and at least one short explanatory sentence per topic when available in AQL_RESULTS.
 - Always specify scope (region + time) when giving quantitative results.
 - Clearly separate regional vs global findings.
-- For each critical attribute, if the AQL_RESULTS provide methods or drivers (e.g., satellite sensor, retrieval algorithm, forcing factors), append a brief clause describing them (e.g., '…derived from MODIS NDVI using trend analysis over 2001–2020').
+- For each critical attribute, if the AQL_RESULTS provide methods or drivers (e.g., satellite sensor, retrieval algorithm, forcing factors), append a brief clause describing them (e.g., ‘…derived from MODIS NDVI using trend analysis over 2001–2020’).
 
 ================================================================
 OUTPUT FORMAT (plain text, no JSON, no code fences)
@@ -50,7 +50,7 @@ Supporting attributes found:
 # Topic name 1
 Findings: 1–2 key findings for this topic (quantitative and/or qualitative).
 Evidence: Short citation from AQL (e.g., “Author et al., 2020” or “Report Title, 2019”).
-Mechanisms / methods: Brief description of the measurement approach or main drivers mentioned in the study (e.g., 'Trend derived from Sentinel‑1 backscatter; changes linked to precipitation anomalies').
+Mechanisms / methods: Brief description of the measurement approach or main drivers mentioned in the study (e.g., ‘Trend derived from Sentinel‑01 backscatter; changes linked to precipitation anomalies’).
 Scope: Geographic: {region or “global”} | Temporal: {years}.
 Confidence: {0–1} with 1 short reason (e.g., “direct measurements”, “model-based”).
 Limitations: 1–2 specific caveats (e.g., “data ends 2018; limited stations in eastern region”).
@@ -66,11 +66,11 @@ Topic name 3 (optional)
 [QUANTITATIVE VALUES EXTRACTED]
 If any numeric values are present in the evidence above, list them here.
 Include ONLY values explicitly stated in the AQL results — do NOT invent or round.
-If no numeric values appear in the evidence, write exactly: "No explicit quantitative values found."
+If no numeric values appear in the evidence, write exactly: “No explicit quantitative values found.”
 
 | value | unit | scope (region / time) | uncertainty / qualifier | source |
 |-------|------|----------------------|------------------------|--------|
-| [exact value] | [unit] | [region, time window] | [range, qualifier, or "none stated"] | [Author et al., Year] |
+| [exact value] | [unit] | [region, time window] | [range, qualifier, or “none stated”] | [Author et al., Year] |
 
 Rules: copy values verbatim; include scope; keep table to ≤ 10 rows (most query-relevant only).
 
