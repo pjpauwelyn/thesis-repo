@@ -178,6 +178,39 @@ def _acquire(sem: threading.Semaphore):
         sem.release()
 
 
+def _validate_env(rules_path: Path) -> List[str]:
+    """Return a list of missing-environment errors -- empty means OK.
+
+    Every run needs MISTRAL_API_KEY.  OPENROUTER_API_KEY is required only
+    when at least one routing rule (or the hard-coded safety-tier3 in
+    router.py) targets an ``mistralai/`` model.  We check the YAML once
+    upfront so a 70-question run does not fail mid-flight on tier-3 or
+    tier-2b jobs that need OpenRouter access.
+    """
+    errors: List[str] = []
+    if not os.getenv("MISTRAL_API_KEY"):
+        errors.append("MISTRAL_API_KEY is not set (required for every run)")
+
+    needs_openrouter = False
+    try:
+        rules_text = rules_path.read_text(encoding="utf-8")
+    except OSError:
+        rules_text = ""
+    if "mistralai/" in rules_text:
+        needs_openrouter = True
+    # safety-tier3 in router.py is hard-coded to mistralai/mistral-large.
+    # Treat it as always-possible -- a low-confidence profile can fire it
+    # regardless of which rules are in rules.yaml.
+    needs_openrouter = True
+
+    if needs_openrouter and not os.getenv("OPENROUTER_API_KEY"):
+        errors.append(
+            "OPENROUTER_API_KEY is not set (required for tier-2b / tier-3 / "
+            "safety-tier3 -- these route via OpenRouter)"
+        )
+    return errors
+
+
 _TIER_TO_BUCKET: Dict[str, str] = {
     "tier-1":       "small",
     "fallback":     "small",
@@ -511,8 +544,40 @@ def main() -> int:
         ),
     )
     ap.add_argument("--csv", default=None)
+    ap.add_argument(
+        "--dry-run", action="store_true",
+        help=(
+            "profile + route selected questions without generation; "
+            "prints a per-tier histogram and exits.  No LLM generation calls."
+        ),
+    )
+    ap.add_argument(
+        "--rules", default="core/policy/rules.yaml",
+        help="path to rules.yaml (used for env-var validation only)",
+    )
+    ap.add_argument(
+        "--skip-env-check", action="store_true",
+        help="skip the upfront MISTRAL_API_KEY / OPENROUTER_API_KEY validation",
+    )
     ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args()
+
+    # Upfront env validation -- catches missing API keys before any LLM call
+    # so a 70-question run does not fail mid-flight.
+    # Dry-run only profiles (mistral-small via Mistral API) so it does not
+    # need OPENROUTER_API_KEY, but it still needs MISTRAL_API_KEY.
+    if not args.skip_env_check:
+        env_errors = _validate_env(Path(args.rules))
+        if args.dry_run:
+            env_errors = [e for e in env_errors if "OPENROUTER_API_KEY" not in e]
+        if env_errors:
+            for err in env_errors:
+                log.error("env: %s", err)
+            log.error(
+                "aborting -- set the missing keys (export ...) or re-run "
+                "with --skip-env-check to bypass."
+            )
+            return 2
 
     if args.indices is not None and args.questions is not None:
         ap.error("--indices and --questions are mutually exclusive")
@@ -553,6 +618,21 @@ def main() -> int:
     if not selected:
         log.error("no questions selected")
         return 1
+
+    # --dry-run: profile + route only, no generation calls.  Use this to
+    # validate the tier distribution before committing to a 30-90 min run.
+    if args.dry_run:
+        tier_hist: Dict[str, int] = {}
+        for display_idx, q, _aql, tier, _docs in selected:
+            tier_hist[tier] = tier_hist.get(tier, 0) + 1
+            log.info("  q%d [%s]: %s", display_idx, tier, q[:70])
+        print("\n" + "=" * 72)
+        print(f"dry-run: {len(selected)} question(s) selected; no generation performed.")
+        print("tier histogram:")
+        for tier in sorted(tier_hist):
+            print(f"  {tier:<22} {tier_hist[tier]}")
+        print("=" * 72)
+        return 0
 
     # Fix 2: resume mode -- skip q_indices already present in --output-jsonl.
     if args.output_jsonl:

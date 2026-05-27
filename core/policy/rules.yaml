@@ -70,7 +70,9 @@ rules:
 #   2000 tok ~= 15s at 130 tok/s, well within the 45s ceiling.
   - name: tier_1_def
     when:
-      question_type: {in: [definition]}
+      # "factual" mirrors Router._is_tier1_def_rescue() so the in-rule path
+      # and the parse-failure rescue path share the same predicate.
+      question_type: {in: [definition, factual]}
       quantitativity: {lt: 0.45}
       complexity: {lt: 0.60}
     config:

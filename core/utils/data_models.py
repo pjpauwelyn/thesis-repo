@@ -91,10 +91,15 @@ class QuestionProfile(BaseModel):
     """compact question characterisation emitted by the profiler."""
     identity: str
     one_line_summary: str = ""
-    question_type: Literal[
-        "definition", "mechanism", "comparison",
+    # "factual" is accepted because Router._is_tier1_def_rescue() treats it
+    # equivalently to "definition" when rescuing a low-confidence profile.
+    # None is accepted to allow parse-failure profiles built defensively;
+    # _is_tier1_def_rescue() returns False for None so they still hit
+    # safety-tier3.
+    question_type: Optional[Literal[
+        "definition", "factual", "mechanism", "comparison",
         "quantitative", "method_eval", "application", "continuous",
-    ] = "continuous"
+    ]] = "continuous"
     complexity: float = Field(0.5, ge=0.0, le=1.0)
     quantitativity: float = Field(0.3, ge=0.0, le=1.0)
     spatial_specificity: float = Field(0.1, ge=0.0, le=1.0)

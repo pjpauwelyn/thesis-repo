@@ -83,7 +83,8 @@ def test_invalid_response_falls_back_to_safety_tier3(router):
     assert profile.confidence is None
     cfg = router.select(profile)
     assert cfg.rule_hit == "safety-tier3"
-    assert cfg.model_name == "mistral-large-latest"
+    # router.py routes safety-tier3 via OpenRouter (mistralai/ prefix).
+    assert "mistral-large" in cfg.model_name
 
 
 def test_confidence_below_floor_triggers_safety(router):

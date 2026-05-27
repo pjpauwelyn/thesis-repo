@@ -25,8 +25,9 @@ Core ideas:
   `RefinementAgent1PassFullText` (full-text mode) compress retrieved docs into
   a grounded context block before generation.
 
-Answer evaluation is **manual** — hand `phase3_answers_readable.txt` to
-your evaluation prompt of choice.
+Answer evaluation is **manual** — hand
+`tests/output/full_gen_attempt-N/answers_readable.txt` to your evaluation
+prompt of choice.
 
 ---
 

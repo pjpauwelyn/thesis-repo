@@ -111,9 +111,9 @@ def test_clean_does_not_alter_correct_prose():
 
 def test_thin_source_warning_emitted(caplog):
     excerpt_stats = {
-        "perdoc": [
-            {"workid": "W4308372574", "title": "Summer Dynamics", "kepttokens": 13},
-            {"workid": "W4406439341", "title": "Greening of Svalbard", "kepttokens": 3436},
+        "per_doc": [
+            {"work_id": "W4308372574", "title": "Summer Dynamics", "kept_tokens": 13},
+            {"work_id": "W4406439341", "title": "Greening of Svalbard", "kept_tokens": 3436},
         ]
     }
     with caplog.at_level(logging.WARNING, logger="core.pipelines.pipeline"):
@@ -126,9 +126,9 @@ def test_thin_source_warning_emitted(caplog):
 
 def test_thin_source_no_warning_above_threshold(caplog):
     excerpt_stats = {
-        "perdoc": [
-            {"workid": "W1111111111", "title": "Normal Doc", "kepttokens": 3436},
-            {"workid": "W2222222222", "title": "Another Doc", "kepttokens": 2800},
+        "per_doc": [
+            {"work_id": "W1111111111", "title": "Normal Doc", "kept_tokens": 3436},
+            {"work_id": "W2222222222", "title": "Another Doc", "kept_tokens": 2800},
         ]
     }
     with caplog.at_level(logging.WARNING, logger="core.pipelines.pipeline"):
@@ -137,9 +137,9 @@ def test_thin_source_no_warning_above_threshold(caplog):
 
 
 def test_thin_source_boundary_at_threshold(caplog):
-    """kepttokens == 49 triggers warning; kepttokens == 50 does not."""
-    below = {"perdoc": [{"workid": "W1", "title": "T", "kepttokens": 49}]}
-    at = {"perdoc": [{"workid": "W2", "title": "T", "kepttokens": 50}]}
+    """kept_tokens == 49 triggers warning; kept_tokens == 50 does not."""
+    below = {"per_doc": [{"work_id": "W1", "title": "T", "kept_tokens": 49}]}
+    at = {"per_doc": [{"work_id": "W2", "title": "T", "kept_tokens": 50}]}
 
     with caplog.at_level(logging.WARNING, logger="core.pipelines.pipeline"):
         Pipeline._warn_thin_sources(below)
@@ -152,8 +152,8 @@ def test_thin_source_boundary_at_threshold(caplog):
 
 
 def test_thin_source_empty_input_safe(caplog):
-    """_warn_thin_sources must not raise on missing or empty perdoc."""
+    """_warn_thin_sources must not raise on missing or empty per_doc."""
     with caplog.at_level(logging.WARNING, logger="core.pipelines.pipeline"):
         Pipeline._warn_thin_sources({})
-        Pipeline._warn_thin_sources({"perdoc": []})
+        Pipeline._warn_thin_sources({"per_doc": []})
     assert not any("thin_source" in r.message for r in caplog.records)

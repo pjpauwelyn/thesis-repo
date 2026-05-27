@@ -11,12 +11,42 @@ to your evaluation prompt of choice.
 ## Prerequisites
 
 ```bash
+# 1. Create / activate the venv
+python3 -m venv venv && source venv/bin/activate
+
+# 2. Install pinned dependencies (mistralai pinned <2.0; the 2.x SDK
+#    removed `from mistralai import Mistral` which the wrapper relies on)
 pip install -r requirements.txt
-export MISTRAL_API_KEY=<your-key>
+
+# 3. Required API keys
+export MISTRAL_API_KEY=<your-key>          # always required
+export OPENROUTER_API_KEY=<your-key>       # required for tier-2b / tier-3 /
+                                           # safety-tier3 (routes via OpenRouter)
 ```
+
+`scripts/run_pipeline.py` validates both keys upfront and aborts with a
+clear error before any LLM call. Override with `--skip-env-check` if you
+intentionally want to run only abstracts-tier questions.
 
 The live ArangoDB KG is optional. If `ARANGO_ROOT_PASSWORD` is not set the
 pipeline falls back to the pre-parsed CSV documents automatically.
+
+### Mac (Apple Silicon) notes
+
+Tested with Python 3.11.9 via pyenv. The pyenv shim must come before the
+system Python in `PATH`:
+
+```bash
+pyenv local 3.11.9
+python --version          # -> Python 3.11.9
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+```
+
+If pip fails on `mistralai`, ensure you do not have a stale `mistralai>=2.0`
+pin in another active venv -- the 2.x SDK is incompatible (the `Mistral`
+class moved). The pinned `<2.0` constraint in `requirements.txt` is the
+authoritative version.
 
 ---
 
@@ -151,6 +181,10 @@ Routing rules are defined in `core/policy/rules.yaml`.
 | `--min-gap-ms` | `0` | Minimum ms between job starts (rate-limit guard) |
 | `--verbose` / `-v` | off | DEBUG-level logging |
 | `--csv` | auto-detect | Path to questions CSV |
+| `--dry-run` | off | Profile + route only; prints a per-tier histogram and exits without generating |
+| `--output-jsonl` | — | Resume mode: skip q_indices already present in the file and upsert new results back into it |
+| `--skip-env-check` | off | Skip the upfront `MISTRAL_API_KEY` / `OPENROUTER_API_KEY` validation |
+| `--rules` | `core/policy/rules.yaml` | Path used only by env validation to decide whether `OPENROUTER_API_KEY` is required |
 
 ---
 
@@ -160,22 +194,66 @@ Routing rules are defined in `core/policy/rules.yaml`.
 # 1. After any code change — quick health check
 make smoke
 
-# 2. Full generation run
+# 2. (Optional) Validate routing before the long run
+python scripts/run_pipeline.py --tier-mix 5,15,10,10,30 --dry-run
+
+# 3. Full generation run
 make eval
 
-# 3. Hand `tests/output/phase3_answers_readable.txt` to your evaluation
-#    prompt / external AI for scoring.
+# 4. Hand `tests/output/full_gen_attempt-N/answers_readable.txt` to your
+#    evaluation prompt / external AI for scoring.
 
-# 4. If a specific question failed, re-run it alone
-make run-one IDX=12
+# 5. If a specific question failed, re-run it alone and merge the result
+#    back into the existing JSONL (resume mode)
+python scripts/run_pipeline.py \
+    --indices 12 \
+    --output-jsonl tests/output/full_gen_attempt-N/answers.jsonl
+
+# 6. To re-run just a few questions in place: delete those rows from the
+#    JSONL first, then step (5) regenerates and upserts them.
+```
+
+## Mac 70-question end-to-end (exact sequence)
+
+```bash
+cd ~/THESIS_2025/thesis-repo-clean        # or wherever the repo lives
+source venv/bin/activate
+
+# A. Verify env -- aborts early if a key is missing
+export MISTRAL_API_KEY=...                # required
+export OPENROUTER_API_KEY=...             # required (tier-2b/3/safety)
+
+# B. Cold-start sanity: 5-question smoke (~5 min)
+make smoke
+
+# C. Dry-run the production tier mix to confirm distribution (no LLM
+#    generation; profiler call only)
+python scripts/run_pipeline.py --tier-mix 5,15,10,10,30 --dry-run
+
+# D. Full 70-question run (~30-90 min)
+make eval
+
+# E. Resume an interrupted run (skip-completed is automatic; just point
+#    at the existing JSONL)
+python scripts/run_pipeline.py --tier-mix 5,15,10,10,30 \
+    --output-jsonl tests/output/full_gen_attempt-N/answers.jsonl
 ```
 
 ---
 
 ## Output files
 
+Each run that produces at least 4 records writes into an auto-versioned
+`full_gen_attempt-N` directory under `--output-dir` (default
+`tests/output`). Smaller runs (smoke, single-question reruns) are kept
+out of the lineage on purpose.
+
 | File | Description |
 |------|-------------|
-| `tests/output/phase3_answers.jsonl` | One JSON record per question; primary output |
-| `tests/output/phase3_answers_readable.txt` | Human-readable answers + formatted references |
+| `tests/output/full_gen_attempt-N/answers.jsonl` | One JSON record per question, sorted by `q_index` (CSV row order); primary output |
+| `tests/output/full_gen_attempt-N/answers_readable.txt` | Human-readable answers + formatted references in the same order |
 | `logs/*.log` | Timestamped logs from test-suite targets |
+
+Resume mode (`--output-jsonl PATH`) writes back into the existing JSONL
+in place; it upserts by `q_index` and re-sorts so the final ordering is
+always CSV-row order.

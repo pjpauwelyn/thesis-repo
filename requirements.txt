@@ -1,0 +1,16 @@
+# Runtime dependencies for the adaptive RAG pipeline.
+#
+# Tested on macOS (M1, Python 3.11) and Linux (Python 3.12).
+# Pinned to floors that work with the current Mistral SDK API; upper bounds
+# match the breaking-change boundary (mistralai 2.x dropped `from mistralai
+# import Mistral`).
+mistralai>=1.0,<2.0
+openai>=1.30
+pydantic>=2.6
+PyYAML>=6.0
+python-dotenv>=1.0
+requests>=2.31
+
+# Test-only -- not strictly required for a generation run, but needed for
+# `make test-all` and the conftest live-API skip.
+pytest>=8.0
