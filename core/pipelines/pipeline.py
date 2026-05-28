@@ -1132,6 +1132,14 @@ class Pipeline:
         all extraction paths (e.g. because the model emitted a single closing >)
         is stripped here as a last resort so it never appears in the final output.
 
+        Fix E (safety net): non-citation <<...>> placeholders that leaked from
+        refinement-prompt section labels (e.g. <<CAVEATS & GAPS>>, <<ONTOLOGY
+        SUMMARY>>, <<TOPICS AND INFORMATION>>). Citation sentinels are already
+        converted to [N] earlier in Pipeline.run(), so anything still wrapped
+        in << >> at this stage is a prompt artifact the LLM mimicked from the
+        refinement template. The pattern rejects newlines and caps payload
+        length so it cannot swallow body text on a malformed marker.
+
         Intentionally excluded: CO/CH4 subscript normalisation (ambiguous --
         CO is a valid compound distinct from CO2).
         """
@@ -1151,6 +1159,18 @@ class Pipeline:
         # This runs AFTER all extraction paths so it never interferes with
         # index collection -- it only removes the now-dead marker text.
         text = re.sub(r'<<CITE:[^>\n]*>{1,2}', '', text)
+        # Fix E: safety-net strip for non-citation <<...>> placeholders that
+        # leaked from refinement-prompt section labels (e.g. <<CAVEATS & GAPS>>,
+        # <<ONTOLOGY SUMMARY>>, <<TOPICS AND INFORMATION>>).  Citation sentinels
+        # were already converted to [N] earlier in Pipeline.run(), so anything
+        # still bracketed by << >> at this stage is a prompt artifact.  Cap
+        # payload length and reject newlines so a malformed marker cannot
+        # swallow body text.
+        text = re.sub(r'<<[^<>\n]{1,80}>{1,2}', '', text)
+        # Tidy whitespace introduced by the strips above: collapse runs of
+        # spaces/tabs and remove space before sentence punctuation.
+        text = re.sub(r'[ \t]+([.,;:!?])', r'\1', text)
+        text = re.sub(r'[ \t]{2,}', ' ', text)
         return text
 
     @staticmethod

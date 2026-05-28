@@ -157,3 +157,92 @@ def test_thin_source_empty_input_safe(caplog):
         Pipeline._warn_thin_sources({})
         Pipeline._warn_thin_sources({"per_doc": []})
     assert not any("thin_source" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Fix E -- non-citation <<...>> placeholder leak (Q7-style "<<CAVEATS & GAPS>>")
+# ---------------------------------------------------------------------------
+
+def test_clean_strips_caveats_and_gaps_sentinel():
+    """Q7 regression: '<<CAVEATS & GAPS>>' leaked into a finished answer body."""
+    raw = (
+        "with limited data for the Southern Hemisphere, oceanic plates, "
+        "and polar regions <<CAVEATS & GAPS>>."
+    )
+    cleaned = Pipeline._clean_answer_artifacts(raw)
+    assert "<<CAVEATS" not in cleaned
+    assert "GAPS>>" not in cleaned
+    assert "limited data for the Southern Hemisphere" in cleaned
+    assert "polar regions." in cleaned
+
+
+def test_clean_strips_ontology_summary_sentinel():
+    raw = "Intro paragraph. <<ONTOLOGY SUMMARY>> Body continues."
+    cleaned = Pipeline._clean_answer_artifacts(raw)
+    assert "<<ONTOLOGY" not in cleaned
+    assert "Intro paragraph." in cleaned
+    assert "Body continues." in cleaned
+
+
+def test_clean_strips_topics_and_information_sentinel():
+    raw = "Lead-in. <<TOPICS AND INFORMATION>> Then the rest."
+    cleaned = Pipeline._clean_answer_artifacts(raw)
+    assert "<<TOPICS" not in cleaned
+    assert "Lead-in." in cleaned
+    assert "Then the rest." in cleaned
+
+
+def test_clean_strips_single_closing_angle_variant():
+    """The LLM sometimes emits '<<X>' with only one closing > -- strip both forms."""
+    raw = "Trailing artifact <<CAVEATS & GAPS> here."
+    cleaned = Pipeline._clean_answer_artifacts(raw)
+    assert "<<CAVEATS" not in cleaned
+    assert "Trailing artifact here." in cleaned
+
+
+def test_clean_preserves_already_converted_citation_brackets():
+    """Citation sentinels are converted to [N] BEFORE _clean_answer_artifacts.
+    The new Fix E must not damage [N] markers."""
+    raw = "Body of claim [1] and another claim [42] with refs."
+    cleaned = Pipeline._clean_answer_artifacts(raw)
+    assert "[1]" in cleaned
+    assert "[42]" in cleaned
+    assert cleaned == raw
+
+
+def test_clean_does_not_strip_single_angle_quotation():
+    """A lone '<' (e.g. inequality, French quotation) must survive."""
+    raw = "Concentrations < 5 ppm were excluded. Range was 2 < x < 9."
+    cleaned = Pipeline._clean_answer_artifacts(raw)
+    assert cleaned == raw
+
+
+def test_clean_does_not_swallow_body_text_on_unclosed_marker():
+    """A pathological '<<' with no closing >> within 80 chars must not eat body text."""
+    long_body = "a" * 200
+    raw = f"<<{long_body} and then more"
+    cleaned = Pipeline._clean_answer_artifacts(raw)
+    # The unclosed marker is left intact rather than swallowing the body.
+    assert long_body in cleaned
+
+
+def test_clean_strips_caveats_with_punctuation_spacing():
+    """After stripping the marker, leading whitespace before punctuation is tidied."""
+    raw = "polar regions <<CAVEATS & GAPS>> ."
+    cleaned = Pipeline._clean_answer_artifacts(raw)
+    assert "<<" not in cleaned
+    assert ">>" not in cleaned
+    assert "polar regions." in cleaned
+
+
+def test_clean_strips_multiple_distinct_sentinels_in_one_body():
+    raw = (
+        "Para one <<ONTOLOGY SUMMARY>>. Para two has data "
+        "<<TOPICS AND INFORMATION>>. Para three notes gaps <<CAVEATS & GAPS>>."
+    )
+    cleaned = Pipeline._clean_answer_artifacts(raw)
+    assert "<<" not in cleaned
+    assert ">>" not in cleaned
+    assert "Para one." in cleaned
+    assert "Para two has data." in cleaned
+    assert "Para three notes gaps." in cleaned
