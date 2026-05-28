@@ -227,10 +227,14 @@ def _validate_env(rules_path: Path) -> List[str]:
 
 
 _TIER_TO_BUCKET: Dict[str, str] = {
-    "tier-1":       "small",
-    "fallback":     "small",
-    "tier-m":       "medium",
-    "tier-2a":      "medium",
+    "tier-1":                       "small",
+    "tier-1-def":                   "small",
+    "tier-1-def-broad":             "small",
+    "tier-1-def-parse-rescue":      "small",
+    "fallback":                     "small",
+    "tier-m":                       "medium",
+    "tier-m-from-tier3-demote":     "medium",
+    "tier-2a":                      "medium",
     # tier-2b uses mistralai/mistral-large for refinement (timeout_refine_s=360)
     # and mistral-medium for generation (timeout_generate_s=150).  Worst-case
     # wall time exceeds the medium bucket budget (300s) and matches the large

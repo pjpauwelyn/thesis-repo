@@ -120,6 +120,38 @@ class Router:
         for rule in self._rules:
             if self._matches(rule["when"], profile):
                 _log.info("router.select: matched rule '%s'", rule["name"])
+                # P2: broad-definition tier-3 overreach guard.
+                # set8 evaluation showed that explicit -> tier-3 escalations of
+                # definitional or broad questions (Q10 tectonics/geomagnetic,
+                # Q37 transcriptomics vs vegetation) score in the 6.0-6.5 band
+                # because tier-3's large+excerpts_full+4000-tok config produces
+                # long hedged training-knowledge answers around 2-5 tangential
+                # refs.  When the profile is definition/factual OR has no
+                # spatial/temporal focus AND complexity < 0.70, demote tier-3
+                # to tier-m so the answer stays grounded in the (limited)
+                # evidence rather than padding with parametric knowledge.
+                if (
+                    rule["name"] == "tier_3"
+                    and self._is_broad_definition_overreach(profile)
+                ):
+                    _log.warning(
+                        "router.select: tier-3 demoted to tier-m "
+                        "(broad-definition overreach guard: type=%s cx=%.2f "
+                        "spatial=%.2f temporal=%.2f meth=%.2f)",
+                        profile.question_type, profile.complexity,
+                        profile.spatial_specificity, profile.temporal_specificity,
+                        profile.methodological_depth,
+                    )
+                    # find tier_m in rules and use its config
+                    for r2 in self._rules:
+                        if r2["name"] == "tier_m":
+                            cfg = PipelineConfig(**r2["config"])
+                            cfg.rule_hit = "tier-m-from-tier3-demote"
+                            cfg.reason = (
+                                "tier-3 matched but profile is broad/definitional "
+                                "without spatial/temporal focus -- demoted to tier-m"
+                            )
+                            return cfg
                 return PipelineConfig(**rule["config"])
 
         # no rule matched -- yaml fallback (always: true) should have caught
@@ -158,6 +190,39 @@ class Router:
             rule_hit="fallback",
             reason="no rule matched -- conservative fallback",
         )
+
+    @staticmethod
+    def _is_broad_definition_overreach(profile: QuestionProfile) -> bool:
+        """Return True when a tier-3 match looks like a broad/definitional
+        overreach that should be demoted to tier-m.
+
+        Narrow predicate (set8 motivated, intentionally conservative to avoid
+        disturbing existing tier-3 routing for genuine methodology syntheses):
+
+          (a) question_type is definition or factual  -- always demote
+              (a definitional question should never be answered by
+              large+excerpts_full+4000-token regardless of meth signal); OR
+          (b) complexity < 0.55 AND spatial_specificity < 0.30 AND
+              temporal_specificity < 0.30  -- a moderately complex question
+              with NO spatial OR temporal scope is almost certainly a broad
+              conceptual question; tier-3's large+full-text apparatus will
+              over-extend into training-knowledge prose around tangential
+              evidence (set8 Q10, Q37 pattern).
+
+        Genuine methodology syntheses (cx >= 0.55 or with named region/period)
+        still reach tier-3 unchanged.
+        """
+        qt = getattr(profile, "question_type", None)
+        cx = getattr(profile, "complexity", None)
+        spatial = getattr(profile, "spatial_specificity", None) or 0.0
+        temporal = getattr(profile, "temporal_specificity", None) or 0.0
+        if qt in ("definition", "factual"):
+            return True
+        if cx is None:
+            return False
+        if cx < 0.55 and spatial < 0.30 and temporal < 0.30:
+            return True
+        return False
 
     @staticmethod
     def _is_tier1_def_rescue(profile: QuestionProfile) -> bool:

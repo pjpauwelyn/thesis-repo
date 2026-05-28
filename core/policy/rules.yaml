@@ -60,9 +60,55 @@
 
 rules:
 
-# tier-1-def: definitional or factual + low quantitativity
-# Fires before tier-m to prevent profiler score drift (0.38-0.45) from
-# escalating simple "what is X" questions to the medium model.
+# tier-1-def-broad: multi-property "what is X" definitional, cx 0.45-0.59
+# MUST be evaluated BEFORE tier-1-def (which uses cx<0.60 with NO lower bound)
+# so the broad-zone questions get its canonical-breadth modifier rather than
+# the bare tier-1-def config.
+#
+# set8 motivation:
+#   Q43 agricultural engineering (4.00), Q68 biological classification (5.25),
+#   Q23 LIDAR (6.50) -- all definitional, all under tier-1-def, all dinged for
+#   "severely incomplete definition / thin coverage / explains refs more than
+#   mechanisms". Profiler had pushed these into the cx 0.45-0.59 band but
+#   tier-1-def routed them with min_keep=3 and no breadth instruction, so the
+#   model anchored to 2 niche refs instead of writing a canonical definition.
+#
+# Same model + abstracts as tier-1-def (preserves directness, the dimension
+# where set2 leads adaptive by +0.63), but:
+#   - doc_filter_min_keep raised 3 -> 5 (more abstracts surface canonical
+#     sources rather than the LLM doc-filter dropping them)
+#   - system_prompt_modifier adds canonical-breadth instruction
+#   - max_output_tokens raised 2000 -> 2200 (small headroom for multi-section
+#     definitions; still well below tier-m's 4000 -- preserves concision)
+  - name: tier_1_def_broad
+    when:
+      question_type: {in: [definition, factual]}
+      complexity: {ge: 0.45, lt: 0.60}
+      quantitativity: {lt: 0.45}
+    config:
+      model_name:               mistral-small-latest
+      evidence_mode:            abstracts
+      top_k_per_doc:            0
+      per_doc_budget:           0
+      global_budget:            0
+      refinement_prompt:        refinement_1pass_refined_exp4.txt
+      generation_prompt:        generation_direct.txt
+      gen_context_cap:          307200
+      max_output_tokens:        2200
+      system_prompt_modifier:   "This is a broad definitional question. Answer canonically: open with a one-sentence definition, then briefly cover the field's main sub-areas or components, two or three real-world applications or examples, and any standard limitations. Do not narrow the answer to a single retrieved application paper -- prefer canonical scope even if the retrieved evidence is narrow."
+      doc_filter_min_keep:      5
+      scope_filter:             false
+      synthesis_mode:           homogeneous
+      timeout_refine_s:         30
+      timeout_generate_s:       45
+      use_draft:                true
+      rule_hit:                 tier-1-def-broad
+      reason:                   "broad definitional/factual (cx 0.45-0.59) -- abstracts + small + canonical-breadth modifier"
+
+# tier-1-def: simple definitional or factual + low quantitativity + low cx
+# Fires AFTER tier-1-def-broad so only the simple "what is X" questions
+# (cx < 0.45) take this lean path; the cx 0.45-0.59 multi-property zone
+# is captured by tier-1-def-broad above.
 # Guard: quant < 0.45 ensures numeric-heavy definitions still reach tier-2a.
 #
 # max_output_tokens: 1200 -> 2000 (P1)
@@ -85,7 +131,7 @@ rules:
       generation_prompt:        generation_direct.txt
       gen_context_cap:          307200
       max_output_tokens:        2000
-      system_prompt_modifier:   ""
+      system_prompt_modifier:   "This is a definitional question. Open the answer with a one-sentence canonical definition that directly answers the question. Then briefly cover (1) key properties or components, and (2) at least one real-world application or example. Stay direct and concise."
       doc_filter_min_keep:      3
       scope_filter:             false
       synthesis_mode:           homogeneous

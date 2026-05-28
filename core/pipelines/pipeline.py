@@ -465,6 +465,7 @@ class Pipeline:
         answer_obj.answer = self._unescape_unicode(answer_obj.answer)
 
         self._audit_numeric_faithfulness(answer_obj.answer, enriched_context, question)
+        self._audit_evidence_gap_phrasing(answer_obj.answer, cfg.rule_hit, question)
 
         # -- 7. build verified references + sequential renumbering -----------
         all_docs = full_docs + abstract_docs
@@ -1195,6 +1196,49 @@ class Pipeline:
         # Pass 2: escape remaining bare \u (not followed by 4 hex digits)
         text = re.sub(r'\\u(?![0-9a-fA-F]{4})', r'\\\\u', text)
         return text
+
+    @staticmethod
+    def _audit_evidence_gap_phrasing(
+        answer_text: str,
+        rule_hit: str,
+        question: str,
+    ) -> None:
+        """Log a WARNING when the answer body contains evidence-gap or proxy-
+        substitution phrasing on a non-definitional tier.
+
+        Set8 motivation: Q30 (groundwater + glacier) opened with "There is no
+        direct evidence in the available studies" and then continued for 4 KB.
+        Q39 (vegetation + genomics) wrote "as inferred from functional and
+        species diversity proxies". The 2026-05 prompt change instructs the
+        model to keep such answers short and honest; this audit surfaces when
+        the model nevertheless emits a long structured answer around an
+        evidence gap so post-run analysis can spot it.
+
+        Observability only -- does not modify the answer or filter the result.
+        """
+        # tier-1-def and tier-1-def-broad are the *expected* home for sparse
+        # definitional answers; do not warn there.
+        if rule_hit in ("tier-1-def", "tier-1-def-broad", "tier-1-def-parse-rescue"):
+            return
+        lowered = answer_text.lower()
+        markers = [
+            "there is no direct evidence",
+            "no direct evidence in the available",
+            "the available evidence does not directly",
+            "as inferred from functional and species diversity proxies",
+            "as a proxy for",
+            "as proxies for",
+            "is used here as a proxy",
+            "transcriptomics offers real-time functional insights that are not addressed",
+        ]
+        hits = [m for m in markers if m in lowered]
+        if hits and len(answer_text) > 2500:
+            log.warning(
+                "_audit_evidence_gap_phrasing: answer for '%s...' (rule=%s) "
+                "contains evidence-gap markers %s but body is %d chars -- "
+                "consider whether a shorter honest reply would score better.",
+                question[:60], rule_hit, hits, len(answer_text),
+            )
 
     @staticmethod
     def _audit_numeric_faithfulness(

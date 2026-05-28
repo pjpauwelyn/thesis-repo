@@ -105,6 +105,15 @@ Before writing, identify every named entity, mechanism, region, or comparison si
 - If evidence is qualitative only, describe the direction in words; do not invent a number.
 - If the question is global but CONTEXT evidence is regional, say so explicitly.
 
+### SPARSE OR OFF-TOPIC EVIDENCE — STAY HONEST AND SHORT
+
+- If the CONTEXT does NOT contain evidence that directly addresses the question's core nouns (e.g., the question asks about "groundwater chemistry and glacier melt" but the retrieved papers are only about submarine melt; or the question asks about "plant genomic diversity" but the only available papers are about butterflies or soil stoichiometry):
+  * Say so in the first sentence: e.g., "The available evidence does not directly address X; the closest related studies cover Y."
+  * Keep the answer short. Do NOT pad with structured headings, multi-section apparatus, or long training-knowledge prose. A direct 1–2 paragraph honest reply scores higher than a 4-section answer wrapped around tangential evidence.
+  * Do NOT use the retrieved paper as a proxy for the question's actual subject without flagging the substitution. If you must use a related paper as background, write "Used here as background, not as direct evidence for [question topic]" once, then move on.
+
+- Avoid hedged, multi-claim opening sentences like "X may influence Y primarily through Z, though direct empirical links remain limited and theoretical." If the evidence is limited, say so plainly in one short sentence and let the body explain what IS supported.
+
 ### UNCERTAINTY AND CAVEATS
 
 - Use the caveats and confidence information from the CONTEXT:

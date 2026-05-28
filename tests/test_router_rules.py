@@ -51,6 +51,13 @@ def _profile(**overrides) -> QuestionProfile:
     return QuestionProfile(**base)
 
 
+# --- P2 (set8 -> v9) additions ---
+#   * tier-1-def-broad: cx 0.45-0.59 + definitional + quant<0.45 fires FIRST,
+#     before tier-1-def. tier-1-def now only catches cx<0.45 definitions.
+#   * tier-3 broad-definition overreach guard demotes tier-3 -> tier-m when:
+#       (qt in definition/factual OR (spatial<0.40 AND temporal<0.40))
+#       AND cx<0.70
+#     This protects against set8's Q10 / Q37 tier-3 escalations.
 CASES = [
     # id, profile kwargs, expected rule_hit
 
@@ -73,11 +80,20 @@ CASES = [
     # v7: comparison+meth=0.35 is below new gate (0.40) -> tier-m (regression guard)
     ("29", dict(complexity=0.75, question_type="comparison", methodological_depth=0.35),        "tier-m"),
 
-    # --- tier-1-def: definition + complexity < 0.60 + quant < 0.45 ---
-    # complexity=0.5 -> tier-1-def fires before tier-m
-    ("25", dict(complexity=0.5,  question_type="definition", quantitativity=0.2),               "tier-1-def"),
-    # complexity=0.6 is NOT < 0.60 -> tier-1-def misses; uncapped tier-m catches cx=0.6
+    # --- tier-1-def: definition + complexity < 0.45 + quant < 0.45 ---
+    # P2 (v9): tier-1-def-broad now fires first on cx 0.45-0.59 definitions,
+    # so case 25 (cx=0.5) routes to tier-1-def-broad rather than tier-1-def.
+    ("25", dict(complexity=0.5,  question_type="definition", quantitativity=0.2),               "tier-1-def-broad"),
+    # complexity=0.6 is NOT < 0.60 -> both definitional rules miss; tier-m catches cx=0.6
     ("14", dict(complexity=0.6,  question_type="definition"),                                   "tier-m"),
+    # P2 (v9): broad-definitional zone (cx 0.45-0.59 + quant<0.45) -> tier-1-def-broad
+    ("25b",dict(complexity=0.45, question_type="definition", quantitativity=0.2),               "tier-1-def-broad"),
+    ("25c",dict(complexity=0.59, question_type="factual",    quantitativity=0.3),               "tier-1-def-broad"),
+    # P2 (v9): low-cx definitional still routes to lean tier-1-def
+    ("25d",dict(complexity=0.30, question_type="definition", quantitativity=0.2),               "tier-1-def"),
+    ("25e",dict(complexity=0.44, question_type="definition", quantitativity=0.4),               "tier-1-def"),
+    # P2 (v9): broad-def rule respects quant<0.45 -- numeric-heavy definitions still go tier-2a
+    ("25f",dict(complexity=0.50, question_type="definition", quantitativity=0.6),               "tier-2a"),
 
     # --- tier-2a: standalone high quantitativity (>= 0.55), meth < 0.55 ---
     ("07", dict(quantitativity=0.6,  spatial_specificity=0.3, temporal_specificity=0.3),        "tier-2a"),
@@ -134,6 +150,27 @@ CASES = [
     ("33", dict(complexity=0.65, question_type="method_eval", methodological_depth=0.40),       "tier-3"),
     # comparison + meth=0.35 -> tier-m (below new gate -- regression guard)
     ("34", dict(complexity=0.70, question_type="comparison", methodological_depth=0.35),        "tier-m"),
+
+    # --- P2 (v9): tier-3 broad-overreach demote guard ---
+    # definition+meth=0.60+quant=0.2+cx=0.50 -> tier_1_def_broad fires first
+    # (rule order shortcuts the question before tier-3 is even evaluated).
+    ("41", dict(complexity=0.50, question_type="definition", methodological_depth=0.60),
+           "tier-1-def-broad"),
+    # definition+meth=0.60+quant=0.5+cx=0.65 -> tier-3 requires
+    # question_type in [mechanism, method_eval, comparison]; "definition" is
+    # excluded from those, so tier-3 never matches and the question lands in
+    # tier-m via the standard catch-all (NOT the demote variant).
+    ("41b",dict(complexity=0.65, question_type="definition", methodological_depth=0.60,
+                quantitativity=0.50),                                                           "tier-m"),
+    # cx=0.65 mechanism, meth=0.55 with NO spatial/temporal -> stays tier-3 (cx >= 0.55)
+    ("42", dict(complexity=0.65, question_type="mechanism", methodological_depth=0.55),         "tier-3"),
+    # cx=0.50 mechanism, meth=0.55 with NO spatial/temporal -> tier-3 branch-a matches
+    # (meth>=0.55), but cx<0.55 AND spatial/temporal<0.30 -> demote to tier-m
+    ("43", dict(complexity=0.50, question_type="mechanism", methodological_depth=0.55),
+           "tier-m-from-tier3-demote"),
+    # cx=0.50 mechanism, meth=0.55 with spatial=0.4 -> stays tier-3 (has spatial scope)
+    ("44", dict(complexity=0.50, question_type="mechanism", methodological_depth=0.55,
+                spatial_specificity=0.40),                                                      "tier-3"),
 
     # --- Fix 6: tier-1-def-parse-rescue (confidence < 0.60 but definitional profile) ---
     # definition + cx<0.60 + quant<0.45 + conf=0.0 -> rescue to tier-1-def-parse-rescue

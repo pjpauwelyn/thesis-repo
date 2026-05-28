@@ -677,3 +677,155 @@ def test_router_hardcoded_fallback_max_output_tokens():
     assert "max_output_tokens=700" not in source, (
         "Router.select() hardcoded fallback still has stale max_output_tokens=700"
     )
+
+
+# ============================================================
+# P2 (v9) -- broad-definition tier-3 overreach guard
+# ============================================================
+
+def test_tier3_demote_on_definition_type():
+    """A profile that would match tier-3 branch-a (meth>=0.55) but is
+    type=definition must be demoted to tier-m-from-tier3-demote.
+    NOTE: tier_3's own when: clause already excludes type=definition, so
+    this test exercises the guard's qt-based predicate via mechanism-typed
+    profiles in test_tier3_demote_on_broad_no_scope below. Here we only
+    confirm the predicate function reports True for definition.
+    """
+    from core.policy.router import Router
+    from core.utils.data_models import QuestionProfile
+    p = QuestionProfile(
+        identity="q", one_line_summary="",
+        question_type="definition",
+        complexity=0.50, quantitativity=0.2,
+        spatial_specificity=0.0, temporal_specificity=0.0,
+        methodological_depth=0.60, confidence=0.85,
+    )
+    assert Router._is_broad_definition_overreach(p) is True
+
+
+def test_tier3_demote_on_broad_no_scope():
+    """A mechanism profile that matches tier-3 branch-a but has cx<0.55
+    and no spatial/temporal scope must be demoted to tier-m."""
+    from core.policy.router import Router
+    from core.utils.data_models import QuestionProfile
+    p = QuestionProfile(
+        identity="q", one_line_summary="",
+        question_type="mechanism",
+        complexity=0.50, quantitativity=0.2,
+        spatial_specificity=0.0, temporal_specificity=0.0,
+        methodological_depth=0.55, confidence=0.85,
+    )
+    cfg = Router().select(p)
+    assert cfg.rule_hit == "tier-m-from-tier3-demote", (
+        f"expected demote -> tier-m, got {cfg.rule_hit}"
+    )
+
+
+def test_tier3_not_demoted_with_high_cx():
+    """A profile with cx >= 0.55 must stay on tier-3 even when spatial/temporal
+    are zero -- those are genuine complex synthesis questions."""
+    from core.policy.router import Router
+    from core.utils.data_models import QuestionProfile
+    p = QuestionProfile(
+        identity="q", one_line_summary="",
+        question_type="mechanism",
+        complexity=0.65, quantitativity=0.2,
+        spatial_specificity=0.0, temporal_specificity=0.0,
+        methodological_depth=0.55, confidence=0.85,
+    )
+    cfg = Router().select(p)
+    assert cfg.rule_hit == "tier-3"
+
+
+def test_tier3_not_demoted_with_spatial_scope():
+    """Even with cx<0.55, spatial>=0.30 keeps tier-3 (regional question
+    can ground a methodology synthesis)."""
+    from core.policy.router import Router
+    from core.utils.data_models import QuestionProfile
+    p = QuestionProfile(
+        identity="q", one_line_summary="",
+        question_type="mechanism",
+        complexity=0.50, quantitativity=0.2,
+        spatial_specificity=0.40, temporal_specificity=0.0,
+        methodological_depth=0.55, confidence=0.85,
+    )
+    cfg = Router().select(p)
+    assert cfg.rule_hit == "tier-3"
+
+
+# ============================================================
+# P2 (v9) -- tier-1-def-broad rule
+# ============================================================
+
+def test_tier_1_def_broad_fires_in_mid_cx_band():
+    """definition+quant<0.45 with cx in [0.45, 0.60) must hit tier-1-def-broad
+    (not the bare tier-1-def)."""
+    from core.policy.router import Router
+    from core.utils.data_models import QuestionProfile
+    p = QuestionProfile(
+        identity="q", one_line_summary="",
+        question_type="definition",
+        complexity=0.50, quantitativity=0.20,
+        spatial_specificity=0.0, temporal_specificity=0.0,
+        methodological_depth=0.0, confidence=0.85,
+    )
+    cfg = Router().select(p)
+    assert cfg.rule_hit == "tier-1-def-broad"
+    assert cfg.model_name == "mistral-small-latest"
+    assert cfg.evidence_mode == "abstracts"
+    assert cfg.doc_filter_min_keep == 5  # wider than tier-1-def's 3
+    assert "broad definitional" in cfg.system_prompt_modifier.lower()
+
+
+def test_tier_1_def_still_fires_at_low_cx():
+    """Simple definitions (cx<0.45) must still take the lean tier-1-def path."""
+    from core.policy.router import Router
+    from core.utils.data_models import QuestionProfile
+    p = QuestionProfile(
+        identity="q", one_line_summary="",
+        question_type="definition",
+        complexity=0.30, quantitativity=0.20,
+        spatial_specificity=0.0, temporal_specificity=0.0,
+        methodological_depth=0.0, confidence=0.85,
+    )
+    cfg = Router().select(p)
+    assert cfg.rule_hit == "tier-1-def"
+    assert cfg.doc_filter_min_keep == 3
+
+
+# ============================================================
+# P2 (v9) -- _audit_evidence_gap_phrasing observability hook
+# ============================================================
+
+def test_audit_evidence_gap_phrasing_warns_on_long_proxy_answer(caplog):
+    """Long non-def answers containing proxy/no-direct-evidence phrasing
+    should emit a WARNING."""
+    from core.pipelines.pipeline import Pipeline
+    answer = (
+        "There is no direct evidence in the available studies linking "
+        "groundwater chemistry to glacier melt." + " filler" * 600
+    )
+    with caplog.at_level("WARNING", logger="core.pipelines.pipeline"):
+        Pipeline._audit_evidence_gap_phrasing(answer, "tier-m", "test question")
+    assert any("_audit_evidence_gap_phrasing" in r.message for r in caplog.records)
+
+
+def test_audit_evidence_gap_phrasing_silent_on_short_answer(caplog):
+    """Short honest replies should NOT warn even if they contain the marker."""
+    from core.pipelines.pipeline import Pipeline
+    answer = "There is no direct evidence in the available studies for X."
+    with caplog.at_level("WARNING", logger="core.pipelines.pipeline"):
+        Pipeline._audit_evidence_gap_phrasing(answer, "tier-m", "test question")
+    assert not any("_audit_evidence_gap_phrasing" in r.message for r in caplog.records)
+
+
+def test_audit_evidence_gap_phrasing_silent_on_tier_1_def(caplog):
+    """tier-1-def is the expected home for sparse definitional answers, so
+    the audit must NOT warn there even on a long body."""
+    from core.pipelines.pipeline import Pipeline
+    answer = (
+        "There is no direct evidence in the available studies." + " filler" * 600
+    )
+    with caplog.at_level("WARNING", logger="core.pipelines.pipeline"):
+        Pipeline._audit_evidence_gap_phrasing(answer, "tier-1-def-broad", "q")
+    assert not any("_audit_evidence_gap_phrasing" in r.message for r in caplog.records)
