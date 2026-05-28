@@ -347,6 +347,17 @@ def _run_one(
                     job_idx, display_idx, ans.rule_hit,
                     len(ans.answer), len(ans.formatted_references), elapsed,
                 )
+                # Post-run refs-bleed cross-check.  Pipeline.run() already
+                # logs a REFS_BLEED line at ERROR level if any formatted
+                # reference shares no title-token with all_docs.  Here we
+                # also record the bleed indices on the record itself so the
+                # output writer can flag the row without re-running the
+                # heuristic.  ref_source_titles is provided by Pipeline.run
+                # as part of PipelineResult.
+                bleed_idx = Pipeline._detect_refs_bleed(
+                    ans.formatted_references, ans.ref_source_titles
+                )
+                refs_bleed_flag = bool(bleed_idx)
                 return {
                     "job_idx": job_idx,
                     "q_index": display_idx,
@@ -359,6 +370,9 @@ def _run_one(
                     "excerpt_stats": ans.excerpt_stats,
                     "references": ans.references,
                     "formatted_references": ans.formatted_references,
+                    "ref_source_titles": ans.ref_source_titles,
+                    "refs_bleed_suspected": refs_bleed_flag,
+                    "refs_bleed_indices": bleed_idx,
                     "elapsed_s": round(elapsed, 2),
                     "error": None,
                 }
@@ -388,6 +402,9 @@ def _run_one(
         "excerpt_stats": {},
         "references": [],
         "formatted_references": [],
+        "ref_source_titles": [],
+        "refs_bleed_suspected": False,
+        "refs_bleed_indices": [],
         "elapsed_s": 0.0,
         "error": repr(last_exc),
     }
@@ -458,6 +475,14 @@ def _write_outputs(
                 "excerpt_stats": rec["excerpt_stats"],
                 "references": rec["references"],
                 "formatted_references": rec["formatted_references"],
+                # Refs-bleed audit fields (defence-in-depth).  Surfaced in the
+                # JSONL so post-hoc audits can find tainted answers without
+                # rerunning the heuristic.  No-silent-fallback: a true flag
+                # means the reference titles share NO token with all_docs
+                # titles -- the caller should treat such rows as suspect and
+                # rerun with --indices ... --output-jsonl <path>.
+                "refs_bleed_suspected": rec.get("refs_bleed_suspected", False),
+                "refs_bleed_indices": rec.get("refs_bleed_indices", []),
                 "elapsed_s": rec["elapsed_s"],
                 "error": rec["error"],
             }
@@ -482,6 +507,12 @@ def _write_outputs(
                 f"context={rec['enriched_context_chars']} chars | "
                 f"excerpts={n_excerpts} | elapsed={rec['elapsed_s']}s\n"
             )
+            if rec.get("refs_bleed_suspected"):
+                tf.write(
+                    "*** REFS_BLEED SUSPECTED: "
+                    f"indices={rec.get('refs_bleed_indices', [])} -- "
+                    "rerun this q_index before scoring ***\n"
+                )
             tf.write("=" * 60 + "\n\n")
 
     log.info("lineage: wrote attempt-%d (%d questions) -> %s", gen_index, len(records), gen_dir)
@@ -806,6 +837,7 @@ def main() -> int:
                             "answer": f"ERROR: crash: {exc}",
                             "enriched_context": "", "enriched_context_chars": 0,
                             "excerpt_stats": {}, "references": [], "formatted_references": [],
+                            "ref_source_titles": [], "refs_bleed_suspected": False, "refs_bleed_indices": [],
                             "elapsed_s": 0.0, "error": repr(exc),
                         })
                 continue
@@ -830,6 +862,7 @@ def main() -> int:
                         "answer": f"ERROR: exceeded {_tier_bucket(tier)}-bucket timeout of {timed_out_s}s",
                         "enriched_context": "", "enriched_context_chars": 0,
                         "excerpt_stats": {}, "references": [], "formatted_references": [],
+                        "ref_source_titles": [], "refs_bleed_suspected": False, "refs_bleed_indices": [],
                         "elapsed_s": float(timed_out_s),
                         "error": f"timeout_{timed_out_s}s_{_tier_bucket(tier)}",
                     })
@@ -843,15 +876,31 @@ def main() -> int:
     txt_path, jsonl_path = _write_outputs(records, Path(args.output_dir), save_context=args.save_context)
 
     # Fix 2: merge successful records into the target JSONL (resume mode).
+    # Refs-bleed addendum: a record where the heuristic flagged refs as
+    # sourced from a different question's docs is treated as a failure for
+    # merge purposes -- it must be regenerated, not persisted.  This honours
+    # the no-silent-fallback principle: refs mismatch is not silently merged
+    # into the canonical JSONL.  The lineage attempt-N dir still contains
+    # the original tainted record for forensics.
     if args.output_jsonl and records:
-        ok_records = [r for r in records if r.get("error") is None]
+        ok_records = [
+            r for r in records
+            if r.get("error") is None and not r.get("refs_bleed_suspected", False)
+        ]
         if ok_records:
             _merge_into_jsonl(args.output_jsonl, ok_records)
 
     ok  = sum(1 for r in records if r["error"] is None)
     err = len(records) - ok
+    bled = [r["q_index"] for r in records if r.get("refs_bleed_suspected")]
     print("\n" + "=" * 72)
     print(f"pipeline complete: ok={ok}, err={err}, total_elapsed={elapsed:.1f}s")
+    if bled:
+        print(
+            f"REFS_BLEED suspected on q_indices={bled} "
+            f"-- rerun before scoring: --indices {' '.join(str(i) for i in bled)} "
+            "--output-jsonl <path>"
+        )
     if txt_path:
         print(f"output txt:   {txt_path}")
         print(f"output jsonl: {jsonl_path}")

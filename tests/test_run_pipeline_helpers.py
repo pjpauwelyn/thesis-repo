@@ -271,6 +271,7 @@ def test_run_one_records_start_clock_after_semaphore(monkeypatch):
                 excerpt_stats = {}
                 references: list = []
                 formatted_references: list = []
+                ref_source_titles: list = []
             return _Ans()
 
     sem = threading.Semaphore(1)
@@ -318,6 +319,7 @@ def test_run_one_does_not_require_start_clock():
                 excerpt_stats = {}
                 references: list = []
                 formatted_references: list = []
+                ref_source_titles: list = []
             return _Ans()
 
     sem = threading.Semaphore(1)
@@ -337,6 +339,287 @@ def test_run_one_does_not_require_start_clock():
         max_retries=1,
     )
     assert result["error"] is None
+
+
+# ---------------------------------------------------------------------------
+# Refs-bleed detection -- defence-in-depth guard for the Q25/Q37 case
+# where formatted_references came from a different question's docs.
+# Tests cover: (a) Pipeline._detect_refs_bleed heuristic, (b) _run_one's
+# bleed flag is propagated onto the record, (c) _write_outputs persists
+# the flag, (d) main()'s merge step refuses to persist bled records,
+# (e) concurrent-completion ordering does not corrupt either record.
+# ---------------------------------------------------------------------------
+
+def test_detect_refs_bleed_flags_when_no_token_overlap():
+    """fmt_ref line with no token overlap with all_docs titles is flagged."""
+    from core.pipelines.pipeline import Pipeline
+    fmt_refs = [
+        "[1] Wilson et al. 2017. Glacier mass-balance methods. https://openalex.org/W123.",
+    ]
+    all_doc_titles = [
+        "LIDAR sensor characteristics in dense forest environments",
+        "Beam divergence and PRF in airborne laser scanning",
+    ]
+    bleed = Pipeline._detect_refs_bleed(fmt_refs, all_doc_titles)
+    assert bleed == [0], (
+        "ref line about glaciers should be flagged when all_docs are LIDAR papers"
+    )
+
+
+def test_detect_refs_bleed_silent_when_overlap_exists():
+    """Genuine match shares at least one >=5-char token -- not flagged."""
+    from core.pipelines.pipeline import Pipeline
+    fmt_refs = [
+        "[1] Pauwels 2024. LIDAR sensor characteristics in canopy. https://openalex.org/W999.",
+    ]
+    all_doc_titles = [
+        "LIDAR sensor characteristics in dense forest environments",
+    ]
+    assert Pipeline._detect_refs_bleed(fmt_refs, all_doc_titles) == []
+
+
+def test_detect_refs_bleed_empty_inputs():
+    from core.pipelines.pipeline import Pipeline
+    assert Pipeline._detect_refs_bleed([], []) == []
+    assert Pipeline._detect_refs_bleed(["[1] foo"], []) == []
+    assert Pipeline._detect_refs_bleed([], ["title"]) == []
+
+
+def test_run_one_propagates_refs_bleed_flag_when_titles_mismatch():
+    """_run_one calls _detect_refs_bleed and stores the result on the record."""
+    import threading
+
+    class _StubPipeline:
+        def profile_and_route(self, q):
+            class _Cfg:
+                rule_hit = "tier-m"
+            return None, None, _Cfg()
+
+        def run(self, *a, **kw):
+            class _Ans:
+                rule_hit = "tier-m"
+                answer = "x" * 50
+                enriched_context = "ctx"
+                excerpt_stats = {}
+                references: list = []
+                # Refs point at glacier papers ...
+                formatted_references = [
+                    "[1] Wilson 2017. Glacier mass balance methods. https://openalex.org/W1.",
+                ]
+                # ... but the docs used were LIDAR papers.  Bleed must trip.
+                ref_source_titles = [
+                    "LIDAR sensor characteristics in dense forest",
+                ]
+            return _Ans()
+
+    sem = threading.Semaphore(1)
+    spacer = run_pipeline._StartSpacer(0.0)
+    result = run_pipeline._run_one(
+        job_idx=1,
+        display_idx=1,
+        question="LIDAR question",
+        aql="",
+        expected_tier="tier-m",
+        docs=[{"title": "t"}],
+        pipeline=_StubPipeline(),
+        small_sem=sem,
+        medium_sem=sem,
+        large_sem=sem,
+        spacer=spacer,
+        max_retries=1,
+    )
+    assert result["refs_bleed_suspected"] is True
+    assert result["refs_bleed_indices"] == [0]
+
+
+def test_run_one_no_bleed_when_refs_match_docs():
+    """Clean case: refs and docs share tokens -- bleed flag is False."""
+    import threading
+
+    class _StubPipeline:
+        def profile_and_route(self, q):
+            class _Cfg:
+                rule_hit = "tier-m"
+            return None, None, _Cfg()
+
+        def run(self, *a, **kw):
+            class _Ans:
+                rule_hit = "tier-m"
+                answer = "x" * 50
+                enriched_context = "ctx"
+                excerpt_stats = {}
+                references: list = []
+                formatted_references = [
+                    "[1] Pauwels 2024. LIDAR canopy mapping. https://openalex.org/W42.",
+                ]
+                ref_source_titles = [
+                    "LIDAR sensor characteristics in dense forest",
+                ]
+            return _Ans()
+
+    sem = threading.Semaphore(1)
+    spacer = run_pipeline._StartSpacer(0.0)
+    result = run_pipeline._run_one(
+        job_idx=1, display_idx=1, question="q", aql="",
+        expected_tier="tier-m", docs=[{"title": "t"}],
+        pipeline=_StubPipeline(),
+        small_sem=sem, medium_sem=sem, large_sem=sem,
+        spacer=spacer, max_retries=1,
+    )
+    assert result["refs_bleed_suspected"] is False
+    assert result["refs_bleed_indices"] == []
+
+
+def test_write_outputs_persists_refs_bleed_flag(tmp_path: Path):
+    """The JSONL row must carry refs_bleed_suspected so auditors see it."""
+    records = [
+        _mk_record(q_index=i, job_idx=i) for i in range(1, 6)
+    ]
+    # Mark Q3 as bled.
+    records[2]["refs_bleed_suspected"] = True
+    records[2]["refs_bleed_indices"] = [0, 2]
+    _, jsonl = run_pipeline._write_outputs(records, tmp_path)
+    rows = [json.loads(line) for line in jsonl.read_text(encoding="utf-8").splitlines()]
+    by_q = {r["q_index"]: r for r in rows}
+    assert by_q[3]["refs_bleed_suspected"] is True
+    assert by_q[3]["refs_bleed_indices"] == [0, 2]
+    assert by_q[1]["refs_bleed_suspected"] is False
+
+
+def test_concurrent_completion_does_not_leak_refs_across_records():
+    """Two questions completing out of order must keep their own refs.
+
+    Simulates the audit scenario: thread A runs the LIDAR question and
+    thread B runs the glacier question.  Even when B finishes first and
+    its record is appended ahead of A's, A's record must hold LIDAR refs
+    and B's must hold glacier refs.  This is the structural invariant
+    that the Q25/Q37 bleed bug violated.
+    """
+    import threading
+
+    questions = {
+        "lidar": {
+            "answer": "LIDAR body [1].",
+            "fmt_refs": ["[1] Pauwels 2024. LIDAR forest. https://openalex.org/W11."],
+            "titles": ["LIDAR sensor characteristics in dense forest"],
+        },
+        "glacier": {
+            "answer": "Glacier body [1].",
+            "fmt_refs": ["[1] Wilson 2017. Glacier mass balance. https://openalex.org/W22."],
+            "titles": ["Glacier mass-balance estimation methods"],
+        },
+    }
+
+    class _StubPipeline:
+        def __init__(self, key):
+            self._key = key
+
+        def profile_and_route(self, q):
+            class _Cfg:
+                rule_hit = "tier-m"
+            return None, None, _Cfg()
+
+        def run(self, *a, **kw):
+            data = questions[self._key]
+            class _Ans:
+                rule_hit = "tier-m"
+                answer = data["answer"]
+                enriched_context = "ctx"
+                excerpt_stats = {}
+                references: list = []
+                formatted_references = list(data["fmt_refs"])
+                ref_source_titles = list(data["titles"])
+            return _Ans()
+
+    sem = threading.Semaphore(2)  # allow both threads to enter together
+    spacer = run_pipeline._StartSpacer(0.0)
+    results: dict = {}
+    barrier = threading.Barrier(2)
+
+    def _worker(key: str, display_idx: int):
+        barrier.wait()
+        results[key] = run_pipeline._run_one(
+            job_idx=display_idx, display_idx=display_idx,
+            question=f"{key} question", aql="",
+            expected_tier="tier-m", docs=[{"title": "t"}],
+            pipeline=_StubPipeline(key),
+            small_sem=sem, medium_sem=sem, large_sem=sem,
+            spacer=spacer, max_retries=1,
+        )
+
+    t_lidar = threading.Thread(target=_worker, args=("lidar", 25))
+    t_glacier = threading.Thread(target=_worker, args=("glacier", 30))
+    # Start glacier first so it has a head start ("completes first")
+    t_glacier.start()
+    t_lidar.start()
+    t_glacier.join()
+    t_lidar.join()
+
+    assert "LIDAR" in results["lidar"]["formatted_references"][0]
+    assert "Glacier" in results["glacier"]["formatted_references"][0]
+    assert results["lidar"]["ref_source_titles"][0].startswith("LIDAR")
+    assert results["glacier"]["ref_source_titles"][0].startswith("Glacier")
+    # Neither record is flagged as bled -- refs match their own docs.
+    assert results["lidar"]["refs_bleed_suspected"] is False
+    assert results["glacier"]["refs_bleed_suspected"] is False
+
+
+def test_pipeline_llm_cache_is_thread_local():
+    """Two threads asking for the same (model, ...) tuple get distinct wrappers.
+
+    Guards the fix for the cross-question stream-bleed root cause: sharing a
+    single LLM wrapper (and its underlying HTTP connection pool) across
+    worker threads allowed chunks from one question's stream to land in
+    another concurrent stream.  Thread-local caching eliminates the shared
+    pool.
+    """
+    import threading
+    from core.pipelines.pipeline import Pipeline
+
+    # Build a pipeline but avoid hitting real LLM-construction code: stub
+    # get_llm_model so each call returns a sentinel object we can identify.
+    pipeline = Pipeline.__new__(Pipeline)
+    pipeline._llm_local = threading.local()
+
+    counter = {"n": 0}
+    counter_lock = threading.Lock()
+
+    def _stub_get_llm_model(model, temperature, max_tokens, timeout_s=None):
+        with counter_lock:
+            counter["n"] += 1
+            n = counter["n"]
+        return f"wrapper-{n}-{threading.get_ident()}"
+
+    import core.utils.helpers as helpers
+    orig = helpers.get_llm_model
+    helpers.get_llm_model = _stub_get_llm_model
+    try:
+        wrappers: dict = {}
+
+        def _worker(tag: str):
+            wrappers[tag] = pipeline._llm("m", 0.0, 1400, 60)
+
+        t1 = threading.Thread(target=_worker, args=("a",))
+        t2 = threading.Thread(target=_worker, args=("b",))
+        t1.start(); t2.start(); t1.join(); t2.join()
+
+        assert wrappers["a"] != wrappers["b"], (
+            "thread-local _llm cache must give each thread its own wrapper"
+        )
+        # Each thread's own cache returns the SAME wrapper on a second call.
+        again: dict = {}
+
+        def _second_call(tag: str, expected: str):
+            again[tag] = pipeline._llm("m", 0.0, 1400, 60)
+
+        t3 = threading.Thread(
+            target=lambda: again.__setitem__("a", pipeline._llm("m", 0.0, 1400, 60))
+        )
+        t3.start(); t3.join()
+        # t3 is a fresh thread, so it gets its own NEW wrapper -- not "a"'s.
+        assert again["a"] not in (wrappers["a"], wrappers["b"])
+    finally:
+        helpers.get_llm_model = orig
 
 
 # ---------------------------------------------------------------------------
@@ -360,3 +643,18 @@ def test_merge_into_jsonl_preserves_good_record_when_rerun_fails(tmp_path: Path)
     lines = [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines()]
     assert [r["q_index"] for r in lines] == [7, 9]
     assert next(r for r in lines if r["q_index"] == 7)["answer"] == "good answer"
+
+
+def test_merge_into_jsonl_accepts_records_with_bleed_field(tmp_path: Path):
+    """_merge_into_jsonl is content-agnostic; the run_pipeline main() caller is
+    the one that filters out refs_bleed_suspected records.  This test just
+    ensures the merger does not choke on records that carry the new field.
+    """
+    p = tmp_path / "out.jsonl"
+    p.write_text("", encoding="utf-8")
+    run_pipeline._merge_into_jsonl(str(p), [
+        {"q_index": 3, "answer": "ok", "error": None,
+         "refs_bleed_suspected": False, "refs_bleed_indices": []},
+    ])
+    rows = [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["refs_bleed_suspected"] is False

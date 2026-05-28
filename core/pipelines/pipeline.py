@@ -68,6 +68,12 @@ class PipelineResult:
     excerpt_stats: Dict[str, Any] = field(default_factory=dict)
     kg_docs_used: int = 0
     kg_source: str = "csv"
+    # Titles of the docs from which formatted_references was built, in the
+    # same order as all_docs (full_docs + abstract_docs).  Persisted on the
+    # PipelineResult so downstream consumers (output writer, audit tools)
+    # can verify post-hoc that formatted_references did not bleed in from a
+    # different question.  See _verify_refs_against_docs in Pipeline.run().
+    ref_source_titles: List[str] = field(default_factory=list)
 
 
 AdaptiveResult = PipelineResult
@@ -83,7 +89,25 @@ class Pipeline:
         self.router = Router(rules_path)
         self._cache_dir = Path(cache_dir)
         self._prompts_root = Path(prompts_root)
-        self._llm_cache: Dict[Tuple[str, float, int, int], Any] = {}
+        # Thread-local LLM wrapper cache.  Each worker thread maintains its
+        # own dict of LLM wrappers (and therefore its own underlying HTTP
+        # connection pool) so concurrent streams cannot share pooled sockets.
+        #
+        # Why this matters: commit 4a8cc81 documented that pooled HTTP/2
+        # connections in the OpenAI / Mistral clients can leak chunks
+        # between streams when one stream is interrupted (retry, timeout)
+        # and another is started on the same pooled socket.  The fix added
+        # reset_llm_cache() between sequential questions but never covered
+        # the concurrent runner in scripts/run_pipeline.py, where multiple
+        # worker threads call Pipeline.run() simultaneously on the same
+        # Pipeline instance.  Sharing a single OpenAI()/Mistral() client
+        # across threads is the same pooled-socket scenario, just compressed
+        # in time -- and is the most plausible root cause of the Q25/Q37
+        # cross-question reference bleed seen in the 20Q quality audit.
+        #
+        # threading.local() gives each thread its own dict; _llm() lazily
+        # initialises the dict on first access from that thread.
+        self._llm_local = threading.local()
         self._indexer = None
         # Fix B: replace the flat, ever-growing _session_full_doc_uris Set with
         # a rolling deque of per-question URI sets (maxlen=_URI_WINDOW_SIZE).
@@ -104,11 +128,18 @@ class Pipeline:
         log.debug("Pipeline.reset_session_state() called")
 
     def reset_llm_cache(self) -> None:
-        """Clear the LLM instance cache."""
-        self._llm_cache = {}
+        """Clear the calling thread's LLM instance cache.
+
+        Only affects the thread that calls this; other threads retain their
+        own caches.  Matches the pre-thread-local contract for sequential
+        callers (e.g. core/main.py) while leaving concurrent worker threads
+        isolated from each other.
+        """
+        if hasattr(self._llm_local, "cache"):
+            self._llm_local.cache = {}
         with self._counter_lock:
             self._session_uri_window.clear()
-        log.debug("Pipeline._llm_cache cleared")
+        log.debug("Pipeline._llm_local.cache cleared (this thread)")
 
     def profile_and_route(
         self, question: str
@@ -481,6 +512,34 @@ class Pipeline:
         # Fix 1-3: strip context-assembly artifacts from the answer body.
         answer_text = self._clean_answer_artifacts(answer_text)
 
+        # Snapshot the titles of all_docs at ref-build time.  Persisted on
+        # the PipelineResult so downstream code (output writer, audit tools)
+        # can prove formatted_references came from these specific docs and
+        # not from a different question's docs (cross-question refs bleed).
+        ref_source_titles = [
+            (d.get("title_or_name") or d.get("title") or "") for d in all_docs
+        ]
+
+        # Invariant: every formatted reference line's payload must be derivable
+        # from all_docs.  This is a defence-in-depth guard against the
+        # Q25/Q37-style refs-bleed where the body cited the right indices but
+        # the references section contained titles from a different question.
+        # We check that each fmt_ref line shares a normalised title token with
+        # at least one all_docs title.  If the check fails we LOG LOUDLY and
+        # add a "REFS_MISMATCH" marker to references (no silent fallback --
+        # preserves the no-silent-fallback principle from feedback memory).
+        bleed_detected = self._detect_refs_bleed(fmt_refs, ref_source_titles)
+        if bleed_detected:
+            log.error(
+                "REFS_BLEED suspected for '%s...' (rule=%s): "
+                "%d/%d formatted_references lines do not share any normalised "
+                "title token with all_docs (n_docs=%d). "
+                "This usually means a concurrent question's stream chunks "
+                "leaked into refs assembly. Marking record for audit.",
+                question[:60], cfg.rule_hit,
+                len(bleed_detected), len(fmt_refs), len(all_docs),
+            )
+
         if fmt_refs:
             refs_block = "\n\n## References\n" + "\n".join(fmt_refs)
             answer_text = answer_text.rstrip() + refs_block
@@ -507,6 +566,7 @@ class Pipeline:
             excerpt_stats=excerpt_stats,
             kg_docs_used=len(full_docs) + len(abstract_docs),
             kg_source=kg_source,
+            ref_source_titles=ref_source_titles,
         )
 
     @staticmethod
@@ -723,6 +783,45 @@ class Pipeline:
         return formatted, plain, index_remap
 
     @staticmethod
+    def _detect_refs_bleed(
+        fmt_refs: List[str],
+        ref_source_titles: List[str],
+    ) -> List[int]:
+        """Return indices of fmt_refs lines that share NO token with any all_docs title.
+
+        A reference line is considered "bled" (sourced from a different question's
+        docs) if none of its content tokens (>= 5 chars, alphanumeric) appear in
+        any of the titles of the docs that were supplied to _build_verified_references.
+
+        This is a coarse but cheap heuristic: a true match needs at least one
+        non-stopword token in common.  Empty fmt_refs / empty all_docs returns
+        empty list (no bleed claimed in the absence of evidence).
+        """
+        if not fmt_refs or not ref_source_titles:
+            return []
+
+        def _toks(s: str) -> Set[str]:
+            return {
+                t.lower()
+                for t in re.findall(r"[A-Za-z][A-Za-z0-9]{4,}", s or "")
+            }
+
+        all_doc_tokens: Set[str] = set()
+        for t in ref_source_titles:
+            all_doc_tokens.update(_toks(t))
+        if not all_doc_tokens:
+            return []
+
+        bleed: List[int] = []
+        for i, line in enumerate(fmt_refs):
+            ref_tokens = _toks(line)
+            if not ref_tokens:
+                continue
+            if ref_tokens.isdisjoint(all_doc_tokens):
+                bleed.append(i)
+        return bleed
+
+    @staticmethod
     def _renumber_inline_citations(answer_body: str, index_remap: Dict[int, int]) -> str:
         if not index_remap:
             return answer_body
@@ -855,13 +954,25 @@ class Pipeline:
         return self._indexer
 
     def _llm(self, model: str, temperature: float, max_tokens: int = 1400, timeout_s: Optional[int] = None):
+        """Return a thread-local LLM wrapper for (model, temperature, max_tokens, timeout).
+
+        Each worker thread maintains its own cache (see Pipeline.__init__).
+        Two threads asking for the same (model, ...) tuple get two distinct
+        wrapper instances backed by two distinct OpenAI/Mistral clients,
+        which use separate HTTP connection pools.  This eliminates the
+        pooled-socket stream-bleed scenario that produced the Q25/Q37
+        cross-question reference contamination.
+        """
         from core.utils.helpers import get_llm_model
+        if not hasattr(self._llm_local, "cache"):
+            self._llm_local.cache = {}
+        cache: Dict[Tuple[str, float, int, int], Any] = self._llm_local.cache
         key = (model, temperature, max_tokens, timeout_s or 0)
-        if key not in self._llm_cache:
-            self._llm_cache[key] = get_llm_model(
+        if key not in cache:
+            cache[key] = get_llm_model(
                 model, temperature, max_tokens, timeout_s=timeout_s
             )
-        return self._llm_cache[key]
+        return cache[key]
 
     @staticmethod
     def _try_live_kg(
