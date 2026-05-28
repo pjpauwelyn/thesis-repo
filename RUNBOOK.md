@@ -18,15 +18,28 @@ python3 -m venv venv && source venv/bin/activate
 #    removed `from mistralai import Mistral` which the wrapper relies on)
 pip install -r requirements.txt
 
-# 3. Required API keys
+# 3. Required API keys -- TWO equivalent options
+#
+#    (a) RECOMMENDED: drop them in a `.env` at the repo root.
+#        The runner auto-loads it via python-dotenv.
+#
+#        cat > .env <<'EOF'
+#        MISTRAL_API_KEY=<your-key>
+#        OPENROUTER_API_KEY=<your-key>
+#        EOF
+#        chmod 600 .env
+#
+#    (b) Export them in the shell (overrides .env values):
 export MISTRAL_API_KEY=<your-key>          # always required
 export OPENROUTER_API_KEY=<your-key>       # required for tier-2b / tier-3 /
                                            # safety-tier3 (routes via OpenRouter)
 ```
 
-`scripts/run_pipeline.py` validates both keys upfront and aborts with a
-clear error before any LLM call. Override with `--skip-env-check` if you
-intentionally want to run only abstracts-tier questions.
+`scripts/run_pipeline.py` auto-loads `.env` from the repo root if present,
+then validates both keys upfront and aborts with a clear error before any
+LLM call. `.env` is already in `.gitignore`. Override with
+`--skip-env-check` if you intentionally want to run only abstracts-tier
+questions.
 
 The live ArangoDB KG is optional. If `ARANGO_ROOT_PASSWORD` is not set the
 pipeline falls back to the pre-parsed CSV documents automatically.
@@ -72,7 +85,32 @@ Output files written to `tests/output/`:
 
 ---
 
-### 2 — Full generation run (~70 questions)
+### 2 — Representative 20-question generation (recommended first)
+
+```bash
+make eval-20
+```
+
+Selects **20 questions** whose tier distribution mirrors the production
+mix (`5,15,10,10,30` scaled to 20 — see `_scale_tier_mix` in
+`scripts/run_pipeline.py`). Takes ~10–25 min depending on rate limits.
+Use this as a quality / cost gate **before** the full 70-question run.
+
+```bash
+# Direct invocation
+python scripts/run_pipeline.py --representative 20 --workers 4
+
+# Different sample size (any N >= 1; the script scales the same weights)
+python scripts/run_pipeline.py --representative 30 --workers 4
+```
+
+Output goes to the auto-versioned
+`tests/output/full_gen_attempt-N/` directory (same lineage scheme as the
+full run).
+
+---
+
+### 3 — Full generation run (~70 questions)
 
 ```bash
 make eval
@@ -185,32 +223,39 @@ Routing rules are defined in `core/policy/rules.yaml`.
 | `--output-jsonl` | — | Resume mode: skip q_indices already present in the file and upsert new results back into it |
 | `--skip-env-check` | off | Skip the upfront `MISTRAL_API_KEY` / `OPENROUTER_API_KEY` validation |
 | `--rules` | `core/policy/rules.yaml` | Path used only by env validation to decide whether `OPENROUTER_API_KEY` is required |
+| `--representative` | — | `--representative N` selects N questions whose tier distribution mirrors the production 70Q mix (5,15,10,10,30 scaled to N). Use N=20 before the full run. |
 
 ---
 
 ## Typical workflow
 
 ```bash
-# 1. After any code change — quick health check
+# 1. After any code change — quick health check (5 Qs, ~5 min)
 make smoke
 
 # 2. (Optional) Validate routing before the long run
 python scripts/run_pipeline.py --tier-mix 5,15,10,10,30 --dry-run
 
-# 3. Full generation run
+# 3. Representative 20-question generation -- quality gate before full eval
+make eval-20
+
+# 4. Inspect tests/output/full_gen_attempt-N/answers_readable.txt
+#    If quality looks good, proceed to (5).  If not, fix and re-run (3).
+
+# 5. Full 70-question generation run
 make eval
 
-# 4. Hand `tests/output/full_gen_attempt-N/answers_readable.txt` to your
+# 6. Hand `tests/output/full_gen_attempt-N/answers_readable.txt` to your
 #    evaluation prompt / external AI for scoring.
 
-# 5. If a specific question failed, re-run it alone and merge the result
+# 7. If a specific question failed, re-run it alone and merge the result
 #    back into the existing JSONL (resume mode)
 python scripts/run_pipeline.py \
     --indices 12 \
     --output-jsonl tests/output/full_gen_attempt-N/answers.jsonl
 
-# 6. To re-run just a few questions in place: delete those rows from the
-#    JSONL first, then step (5) regenerates and upserts them.
+# 8. To re-run just a few questions in place: delete those rows from the
+#    JSONL first, then step (7) regenerates and upserts them.
 ```
 
 ## Mac 70-question end-to-end (exact sequence)
@@ -219,9 +264,16 @@ python scripts/run_pipeline.py \
 cd ~/THESIS_2025/thesis-repo-clean        # or wherever the repo lives
 source venv/bin/activate
 
-# A. Verify env -- aborts early if a key is missing
-export MISTRAL_API_KEY=...                # required
-export OPENROUTER_API_KEY=...             # required (tier-2b/3/safety)
+# A. API keys -- ONE of the following two options is enough.
+#    (a) Drop into .env at the repo root (auto-loaded; recommended):
+#        cat > .env <<'EOF'
+#        MISTRAL_API_KEY=<your-key>
+#        OPENROUTER_API_KEY=<your-key>
+#        EOF
+#        chmod 600 .env
+#    (b) Or export them in the current shell:
+#        export MISTRAL_API_KEY=...
+#        export OPENROUTER_API_KEY=...
 
 # B. Cold-start sanity: 5-question smoke (~5 min)
 make smoke
@@ -230,10 +282,14 @@ make smoke
 #    generation; profiler call only)
 python scripts/run_pipeline.py --tier-mix 5,15,10,10,30 --dry-run
 
-# D. Full 70-question run (~30-90 min)
+# D. Representative 20-question generation (~10-25 min) -- quality gate
+make eval-20
+#    -> inspect tests/output/full_gen_attempt-N/answers_readable.txt
+
+# E. Full 70-question run (~30-90 min) -- only after (D) looks clean
 make eval
 
-# E. Resume an interrupted run (skip-completed is automatic; just point
+# F. Resume an interrupted run (skip-completed is automatic; just point
 #    at the existing JSONL)
 python scripts/run_pipeline.py --tier-mix 5,15,10,10,30 \
     --output-jsonl tests/output/full_gen_attempt-N/answers.jsonl

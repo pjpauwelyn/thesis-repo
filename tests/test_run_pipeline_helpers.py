@@ -175,3 +175,47 @@ def test_validate_env_clean_when_both_keys_set(monkeypatch, tmp_path: Path):
     rules = tmp_path / "rules.yaml"
     rules.write_text("rules: []\n", encoding="utf-8")
     assert run_pipeline._validate_env(rules) == []
+
+
+# ---------------------------------------------------------------------------
+# _scale_tier_mix -- representative-N scaling against the production weights.
+# Guards the 20Q ergonomic flag against silent drift if someone tweaks the
+# production mix or the rounding logic.
+# ---------------------------------------------------------------------------
+
+def test_scale_tier_mix_preserves_total_for_production_n():
+    """Scaling to N=70 must reproduce the production weights exactly."""
+    out = run_pipeline._scale_tier_mix(70)
+    assert sum(out.values()) == 70
+    assert out == run_pipeline._PROD_TIER_MIX
+
+
+def test_scale_tier_mix_representative_20_sums_to_20():
+    """The headline --representative 20 case must sum to exactly 20."""
+    out = run_pipeline._scale_tier_mix(20)
+    assert sum(out.values()) == 20
+    # Each tier should be present (or at least nonneg), and tier-3 stays
+    # the largest bucket because it dominates the production mix (30/70).
+    for tier in run_pipeline._TIER_ORDER_5:
+        assert out[tier] >= 0
+    assert out["tier-3"] == max(out.values())
+
+
+def test_scale_tier_mix_rounding_absorbed_by_tier_m():
+    """Rounding remainder lands on tier-m so the sum is exact."""
+    # N=7 gives non-integer proportional shares; the remainder must go to tier-m.
+    out = run_pipeline._scale_tier_mix(7)
+    assert sum(out.values()) == 7
+
+
+def test_scale_tier_mix_minimum_n():
+    out = run_pipeline._scale_tier_mix(1)
+    assert sum(out.values()) == 1
+
+
+def test_scale_tier_mix_no_negative_buckets():
+    """Even when the diff is negative, no bucket may drop below 0."""
+    # Force an extreme rounding scenario.
+    out = run_pipeline._scale_tier_mix(3)
+    assert all(v >= 0 for v in out.values())
+    assert sum(out.values()) == 3

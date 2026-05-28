@@ -1,4 +1,4 @@
-.PHONY: smoke run run-one eval eval-full \
+.PHONY: smoke run run-one eval eval-full eval-20 \
 	diag diag-cache diag-filter \
 	test-profile \
 	test-gen test-dist test-filter test-router test-fixes test-all \
@@ -42,6 +42,20 @@ eval:
 		--output-dir $(OUTPUT_DIR)
 
 eval-full: eval
+
+# ============================================================
+# Representative 20-question generation
+# Selects 20 questions whose tier distribution mirrors the
+# production 70Q mix (scaled 5,15,10,10,30 -> ~1,4,3,3,9).
+# Use this BEFORE the full eval to validate quality on a
+# representative sample (~10-25 min depending on rate limits).
+# Output: tests/output/full_gen_attempt-N/
+# ============================================================
+eval-20:
+	python scripts/run_pipeline.py \
+		--representative 20 \
+		--workers $(WORKERS) \
+		--output-dir $(OUTPUT_DIR)
 
 # ============================================================
 # Run a single question by 1-based CSV row index

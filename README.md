@@ -75,13 +75,20 @@ cache/
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Set your Mistral API key
+# 2. Provide API keys -- either in a `.env` at the repo root (auto-loaded)
+#    or via shell exports.  Tier-2b / tier-3 / safety-tier3 also need
+#    OPENROUTER_API_KEY.
 export MISTRAL_API_KEY=...
+export OPENROUTER_API_KEY=...
 
 # 3. Sanity check — 5 questions (1 per tier), ~5 min
 make smoke
 
-# 4. Full generation run — ~70 questions, 30-90 min
+# 4. Representative 20-question generation — ~10-25 min, mirrors the
+#    production tier mix.  Use as a quality gate before the full run.
+make eval-20
+
+# 5. Full generation run — ~70 questions, 30-90 min
 make eval
 
 # Run a single question by 1-based CSV row index

@@ -20,6 +20,21 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Auto-load .env from the repo root if present.  Keeps the Mac workflow
+# ergonomic: `source .env` is no longer required, the file is picked up
+# the moment the script imports.  Existing exported variables win over
+# .env values (override=False) so CI / one-off `export` shells still work.
+try:
+    from dotenv import load_dotenv as _load_dotenv  # type: ignore
+
+    _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+    if _ENV_PATH.exists():
+        _load_dotenv(dotenv_path=_ENV_PATH, override=False)
+except ImportError:
+    # python-dotenv is a runtime requirement (see requirements.txt) but
+    # do not crash on import-time absence -- `export VAR=...` still works.
+    pass
+
 from core.pipelines.pipeline import Pipeline
 
 csv.field_size_limit(int(1e8))
@@ -228,6 +243,28 @@ def _tier_bucket(tier: str) -> str:
 
 _TIER_ORDER_5 = ["tier-1", "tier-m", "tier-2a", "tier-2b", "tier-3"]
 _TIER_ORDER_3 = ["tier-1", "tier-2b", "tier-3"]
+
+# Production tier mix used for the full 70-question DLR run.  Kept here so
+# --representative N can scale it proportionally without duplicating the
+# weights in two places (Makefile + script).
+_PROD_TIER_MIX: Dict[str, int] = dict(zip(_TIER_ORDER_5, [5, 15, 10, 10, 30]))
+
+
+def _scale_tier_mix(target_n: int, base: Dict[str, int] = _PROD_TIER_MIX) -> Dict[str, int]:
+    """Scale *base* tier weights to exactly *target_n* questions total.
+
+    Proportional rounding with the remainder absorbed by ``tier-m`` (the
+    catch-all bucket) so the per-tier ratios stay close to *base* and the
+    final sum equals target_n exactly.  Returns the scaled counts.
+    """
+    total_base = sum(base.values()) or 1
+    scaled = {
+        tier: max(0, round(target_n * base[tier] / total_base))
+        for tier in base
+    }
+    diff = target_n - sum(scaled.values())
+    scaled["tier-m"] = max(0, scaled.get("tier-m", 0) + diff)
+    return scaled
 
 
 def _parse_tier_mix(s: str) -> Dict[str, int]:
@@ -527,6 +564,14 @@ def main() -> int:
     )
     ap.add_argument("--n", type=int, default=None,
                     help="override total question count; weights from --tier-mix")
+    ap.add_argument(
+        "--representative", type=int, default=None, metavar="N",
+        help=(
+            "select N questions whose tier distribution mirrors the production "
+            "70-question mix (5,15,10,10,30 scaled to N).  Recommended N=20 for "
+            "a quick representative generation before committing to the full run."
+        ),
+    )
     ap.add_argument("--indices",   type=int, nargs="+", default=None)
     ap.add_argument("--questions", type=lambda s: [int(x) for x in s.split(",")], default=None)
     ap.add_argument("--max-retries", type=int, default=3)
@@ -601,17 +646,23 @@ def main() -> int:
         log.error("no rows loaded from %s", csv_path)
         return 1
 
-    target_counts = args.tier_mix
-    if args.n is not None:
-        total_mix = sum(target_counts.values()) or 1
-        scaled = {
-            t: max(0, round(args.n * target_counts[t] / total_mix))
-            for t in target_counts
-        }
-        diff = args.n - sum(scaled.values())
-        scaled["tier-m"] = scaled.get("tier-m", 0) + diff
-        target_counts = scaled
-        log.info("scaled tier mix for n=%d: %s", args.n, target_counts)
+    # --representative N takes precedence over --tier-mix / --n.  It scales
+    # the canonical production weights (5,15,10,10,30) to N so the sample
+    # mirrors the full-run distribution without the operator having to
+    # hand-compute counts.
+    if args.representative is not None:
+        if args.representative < 1:
+            ap.error("--representative must be >= 1")
+        target_counts = _scale_tier_mix(args.representative)
+        log.info(
+            "--representative %d -> scaled tier mix %s (total=%d)",
+            args.representative, target_counts, sum(target_counts.values()),
+        )
+    else:
+        target_counts = args.tier_mix
+        if args.n is not None:
+            target_counts = _scale_tier_mix(args.n, base=target_counts)
+            log.info("scaled tier mix for n=%d: %s", args.n, target_counts)
 
     pipeline = Pipeline()
     selected = _select_questions(rows, pipeline, target_counts, args.indices)
