@@ -219,3 +219,144 @@ def test_scale_tier_mix_no_negative_buckets():
     out = run_pipeline._scale_tier_mix(3)
     assert all(v >= 0 for v in out.values())
     assert sum(out.values()) == 3
+
+
+# ---------------------------------------------------------------------------
+# Bucket routing -- tier-2b uses mistral-large for refinement
+# (timeout_refine_s=360 in rules.yaml), so it MUST be bucketed as large.
+# Previously bucketed as medium, which guaranteed TIMEOUTs because the
+# 300s medium-bucket budget could not cover one 360s refinement call.
+# ---------------------------------------------------------------------------
+
+def test_tier_bucket_tier_2b_is_large():
+    """tier-2b's refinement uses mistral-large -> must live in the large bucket."""
+    assert run_pipeline._tier_bucket("tier-2b") == "large", (
+        "tier-2b refinement uses mistralai/mistral-large with "
+        "timeout_refine_s=360s; medium bucket (300s) is too small."
+    )
+
+
+def test_tier_bucket_known_tiers_map_consistently():
+    """Sanity: small bucket for tier-1/fallback, large for tier-3/safety-tier3."""
+    assert run_pipeline._tier_bucket("tier-1") == "small"
+    assert run_pipeline._tier_bucket("fallback") == "small"
+    assert run_pipeline._tier_bucket("tier-m") == "medium"
+    assert run_pipeline._tier_bucket("tier-2a") == "medium"
+    assert run_pipeline._tier_bucket("tier-3") == "large"
+    assert run_pipeline._tier_bucket("safety-tier3") == "large"
+
+
+# ---------------------------------------------------------------------------
+# Watchdog deadlines start when work begins, not when futures are submitted.
+# Guards against the regression where tier-2a / tier-2b jobs sitting in a
+# saturated semaphore queue got TIMEOUT(context=0, excerpts=0) entries
+# because their bucket clock had already expired by the time they ran.
+# ---------------------------------------------------------------------------
+
+def test_run_one_records_start_clock_after_semaphore(monkeypatch):
+    """_run_one must populate start_clock[job_idx] after the semaphore opens."""
+    import threading
+
+    class _StubPipeline:
+        def profile_and_route(self, q):
+            class _Cfg:
+                rule_hit = "tier-m"
+            return None, None, _Cfg()
+
+        def run(self, *a, **kw):
+            class _Ans:
+                rule_hit = "tier-m"
+                answer = "x" * 50
+                enriched_context = "ctx"
+                excerpt_stats = {}
+                references: list = []
+                formatted_references: list = []
+            return _Ans()
+
+    sem = threading.Semaphore(1)
+    spacer = run_pipeline._StartSpacer(0.0)
+    start_clock: dict = {}
+    lock = threading.Lock()
+
+    result = run_pipeline._run_one(
+        job_idx=42,
+        display_idx=42,
+        question="dummy",
+        aql="",
+        expected_tier="tier-m",
+        docs=[{"title": "t"}],
+        pipeline=_StubPipeline(),
+        small_sem=sem,
+        medium_sem=sem,
+        large_sem=sem,
+        spacer=spacer,
+        max_retries=1,
+        start_clock=start_clock,
+        start_clock_lock=lock,
+    )
+    assert 42 in start_clock, "_run_one must record job_idx in start_clock"
+    assert start_clock[42] > 0
+    assert result["error"] is None
+    assert result["actual_tier"] == "tier-m"
+
+
+def test_run_one_does_not_require_start_clock():
+    """_run_one stays callable without start_clock for backward compatibility."""
+    import threading
+
+    class _StubPipeline:
+        def profile_and_route(self, q):
+            class _Cfg:
+                rule_hit = "tier-1"
+            return None, None, _Cfg()
+
+        def run(self, *a, **kw):
+            class _Ans:
+                rule_hit = "tier-1"
+                answer = "x" * 50
+                enriched_context = "ctx"
+                excerpt_stats = {}
+                references: list = []
+                formatted_references: list = []
+            return _Ans()
+
+    sem = threading.Semaphore(1)
+    spacer = run_pipeline._StartSpacer(0.0)
+    result = run_pipeline._run_one(
+        job_idx=1,
+        display_idx=1,
+        question="dummy",
+        aql="",
+        expected_tier="tier-1",
+        docs=[{"title": "t"}],
+        pipeline=_StubPipeline(),
+        small_sem=sem,
+        medium_sem=sem,
+        large_sem=sem,
+        spacer=spacer,
+        max_retries=1,
+    )
+    assert result["error"] is None
+
+
+# ---------------------------------------------------------------------------
+# _merge_into_jsonl must never persist TIMEOUT / ERROR records.
+# Callers filter on error is None before merging; this test guards the
+# invariant that valid records remain after a partial-failure rerun.
+# ---------------------------------------------------------------------------
+
+def test_merge_into_jsonl_preserves_good_record_when_rerun_fails(tmp_path: Path):
+    """Successful prior answer must survive even when caller passes a TIMEOUT."""
+    p = tmp_path / "out.jsonl"
+    p.write_text(
+        json.dumps({"q_index": 7, "answer": "good answer", "error": None}) + "\n",
+        encoding="utf-8",
+    )
+    # Caller (run_pipeline.main) filters error=None records, so a TIMEOUT
+    # would never reach _merge_into_jsonl. Verify good record stays intact.
+    run_pipeline._merge_into_jsonl(str(p), [
+        {"q_index": 9, "answer": "new9", "error": None},
+    ])
+    lines = [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines()]
+    assert [r["q_index"] for r in lines] == [7, 9]
+    assert next(r for r in lines if r["q_index"] == 7)["answer"] == "good answer"

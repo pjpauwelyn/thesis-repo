@@ -231,7 +231,12 @@ _TIER_TO_BUCKET: Dict[str, str] = {
     "fallback":     "small",
     "tier-m":       "medium",
     "tier-2a":      "medium",
-    "tier-2b":      "medium",
+    # tier-2b uses mistralai/mistral-large for refinement (timeout_refine_s=360)
+    # and mistral-medium for generation (timeout_generate_s=150).  Worst-case
+    # wall time exceeds the medium bucket budget (300s) and matches the large
+    # bucket's profile, so it is bucketed as large for both watchdog timeout
+    # and concurrency throttling.
+    "tier-2b":      "large",
     "tier-3":       "large",
     "safety-tier3": "large",
 }
@@ -293,6 +298,8 @@ def _run_one(
     large_sem: threading.Semaphore,
     spacer: _StartSpacer,
     max_retries: int,
+    start_clock: Optional[Dict[int, float]] = None,
+    start_clock_lock: Optional[threading.Lock] = None,
 ) -> Dict[str, Any]:
     precomputed_route = None
     actual_tier = expected_tier
@@ -314,6 +321,15 @@ def _run_one(
         with _acquire(sem):
             spacer.wait()
             t0 = time.time()
+            # Record start-time so the watchdog computes its deadline from
+            # when the job actually began doing work (post semaphore + spacer),
+            # not from job submission time.  This is the fix for medium-bucket
+            # TIMEOUTs with context=0 / excerpts=0: a queued job's clock used
+            # to start ticking before any work could happen, so by the time
+            # its semaphore slot opened, the bucket budget was already spent.
+            if start_clock is not None and start_clock_lock is not None:
+                with start_clock_lock:
+                    start_clock[job_idx] = t0
             try:
                 log.info(
                     "[job=%d q=%d expected=%s actual=%s bucket=%s attempt=%d] starting",
@@ -717,6 +733,14 @@ def main() -> int:
     t_start = time.time()
     records: List[Dict[str, Any]] = []
 
+    # Shared start clock: _run_one writes the wall-clock time at which it
+    # actually entered its bucket semaphore (after queueing).  The watchdog
+    # below derives each job's deadline from this start time -- a queued job
+    # not yet started has no deadline at all, so the bucket budget is spent
+    # only on real work, not on time waiting for an over-subscribed bucket.
+    start_clock: Dict[int, float] = {}
+    start_clock_lock = threading.Lock()
+
     pool = ThreadPoolExecutor(
         max_workers=max(1, args.workers),
         thread_name_prefix="pipeline",
@@ -737,20 +761,35 @@ def main() -> int:
                 large_sem=large_sem,
                 spacer=spacer,
                 max_retries=args.max_retries,
+                start_clock=start_clock,
+                start_clock_lock=start_clock_lock,
             ): (ji, display_idx, q, tier)
             for ji, (display_idx, q, aql, tier, docs) in enumerate(selected, start=1)
         }
 
         pending = set(futures.keys())
-        deadline_per_job: Dict[Any, float] = {
-            f: time.time() + bucket_timeout[_tier_bucket(futures[f][3])]
-            for f in futures
-        }
+
+        def _deadline_for(fut) -> Optional[float]:
+            """Return the wall-clock deadline for *fut*, or None if not started.
+
+            Watchdog fires only on started jobs whose start_clock entry is set
+            by _run_one's retry loop.  Queued jobs are exempt -- their clock
+            begins when they actually start doing work.
+            """
+            ji_local, _, _, tier_local = futures[fut]
+            with start_clock_lock:
+                t_start_job = start_clock.get(ji_local)
+            if t_start_job is None:
+                return None
+            return t_start_job + bucket_timeout[_tier_bucket(tier_local)]
 
         while pending:
             now = time.time()
-            next_deadline = min(deadline_per_job[f] for f in pending)
-            wait_s = max(0.1, next_deadline - now)
+            started_deadlines = [d for d in (_deadline_for(f) for f in pending) if d is not None]
+            next_deadline = min(started_deadlines) if started_deadlines else None
+            wait_s = (
+                max(0.1, next_deadline - now) if next_deadline is not None else 5.0
+            )
             done, _ = _futures_wait(list(pending), timeout=wait_s, return_when=FIRST_COMPLETED)
 
             if done:
@@ -773,7 +812,10 @@ def main() -> int:
 
             now = time.time()
             for fut in list(pending):
-                if now >= deadline_per_job[fut]:
+                dl = _deadline_for(fut)
+                if dl is None:
+                    continue
+                if now >= dl:
                     ji, display_idx, q, tier = futures[fut]
                     timed_out_s = bucket_timeout[_tier_bucket(tier)]
                     log.error(
