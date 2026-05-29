@@ -119,12 +119,16 @@ def test_load_done_from_jsonl_collects_q_indices(tmp_path: Path):
 
 
 def test_load_done_from_jsonl_skips_bad_lines(tmp_path: Path):
+    """Bad lines, missing q_index, AND rows without a usable answer are
+    skipped.  The latter is the empty-answer / incomplete-record rule
+    introduced alongside _is_record_complete.
+    """
     p = tmp_path / "out.jsonl"
     p.write_text(
-        json.dumps({"q_index": 1}) + "\n"
+        json.dumps({"q_index": 1, "answer": "ok"}) + "\n"
         + "not-a-json-line\n"
         + json.dumps({"answer": "no q_index"}) + "\n"
-        + json.dumps({"q_index": 4}) + "\n",
+        + json.dumps({"q_index": 4, "answer": "ok"}) + "\n",
         encoding="utf-8",
     )
     assert run_pipeline._load_done_from_jsonl(str(p)) == {1, 4}
@@ -658,3 +662,221 @@ def test_merge_into_jsonl_accepts_records_with_bleed_field(tmp_path: Path):
     ])
     rows = [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines()]
     assert rows[0]["refs_bleed_suspected"] is False
+
+
+# ---------------------------------------------------------------------------
+# Empty-answer / incomplete-record handling for resume + targeted reruns.
+# Pipeline.run() can return a PipelineResult with answer="" when the
+# generation LLM produces nothing (see core/pipelines/pipeline.py:443).
+# Such rows must not be treated as "done" -- they need to regenerate on
+# resume, and --rerun-incomplete must include their q_indices.
+# ---------------------------------------------------------------------------
+
+def test_is_record_complete_true_for_normal_record():
+    rec = {"q_index": 1, "answer": "valid answer text", "error": None}
+    assert run_pipeline._is_record_complete(rec) is True
+
+
+def test_is_record_complete_false_for_empty_answer():
+    """Empty answer (Pipeline.run() empty-generation path) is incomplete."""
+    rec = {"q_index": 1, "answer": "", "error": None}
+    assert run_pipeline._is_record_complete(rec) is False
+
+
+def test_is_record_complete_false_for_whitespace_answer():
+    rec = {"q_index": 1, "answer": "   \n\t  ", "error": None}
+    assert run_pipeline._is_record_complete(rec) is False
+
+
+def test_is_record_complete_false_when_error_set():
+    rec = {"q_index": 1, "answer": "ERROR: something", "error": "boom"}
+    assert run_pipeline._is_record_complete(rec) is False
+
+
+def test_is_record_complete_false_when_refs_bleed_flagged():
+    rec = {
+        "q_index": 1, "answer": "valid", "error": None,
+        "refs_bleed_suspected": True, "refs_bleed_indices": [0],
+    }
+    assert run_pipeline._is_record_complete(rec) is False
+
+
+def test_load_done_from_jsonl_skips_empty_answers(tmp_path: Path):
+    """Empty-answer rows must not be reported as 'done' for resume."""
+    p = tmp_path / "out.jsonl"
+    p.write_text(
+        json.dumps({"q_index": 1, "answer": "good", "error": None}) + "\n"
+        # q=2: matches the failure mode observed in uploaded answers-2.jsonl
+        + json.dumps({"q_index": 2, "answer": "", "error": None}) + "\n"
+        + json.dumps({"q_index": 3, "answer": "also good", "error": None}) + "\n",
+        encoding="utf-8",
+    )
+    assert run_pipeline._load_done_from_jsonl(str(p)) == {1, 3}
+
+
+def test_load_done_from_jsonl_skips_error_rows(tmp_path: Path):
+    p = tmp_path / "out.jsonl"
+    p.write_text(
+        json.dumps({"q_index": 1, "answer": "good", "error": None}) + "\n"
+        + json.dumps({"q_index": 2, "answer": "ERROR: x", "error": "x"}) + "\n",
+        encoding="utf-8",
+    )
+    assert run_pipeline._load_done_from_jsonl(str(p)) == {1}
+
+
+def test_incomplete_q_indices_returns_missing_plus_empty(tmp_path: Path):
+    """The set returned must be (missing 1..N) ∪ (present-but-incomplete)."""
+    p = tmp_path / "out.jsonl"
+    # Present: 1 (good), 2 (empty answer), 3 (error), 5 (good).
+    # Missing for N=6: 4, 6.
+    p.write_text(
+        json.dumps({"q_index": 1, "answer": "good", "error": None}) + "\n"
+        + json.dumps({"q_index": 2, "answer": "", "error": None}) + "\n"
+        + json.dumps({"q_index": 3, "answer": "ERROR", "error": "boom"}) + "\n"
+        + json.dumps({"q_index": 5, "answer": "good", "error": None}) + "\n",
+        encoding="utf-8",
+    )
+    assert run_pipeline._incomplete_q_indices(str(p), 6) == [2, 3, 4, 6]
+
+
+def test_incomplete_q_indices_handles_missing_file(tmp_path: Path):
+    """No file -> all q_indices 1..N are incomplete."""
+    p = tmp_path / "missing.jsonl"
+    assert run_pipeline._incomplete_q_indices(str(p), 5) == [1, 2, 3, 4, 5]
+
+
+def test_incomplete_q_indices_all_complete(tmp_path: Path):
+    p = tmp_path / "out.jsonl"
+    p.write_text(
+        "\n".join(
+            json.dumps({"q_index": i, "answer": "x", "error": None})
+            for i in (1, 2, 3)
+        ) + "\n",
+        encoding="utf-8",
+    )
+    assert run_pipeline._incomplete_q_indices(str(p), 3) == []
+
+
+def test_incomplete_q_indices_matches_uploaded_failure_pattern(tmp_path: Path):
+    """Smoke-test against the exact pattern seen in answers-2.jsonl.
+
+    Empty-answer q_indices documented in the audit:
+      5, 21, 22, 30, 32, 36, 37, 40, 42, 45, 47, 51, 52, 55, 57, 62, 67, 70.
+    Missing q_indices (1..70 not present at all):
+      18, 23, 27, 28, 29, 31, 33, 34, 35, 38, 39, 41, 43, 44, 46, 48, 49, 50,
+      53, 54, 56, 58, 59, 60, 61, 63, 64, 65, 66, 68, 69.
+    The union of these two sets is what --rerun-incomplete must surface.
+    """
+    present_qids = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,19,20,21,22,24,
+                    25,26,30,32,36,37,40,42,45,47,51,52,55,57,62,67,70]
+    empty_qids = {5,21,22,30,32,36,37,40,42,45,47,51,52,55,57,62,67,70}
+    p = tmp_path / "out.jsonl"
+    with p.open("w", encoding="utf-8") as f:
+        for qi in present_qids:
+            ans = "" if qi in empty_qids else f"answer-{qi}"
+            f.write(json.dumps({"q_index": qi, "answer": ans, "error": None}) + "\n")
+    needs = run_pipeline._incomplete_q_indices(str(p), 70)
+    # All empties must be in needs.
+    for qi in empty_qids:
+        assert qi in needs, f"empty q_index {qi} not flagged for rerun"
+    # All missing 1..70 must be in needs.
+    missing = sorted(set(range(1, 71)) - set(present_qids))
+    for qi in missing:
+        assert qi in needs, f"missing q_index {qi} not flagged for rerun"
+    # No good rows should appear.
+    good = set(present_qids) - empty_qids
+    for qi in good:
+        assert qi not in needs, f"good q_index {qi} incorrectly flagged for rerun"
+    # Total count check.
+    assert len(needs) == len(missing) + len(empty_qids)
+
+
+def test_merge_into_jsonl_replaces_empty_row_on_rerun(tmp_path: Path):
+    """The end-to-end story: empty row in existing JSONL gets replaced
+    by a successful rerun.  This is the workflow the user needs."""
+    p = tmp_path / "out.jsonl"
+    p.write_text(
+        json.dumps({"q_index": 5, "answer": "", "error": None}) + "\n"
+        + json.dumps({"q_index": 6, "answer": "kept", "error": None}) + "\n",
+        encoding="utf-8",
+    )
+    # The next run upserts q=5 with a real answer; q=6 is untouched.
+    run_pipeline._merge_into_jsonl(str(p), [
+        {"q_index": 5, "answer": "regenerated", "error": None},
+    ])
+    rows = [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines()]
+    assert [r["q_index"] for r in rows] == [5, 6]
+    assert next(r for r in rows if r["q_index"] == 5)["answer"] == "regenerated"
+    assert next(r for r in rows if r["q_index"] == 6)["answer"] == "kept"
+    # After the merge, the file no longer contains any incomplete records.
+    assert run_pipeline._incomplete_q_indices(str(p), 6) == [1, 2, 3, 4]
+
+
+def test_run_one_treats_empty_answer_as_error():
+    """_run_one must raise/retry when pipeline.run returns answer=''."""
+    import threading
+
+    class _StubPipeline:
+        def profile_and_route(self, q):
+            class _Cfg:
+                rule_hit = "tier-m"
+            return None, None, _Cfg()
+
+        def run(self, *a, **kw):
+            class _Ans:
+                rule_hit = "tier-m"
+                answer = ""  # Pipeline.run() empty-generation path
+                enriched_context = "ctx"
+                excerpt_stats = {}
+                references: list = []
+                formatted_references: list = []
+                ref_source_titles: list = []
+            return _Ans()
+
+    sem = threading.Semaphore(1)
+    spacer = run_pipeline._StartSpacer(0.0)
+    result = run_pipeline._run_one(
+        job_idx=1, display_idx=1, question="q", aql="",
+        expected_tier="tier-m", docs=[{"title": "t"}],
+        pipeline=_StubPipeline(),
+        small_sem=sem, medium_sem=sem, large_sem=sem,
+        spacer=spacer, max_retries=2,
+    )
+    # max_retries exhausted -> ERROR record, not a silent success.
+    assert result["error"] is not None
+    assert result["actual_tier"] == "ERROR"
+    assert "empty answer" in result["error"].lower()
+
+
+def test_run_one_returns_success_on_non_empty_answer():
+    """Sanity: a real answer still returns error=None."""
+    import threading
+
+    class _StubPipeline:
+        def profile_and_route(self, q):
+            class _Cfg:
+                rule_hit = "tier-1"
+            return None, None, _Cfg()
+
+        def run(self, *a, **kw):
+            class _Ans:
+                rule_hit = "tier-1"
+                answer = "a real answer with content"
+                enriched_context = "ctx"
+                excerpt_stats = {}
+                references: list = []
+                formatted_references: list = []
+                ref_source_titles: list = []
+            return _Ans()
+
+    sem = threading.Semaphore(1)
+    spacer = run_pipeline._StartSpacer(0.0)
+    result = run_pipeline._run_one(
+        job_idx=1, display_idx=1, question="q", aql="",
+        expected_tier="tier-1", docs=[{"title": "t"}],
+        pipeline=_StubPipeline(),
+        small_sem=sem, medium_sem=sem, large_sem=sem,
+        spacer=spacer, max_retries=1,
+    )
+    assert result["error"] is None
+    assert result["answer"].strip()

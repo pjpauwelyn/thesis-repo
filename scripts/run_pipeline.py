@@ -351,6 +351,17 @@ def _run_one(
                     job_idx, display_idx, ans.rule_hit,
                     len(ans.answer), len(ans.formatted_references), elapsed,
                 )
+                # Empty-answer guard: Pipeline.run() returns a PipelineResult
+                # with answer="" when the generation LLM produced nothing
+                # (see core/pipelines/pipeline.py:443).  Without this guard
+                # such rows propagate as error=None "successes" and get
+                # silently merged into the canonical JSONL on resume,
+                # blocking regeneration.  Treat empty as a retryable error.
+                if not (ans.answer or "").strip():
+                    raise RuntimeError(
+                        f"empty answer returned by pipeline (rule={ans.rule_hit}, "
+                        f"refs={len(ans.formatted_references)}) -- treating as failure"
+                    )
                 # Post-run refs-bleed cross-check.  Pipeline.run() already
                 # logs a REFS_BLEED line at ERROR level if any formatted
                 # reference shares no title-token with all_docs.  Here we
@@ -527,11 +538,35 @@ def _write_outputs(
 # Fix 2: resume-mode helpers for --output-jsonl
 # ---------------------------------------------------------------------------
 
+def _is_record_complete(rec: Dict[str, Any]) -> bool:
+    """Return True iff *rec* is a usable, complete answer.
+
+    A record is incomplete when any of the following hold:
+      * error is set (truthy) -- ERROR/TIMEOUT records must regenerate.
+      * answer is missing or whitespace-only -- empty PipelineResult rows
+        (Pipeline.run() returns answer="" when generation produces nothing).
+      * refs_bleed_suspected is True -- tainted refs must not be persisted.
+
+    Used by both resume detection (_load_done_from_jsonl) and the
+    --rerun-incomplete CLI flag to mark a q_index as needing regeneration.
+    """
+    if rec.get("error"):
+        return False
+    if rec.get("refs_bleed_suspected"):
+        return False
+    ans = rec.get("answer")
+    if not isinstance(ans, str) or not ans.strip():
+        return False
+    return True
+
+
 def _load_done_from_jsonl(path: str) -> Set[int]:
     """Return the set of q_index values already present in *path*.
 
     Used by --output-jsonl resume mode so the runner can skip questions
     whose answers are already written and only regenerate missing slots.
+    Incomplete records (empty answers, errors, refs_bleed) are *not* added
+    to the done set so they will be regenerated -- see _is_record_complete.
     """
     done: Set[int] = set()
     p = Path(path)
@@ -545,11 +580,47 @@ def _load_done_from_jsonl(path: str) -> Set[int]:
             try:
                 rec = json.loads(line)
                 qi = rec.get("q_index")
-                if isinstance(qi, int):
+                if isinstance(qi, int) and _is_record_complete(rec):
                     done.add(qi)
             except Exception:
                 pass
     return done
+
+
+def _incomplete_q_indices(path: str, expected_total: int) -> List[int]:
+    """Return sorted q_indices in 1..expected_total that need regeneration.
+
+    Combines two sources of incompleteness:
+      1. q_indices missing entirely from *path* (slot was never written).
+      2. q_indices whose row exists but fails _is_record_complete (empty
+         answer, error set, refs_bleed flagged).
+
+    Used by --rerun-incomplete so the operator can issue a single command
+    instead of computing the union by hand.
+    """
+    present: Dict[int, Dict[str, Any]] = {}
+    p = Path(path)
+    if p.exists():
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                    qi = rec.get("q_index")
+                    if isinstance(qi, int):
+                        present[qi] = rec
+                except Exception:
+                    pass
+
+    needs: Set[int] = set()
+    for qi in range(1, expected_total + 1):
+        if qi not in present:
+            needs.add(qi)
+        elif not _is_record_complete(present[qi]):
+            needs.add(qi)
+    return sorted(needs)
 
 
 def _merge_into_jsonl(path: str, new_records: List[Dict[str, Any]]) -> None:
@@ -639,6 +710,25 @@ def main() -> int:
             "--indices <bad_indices> --output-jsonl <path>."
         ),
     )
+    ap.add_argument(
+        "--rerun-incomplete", default=None, metavar="JSONL",
+        help=(
+            "scan an existing JSONL and seed --indices with the union of "
+            "(a) q_indices missing from the file, and (b) q_indices whose row "
+            "is incomplete (empty answer, error set, or refs_bleed flagged).  "
+            "Requires --rerun-total to know the expected 1..N range.  "
+            "Implies --output-jsonl=<same path> if --output-jsonl is not given, "
+            "so results are upserted in place."
+        ),
+    )
+    ap.add_argument(
+        "--rerun-total", type=int, default=70, metavar="N",
+        help=(
+            "expected total number of questions (1..N) when computing the "
+            "set of missing q_indices for --rerun-incomplete.  Default: 70 "
+            "(full DLR DARES25 set)."
+        ),
+    )
     ap.add_argument("--csv", default=None)
     ap.add_argument(
         "--dry-run", action="store_true",
@@ -678,6 +768,31 @@ def main() -> int:
     if args.indices is not None and args.questions is not None:
         ap.error("--indices and --questions are mutually exclusive")
     args.indices = args.indices or args.questions
+
+    # --rerun-incomplete: derive the indices set from an existing JSONL.
+    # Treats it as the single source of truth -- the user does not need to
+    # hand-compute (missing) ∪ (empty-answer) ∪ (error) q_indices.  Also
+    # auto-wires --output-jsonl to the same path so the rerun upserts in
+    # place rather than emitting only an attempt-N lineage dir.
+    if args.rerun_incomplete:
+        if args.indices is not None:
+            ap.error("--rerun-incomplete and --indices/--questions are mutually exclusive")
+        if args.rerun_total < 1:
+            ap.error("--rerun-total must be >= 1")
+        derived = _incomplete_q_indices(args.rerun_incomplete, args.rerun_total)
+        if not derived:
+            log.info(
+                "--rerun-incomplete %s: all %d q_indices are complete; nothing to do",
+                args.rerun_incomplete, args.rerun_total,
+            )
+            return 0
+        log.info(
+            "--rerun-incomplete %s: %d q_indices need regeneration -> %s",
+            args.rerun_incomplete, len(derived), derived,
+        )
+        args.indices = derived
+        if not args.output_jsonl:
+            args.output_jsonl = args.rerun_incomplete
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
